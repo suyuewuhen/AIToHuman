@@ -18,7 +18,7 @@ Vue 3 Web App
                             ▼ ▼
                     ASP.NET Core API
   ┌────────────────────────────────────────────┐
-  │ Identity │ AI │ Tasks │ Offers │ Orders    │
+  │ Identity │ AI │ Tasks │ Applications │ Orders │
   │ Messages │ Evidence │ Reviews │ Risk/Admin │
   └────────────────────────────────────────────┘
         │             │             │
@@ -85,11 +85,11 @@ Domain 不引用 EF Core、HTTP、AI SDK 或对象存储 SDK。
 - Conversations：对话、消息和 AI 运行记录。
 - Tasks：草稿、任务、步骤、位置摘要、发布和取消。
 - Risk：规则检查、AI 辅助分类、审核队列和决策记录。
-- Offers：报价、撤回、选择和并发控制。
+- Applications：按固定悬赏报名、撤回、选择和并发控制，不承载服务者价格。
 - Orders：交易快照、状态机、执行事件和验收。
 - Messaging：订单会话、消息和实时推送。
 - Evidence：上传授权、元数据、病毒扫描状态和访问控制。
-- Reviews：评价和基础信用指标。
+- Reviews：用户评价服务者、服务者评价用户、评价盲期、公开资料和基础信用指标。
 - Disputes：申诉、证据包和运营处理。
 - Notifications：站内通知及后续外部渠道。
 - Administration：审核、配置、下架、冻结和审计查询。
@@ -139,7 +139,7 @@ Conversation Orchestrator
 ## 8. 一致性与并发
 
 - EF Core 事务保证单个用例的数据库一致性。
-- Task、Offer、Order 使用并发令牌避免重复选单和状态覆盖。
+- Task、Application、Order 使用并发令牌避免重复选人、重复加价和状态覆盖。
 - 外部通知采用 Outbox Pattern，事务提交后异步发送。
 - 写操作接受 `Idempotency-Key`，服务端缓存或持久化处理结果。
 - 支付接入后，以支付方回调和内部账本为准，不相信前端结果。
@@ -147,10 +147,10 @@ Conversation Orchestrator
 ## 9. 可观测性
 
 - 结构化日志：请求 ID、用户匿名标识、模块、结果码和耗时。
-- 指标：API 延迟、错误率、AI 延迟与成本、队列积压、发布/报价/完成漏斗。
+- 指标：API 延迟、错误率、AI 延迟与成本、队列积压、发布/报名/完成漏斗。
 - 链路：使用 OpenTelemetry，外部调用传播关联标识。
 - 告警：认证异常、失败作业、对象扫描失败、风险规则异常和状态机冲突。
 
 ## 10. 演进路径
 
-只有当容量或团队边界有证据支持时再拆服务。较可能优先独立的部分是实时消息、文件处理、通知和 AI 编排；订单、报价和支付应尽量保持强一致边界。
+只有当容量或团队边界有证据支持时再拆服务。较可能优先独立的部分是实时消息、文件处理、通知和 AI 编排；任务、报名、订单和支付应尽量保持强一致边界。

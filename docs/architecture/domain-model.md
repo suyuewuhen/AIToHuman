@@ -16,15 +16,15 @@ AI 与用户共同编辑的临时结构。保存字段完整性、风险检查�
 
 ### Task
 
-用户公开发布的需求，包含公开信息、私密执行信息、步骤、验收条件、预算方式和截止时间。
+用户公开发布的需求，包含公开信息、私密执行信息、步骤、验收条件、单一固定悬赏和截止时间。建议价格区间只属于草稿辅助信息，不进入已发布任务的交易条件。
 
-### Offer
+### Application
 
-服务者对任务提交的交易条件。选中时生成不可变报价快照。
+服务者查看任务悬赏和用户公开评价后，表示愿意按当前悬赏执行任务的报名。报名可包含预计到达时间和说明，但不包含服务者自定义价格。选中时生成不可变报名快照。
 
 ### Order
 
-用户选择报价后形成的执行关系，是执行状态、验收、争议以及未来支付的核心聚合。
+用户查看服务者公开评价并选择报名者后形成的执行关系，是执行状态、验收、争议以及未来支付的核心聚合。
 
 ### Evidence
 
@@ -48,7 +48,7 @@ ReadyToPublish
 Published
   ├─ deadline reached            → Expired
   ├─ user cancels                → Cancelled
-  └─ offer selected + order made → Assigned
+  └─ application selected + order made → Assigned
 
 Assigned
   └─ order reaches terminal state → Closed
@@ -56,17 +56,17 @@ Assigned
 
 `TaskDraft` 是独立实体。确认操作固化字段并创建 `ReadyToPublish` Task，发布是随后由所有者执行的独立命令。这样用户可以在最终公开前预览；Task 一旦进入 `Published`，其交易快照不再被草稿编辑影响。
 
-## 3. 报价状态
+## 3. 报名状态
 
 ```text
 Pending
   ├─ worker withdraws → Withdrawn
-  ├─ user selects     → Accepted
+  ├─ user selects     → Selected
   ├─ another selected → Rejected
   └─ task unavailable → Expired
 ```
 
-报价在服务者声明的有效期内构成接单承诺。报价选择必须在数据库事务中检查任务状态和报价有效期，并使用并发令牌保证最多一份报价成功；成功后订单直接进入 `Accepted`。
+报名在服务者声明的有效期内构成按任务当前悬赏接单的承诺。服务者不能提交不同价格。用户选择必须在数据库事务中检查任务状态和报名有效期，并使用并发令牌保证最多一份报名成功；成功后订单直接进入 `Accepted`。
 
 ## 4. 订单状态
 
@@ -93,8 +93,9 @@ Disputed
 - Task 必须有所有者、截止时间、地点范围和至少一项验收标准。
 - Published Task 必须具有通过的风险决策版本。`ReadyToPublish` Task 只有所有者可以发布，发布时必须重新验证截止时间和风险决策是否仍有效。
 - 同一 Task 最多一个非终态 Order。
-- Offer 的服务者不能是 Task 所有者。
-- Order 的用户、服务者、任务快照和报价快照创建后不可替换。
+- Application 的服务者不能是 Task 所有者，报名中不得包含价格。
+- 已发布 Task 的悬赏只能在分配前提高；加价使用并发令牌并形成 `TaskRewardIncreased` 事件。
+- Order 的用户、服务者、任务快照和报名快照创建后不可替换。
 - 状态转换必须同时验证操作者、当前状态和必要材料。
 - AwaitingReview 必须至少有一份通过安全检查的 Evidence。
 - Completed、Cancelled 是普通流程下的终态；纠错由受控运营命令产生补偿事件。终态任务和订单不重新开启；再次履约通过复制必要字段创建拥有新标识和新审计链的任务。
@@ -102,8 +103,9 @@ Disputed
 ## 6. 领域事件
 
 - `TaskPublished`
-- `OfferSubmitted`
-- `OfferAccepted`
+- `ApplicationSubmitted`
+- `ApplicationSelected`
+- `TaskRewardIncreased`
 - `OrderCreated`
 - `OrderStatusChanged`
 - `EvidenceUploaded`
@@ -132,4 +134,10 @@ Disputed
 Money(amount, currency)
 ```
 
-支付上线后区分任务预算、报价金额、用户应付、平台服务费、服务者应收和退款，不能只用一个 `Amount` 字段承载所有含义。
+支付上线后区分任务悬赏、用户应付、平台服务费、服务者应收和退款，不能只用一个 `Amount` 字段承载所有含义。AI 建议价仅是带版本和依据摘要的建议，不是订单金额来源；用户确认的悬赏才进入任务与订单快照。
+
+## 9. 双向评价建模
+
+`Review` 必须关联已完成订单、评价人、被评价人及被评价角色。用户对服务者和服务者对用户使用各自的评分维度及汇总，不能混合成一个分数。
+
+评价具有 `PendingDisclosure`、`Published`、`HiddenByModeration` 状态。双方均提交或订单完成满 7×24 小时后公开；期限使用 UTC 计算并允许平台配置。盲期内查询接口不能返回对方本单评分与正文。公开信用资料同时返回平均分和有效评价数量，防止小样本误导。

@@ -23,6 +23,7 @@ POST   /api/v1/conversations
 POST   /api/v1/conversations/{conversationId}/messages
 POST   /api/v1/conversations/{conversationId}/task-drafts
 PUT    /api/v1/task-drafts/{draftId}
+POST   /api/v1/task-drafts/{draftId}/reward-suggestion
 POST   /api/v1/task-drafts/{draftId}/confirm
 
 GET    /api/v1/tasks
@@ -30,22 +31,27 @@ GET    /api/v1/tasks/{taskId}
 POST   /api/v1/tasks/{taskId}/publish
 POST   /api/v1/tasks/{taskId}/cancel
 
-POST   /api/v1/tasks/{taskId}/offers
-GET    /api/v1/tasks/{taskId}/offers
-POST   /api/v1/offers/{offerId}/accept
-POST   /api/v1/offers/{offerId}/withdraw
+POST   /api/v1/tasks/{taskId}/increase-reward
+POST   /api/v1/tasks/{taskId}/applications
+GET    /api/v1/tasks/{taskId}/applications
+POST   /api/v1/applications/{applicationId}/select
+POST   /api/v1/applications/{applicationId}/withdraw
 
 GET    /api/v1/orders/{orderId}
-POST   /api/v1/orders/{orderId}/accept
 POST   /api/v1/orders/{orderId}/start-travel
 POST   /api/v1/orders/{orderId}/start-work
 POST   /api/v1/orders/{orderId}/submit
 POST   /api/v1/orders/{orderId}/approve
 POST   /api/v1/orders/{orderId}/reject
 POST   /api/v1/orders/{orderId}/disputes
+POST   /api/v1/orders/{orderId}/reviews
+GET    /api/v1/users/{userId}/reviews
+GET    /api/v1/workers/{workerId}/reviews
 ```
 
 命令型子资源表达业务动作，避免允许客户端通过通用 PATCH 任意设置状态。
+
+建议价响应至少包含建议金额、建议区间、币种、主要估价因素、数据充分度和规则/模型版本。它不修改草稿金额；用户另行编辑并确认的 `reward` 才是任务悬赏。
 
 ## 3. 成功响应
 
@@ -118,7 +124,7 @@ GET /api/v1/tasks?category=pickup&district=chaoyang&limit=20&cursor=...
 
 ## 7. 幂等与并发
 
-- 创建任务、提交报价、选择报价、状态转换和未来支付接口支持 `Idempotency-Key`。
+- 创建任务、提高悬赏、提交报名、选择报名者、提交评价、状态转换和未来支付接口支持 `Idempotency-Key`。
 - 更新资源返回 ETag 或版本字段；冲突返回 `409`。
 - 客户端超时后可以使用相同幂等键安全重试。
 
@@ -136,9 +142,11 @@ GET /api/v1/tasks?category=pickup&district=chaoyang&limit=20&cursor=...
 
 事件名称使用过去式和版本化载荷，例如：
 
-- `task.offerSubmitted`
+- `task.rewardIncreased`
+- `task.applicationSubmitted`
 - `order.statusChanged`
 - `order.messageCreated`
+- `review.published`
 - `notification.created`
 
 实时事件只是刷新提示，客户端断线重连后必须通过 REST 获取事实状态，不能只依赖事件恢复数据。
