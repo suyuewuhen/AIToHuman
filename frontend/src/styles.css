@@ -128,6 +128,12 @@ h1 em { color: var(--acid); font-style: normal; }
 
 .task-hall { max-width: 1420px; margin: 92px auto 54px; }
 .orders-section { max-width: 1420px; margin: 92px auto 54px; }
+.order-tabs { display: flex; gap: 0; border-bottom: 1px solid var(--ink); }
+.order-tabs button { position: relative; border: 0; border-right: 1px solid var(--line); background: transparent; color: #747b77; padding: 15px 22px; cursor: pointer; font-size: 12px; }
+.order-tabs button:first-child { border-left: 1px solid var(--line); }
+.order-tabs button span { display: inline-grid; place-items: center; min-width: 20px; height: 20px; margin-left: 7px; border-radius: 50%; background: #ded9cb; color: var(--ink); font-size: 10px; }
+.order-tabs button.active { color: var(--ink); background: #fffaf0; font-weight: 600; }
+.order-tabs button.active::after { content: ''; position: absolute; right: 0; bottom: -1px; left: 0; height: 3px; background: var(--acid); }
 .orders-list { border-left: 1px solid var(--ink); border-top: 1px solid var(--ink); }
 .order-row { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 20px 25px; border-right: 1px solid var(--ink); border-bottom: 1px solid var(--ink); background: rgba(247,243,232,.72); }
 .order-row small,.order-row span { color: #747b77; font-size: 10px; }

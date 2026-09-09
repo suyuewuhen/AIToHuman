@@ -40,6 +40,7 @@ const publishError = ref('')
 const orders = ref<OrderItem[]>([])
 const ordersLoading = ref(false)
 const ordersError = ref('')
+const orderTab = ref<'published' | 'taken'>('taken')
 const steps = ref<Step[]>([
   { label: '确认取件地址与联系人', done: true },
   { label: '核对送达时间窗口', done: true },
@@ -50,6 +51,10 @@ const completion = computed(() => Math.round((steps.value.filter((step) => step.
 const currentRole = computed(() => authUser.value?.role ?? session.value?.role ?? '')
 const isWorker = computed(() => currentRole.value === 'worker')
 const isOwner = computed(() => currentRole.value === 'owner')
+const currentUserId = computed(() => authUser.value?.userId ?? session.value?.userId ?? '')
+const publishedOrders = computed(() => orders.value.filter((order) => order.ownerId === currentUserId.value))
+const takenOrders = computed(() => orders.value.filter((order) => order.workerId === currentUserId.value))
+const visibleOrders = computed(() => orderTab.value === 'published' ? publishedOrders.value : takenOrders.value)
 function canManageTask(task: TaskItem) {
   return isOwner.value && authUser.value?.userId === task.ownerId
 }
@@ -142,7 +147,7 @@ async function loadTasks() {
 }
 
 async function loadOrders() {
-  const userId = authUser.value?.userId ?? session.value?.userId
+  const userId = currentUserId.value
   if (!userId) return
   ordersLoading.value = true
   ordersError.value = ''
@@ -462,12 +467,16 @@ onMounted(async () => {
     </section>
 
     <section id="orders" class="orders-section">
-      <header class="hall-head"><div><p class="eyebrow">ORDER DESK / 03</p><h2>我的订单</h2><p>查看已选中的服务安排与固定悬赏。</p></div><button type="button" @click="loadOrders">刷新订单 <span>↻</span></button></header>
+      <header class="hall-head"><div><p class="eyebrow">ORDER DESK / 03</p><h2>我的订单</h2><p>分别管理你发布的订单，以及你接取的任务。</p></div><button type="button" @click="loadOrders">刷新订单 <span>↻</span></button></header>
+      <div class="order-tabs" role="tablist" aria-label="订单类型">
+        <button type="button" role="tab" :aria-selected="orderTab === 'published'" :class="{ active: orderTab === 'published' }" @click="orderTab = 'published'">我发布的订单 <span>{{ publishedOrders.length }}</span></button>
+        <button type="button" role="tab" :aria-selected="orderTab === 'taken'" :class="{ active: orderTab === 'taken' }" @click="orderTab = 'taken'">我接取的任务 <span>{{ takenOrders.length }}</span></button>
+      </div>
       <div v-if="ordersLoading" class="hall-state">正在读取订单…</div>
       <div v-else-if="ordersError" class="hall-state error"><strong>订单暂时离线</strong><span>{{ ordersError }}</span><button type="button" @click="loadOrders">重新连接</button></div>
-      <div v-else-if="orders.length === 0" class="hall-state"><strong>还没有订单</strong><span>选择报名者后，订单会显示在这里。</span></div>
+      <div v-else-if="visibleOrders.length === 0" class="hall-state"><strong>{{ orderTab === 'published' ? '还没有发布订单' : '还没有接取任务' }}</strong><span>{{ orderTab === 'published' ? '确认发布并选择服务者后，订单会显示在这里。' : '在任务大厅报名并被需求方选中后，任务会显示在这里。' }}</span></div>
       <div v-else class="orders-list">
-        <article v-for="order in orders" :key="order.id" class="order-row"><div><small>{{ formatDeadline(order.createdAt) }} · {{ order.status }}</small><h3>{{ order.title }}</h3><span>订单号 {{ order.id.slice(0, 8) }}</span></div><strong>¥{{ order.reward }}</strong></article>
+        <article v-for="order in visibleOrders" :key="order.id" class="order-row"><div><small>{{ formatDeadline(order.createdAt) }} · {{ order.status }}</small><h3>{{ order.title }}</h3><span>订单号 {{ order.id.slice(0, 8) }} · {{ orderTab === 'published' ? '服务者待执行' : '需求方已确认' }}</span></div><strong>¥{{ order.reward }}</strong></article>
       </div>
     </section>
 
