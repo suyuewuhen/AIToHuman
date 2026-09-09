@@ -15,6 +15,7 @@
 **/.build/
 **/.authbuild*/
 **/.verifyauth/
+**/.authverify*/
 *.tsbuildinfo
 *.local
 
