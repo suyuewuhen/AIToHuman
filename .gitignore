@@ -16,6 +16,8 @@
 **/.authbuild*/
 **/.verifyauth/
 **/.authverify*/
+**/.roleswitch/
+.roleswitch/
 *.tsbuildinfo
 *.local
 
