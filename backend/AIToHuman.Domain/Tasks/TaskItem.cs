@@ -6,6 +6,14 @@ public sealed class TaskItem
 {
     private readonly List<TaskApplication> _applications = [];
 
+    private TaskItem()
+    {
+        Title = string.Empty;
+        Description = string.Empty;
+        District = string.Empty;
+        AcceptanceCriteria = [];
+    }
+
     public TaskItem(
         Guid ownerId,
         string title,
@@ -40,17 +48,47 @@ public sealed class TaskItem
         CreatedAt = createdAt;
     }
 
-    public Guid Id { get; }
-    public Guid OwnerId { get; }
-    public string Title { get; }
-    public string Description { get; }
-    public string District { get; }
-    public DateTimeOffset Deadline { get; }
+    public Guid Id { get; private set; }
+    public Guid OwnerId { get; private set; }
+    public string Title { get; private set; }
+    public string Description { get; private set; }
+    public string District { get; private set; }
+    public DateTimeOffset Deadline { get; private set; }
     public Money Reward { get; private set; }
-    public IReadOnlyList<string> AcceptanceCriteria { get; }
-    public DateTimeOffset CreatedAt { get; }
+    public IReadOnlyList<string> AcceptanceCriteria { get; private set; }
+    public DateTimeOffset CreatedAt { get; private set; }
     public TaskStatus Status { get; private set; } = TaskStatus.ReadyToPublish;
     public IReadOnlyCollection<TaskApplication> Applications => _applications.AsReadOnly();
+
+    public static TaskItem Rehydrate(
+        Guid id,
+        Guid ownerId,
+        string title,
+        string description,
+        string district,
+        DateTimeOffset deadline,
+        Money reward,
+        IReadOnlyList<string> acceptanceCriteria,
+        DateTimeOffset createdAt,
+        TaskStatus status,
+        IEnumerable<TaskApplication> applications)
+    {
+        var task = new TaskItem
+        {
+            Id = id,
+            OwnerId = ownerId,
+            Title = title,
+            Description = description,
+            District = district,
+            Deadline = deadline,
+            Reward = reward,
+            AcceptanceCriteria = acceptanceCriteria,
+            CreatedAt = createdAt,
+            Status = status
+        };
+        task._applications.AddRange(applications);
+        return task;
+    }
 
     public void Publish(DateTimeOffset now)
     {

@@ -19,9 +19,18 @@ public sealed class TaskApplication
         SubmittedAt = submittedAt;
     }
 
-    public Guid Id { get; }
+    public Guid Id { get; private set; }
     public Guid WorkerId { get; }
     public string Note { get; }
     public DateTimeOffset SubmittedAt { get; }
     public TaskApplicationStatus Status { get; internal set; } = TaskApplicationStatus.Pending;
+
+    public static TaskApplication Rehydrate(Guid id, Guid workerId, string note, DateTimeOffset submittedAt, TaskApplicationStatus status)
+    {
+        return new TaskApplication(workerId, note, submittedAt)
+        {
+            Id = id,
+            Status = status
+        };
+    }
 }

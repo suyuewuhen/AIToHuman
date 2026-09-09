@@ -16,6 +16,7 @@ public sealed class TaskService(ITaskRepository repository, TimeProvider timePro
     {
         var task = GetOwned(id, ownerId);
         task.Publish(timeProvider.GetUtcNow());
+        repository.Save(task);
         return Map(task);
     }
 
@@ -23,6 +24,7 @@ public sealed class TaskService(ITaskRepository repository, TimeProvider timePro
     {
         var task = GetOwned(id, ownerId);
         task.IncreaseReward(new Money(request.Reward));
+        repository.Save(task);
         return Map(task);
     }
 
@@ -30,6 +32,7 @@ public sealed class TaskService(ITaskRepository repository, TimeProvider timePro
     {
         var task = GetRequired(id);
         task.Apply(request.WorkerId, request.Note, timeProvider.GetUtcNow());
+        repository.Save(task);
         return Map(task);
     }
 
@@ -37,6 +40,7 @@ public sealed class TaskService(ITaskRepository repository, TimeProvider timePro
     {
         var task = GetOwned(id, request.OwnerId);
         task.SelectApplication(applicationId);
+        repository.Save(task);
         return Map(task);
     }
 

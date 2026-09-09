@@ -15,4 +15,6 @@ public sealed class InMemoryTaskRepository : ITaskRepository
     {
         if (!_tasks.TryAdd(task.Id, task)) throw new InvalidOperationException("任务标识冲突。");
     }
+
+    public void Save(TaskItem task) => _tasks[task.Id] = task;
 }

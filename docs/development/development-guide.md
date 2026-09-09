@@ -10,7 +10,7 @@
 - Docker Desktop / Docker Engine + Compose
 - PostgreSQL、Redis 和 MinIO（推荐通过 Compose 启动）
 
-仓库已经生成 Vue 与 ASP.NET Core 骨架。当前任务仓储是内存实现，用于尽早验证领域规则与 API；后续将用 EF Core/PostgreSQL 替换。版本通过 `global.json`、`packageManager` 和容器镜像固定。
+仓库已经生成 Vue 与 ASP.NET Core 骨架。任务仓储支持 EF Core/PostgreSQL；未配置 `ConnectionStrings__Postgres` 时开发环境自动回退到内存实现，方便在没有 Docker 的机器上验证领域规则与 API。版本通过 `global.json`、`packageManager` 和容器镜像固定。
 
 ## 2. 本地开发原则
 

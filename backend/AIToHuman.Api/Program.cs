@@ -2,12 +2,21 @@ using AIToHuman.Application.Tasks;
 using AIToHuman.Contracts.Tasks;
 using AIToHuman.Domain.Common;
 using AIToHuman.Infrastructure.Tasks;
+using AIToHuman.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
-builder.Services.AddSingleton<ITaskRepository, InMemoryTaskRepository>();
+var postgresConnection = builder.Configuration.GetConnectionString("Postgres");
+if (string.IsNullOrWhiteSpace(postgresConnection))
+    builder.Services.AddSingleton<ITaskRepository, InMemoryTaskRepository>();
+else
+{
+    builder.Services.AddDbContext<TaskDbContext>(options => options.UseNpgsql(postgresConnection));
+    builder.Services.AddScoped<ITaskRepository, EfTaskRepository>();
+}
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddScoped<TaskService>();
 builder.Services.AddProblemDetails();
@@ -17,6 +26,13 @@ builder.Services.AddCors(options => options.AddPolicy("development", policy => p
     .AllowAnyMethod()));
 
 var app = builder.Build();
+
+if (app.Environment.IsDevelopment() && !string.IsNullOrWhiteSpace(postgresConnection))
+{
+    using var scope = app.Services.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<TaskDbContext>();
+    db.Database.EnsureCreated();
+}
 
 app.UseExceptionHandler(errorApp => errorApp.Run(async context =>
 {
