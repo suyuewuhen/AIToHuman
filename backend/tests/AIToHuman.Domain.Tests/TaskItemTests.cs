@@ -27,6 +27,19 @@ public sealed class TaskItemTests
     }
 
     [Fact]
+    public void Worker_cannot_submit_duplicate_pending_application()
+    {
+        var task = CreateTask();
+        task.Publish(_now);
+        var workerId = Guid.NewGuid();
+
+        task.Apply(workerId, "第一次报名", _now);
+
+        var error = Assert.Throws<DomainException>(() => task.Apply(workerId, "重复报名", _now.AddMinutes(1)));
+        Assert.Equal("服务者已经报名该任务。", error.Message);
+    }
+
+    [Fact]
     public void Selecting_application_assigns_task_and_rejects_others()
     {
         var task = CreateTask();
