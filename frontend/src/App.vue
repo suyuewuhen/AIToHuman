@@ -202,7 +202,7 @@ onMounted(loadTasks)
             <div><strong>需求方信用待接入</strong><small>已公开评价将在这里展示</small></div>
           </div>
           <div class="task-actions">
-            <span>{{ task.applications.length }} 人已报名</span>
+            <span>{{ task.applicationCount }} 人已报名</span>
             <button type="button" :disabled="applyingTaskId === task.id" @click="apply(task)">{{ applyingTaskId === task.id ? '提交中…' : '按此悬赏报名' }}</button>
           </div>
         </article>

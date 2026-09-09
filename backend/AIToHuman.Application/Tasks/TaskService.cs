@@ -44,7 +44,7 @@ public sealed class TaskService(ITaskRepository repository, TimeProvider timePro
         return Map(task);
     }
 
-    public IReadOnlyCollection<TaskResponse> ListPublished() => repository.ListPublished().Select(Map).ToArray();
+    public IReadOnlyCollection<TaskSummaryResponse> ListPublished() => repository.ListPublished().Select(MapSummary).ToArray();
     public TaskResponse? Get(Guid id) => repository.Get(id) is { } task ? Map(task) : null;
 
     public RewardSuggestionResponse SuggestReward(RewardSuggestionRequest request)
@@ -67,4 +67,6 @@ public sealed class TaskService(ITaskRepository repository, TimeProvider timePro
     private TaskItem GetRequired(Guid id) => repository.Get(id) ?? throw new KeyNotFoundException("任务不存在。");
 
     private static TaskResponse Map(TaskItem task) => new(task.Id, task.OwnerId, task.Title, task.Description, task.District, task.Deadline, task.Reward.Amount, task.Reward.Currency, task.Status.ToString(), task.AcceptanceCriteria, task.Applications.Select(item => new TaskApplicationResponse(item.Id, item.WorkerId, item.Note, item.Status.ToString(), item.SubmittedAt)).ToArray());
+
+    private static TaskSummaryResponse MapSummary(TaskItem task) => new(task.Id, task.OwnerId, task.Title, task.Description, task.District, task.Deadline, task.Reward.Amount, task.Reward.Currency, task.Status.ToString(), task.AcceptanceCriteria, task.Applications.Count);
 }

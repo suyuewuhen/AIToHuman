@@ -17,7 +17,7 @@ export interface TaskItem {
   currency: string
   status: string
   acceptanceCriteria: string[]
-  applications: TaskApplication[]
+  applicationCount: number
 }
 
 async function parseResponse<T>(response: Response): Promise<T> {
