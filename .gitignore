@@ -1,0 +1,42 @@
+# .NET
+**/bin/
+**/obj/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+.vs/
+
+# Node / Vue
+**/node_modules/
+**/dist/
+**/.vite/
+*.local
+
+# IDE
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+**/appsettings.Development.json
+**/appsettings.Local.json
+secrets/
+
+# Logs and coverage
+*.log
+logs/
+coverage/
+TestResults/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local infrastructure data
+.data/
+docker-data/
