@@ -136,7 +136,14 @@ npm run dev
 
 访问 <http://localhost:5173>。Vite 将 `/api`、`/health` 和支持 WebSocket 的 `/hubs` 代理到 `http://127.0.0.1:5188`。必须先启动后端，否则会看到 `ECONNREFUSED 127.0.0.1:5188`。
 
-Docker 不是必需的；当前 MVP 直接使用本机 PostgreSQL。没有数据库时可执行 `docker compose up -d postgres` 并设置 `ConnectionStrings__Postgres`。
+Docker 不是必需的；当前 MVP 直接使用本机 PostgreSQL。没有数据库时可执行：
+
+```powershell
+docker compose up -d postgres
+$env:ConnectionStrings__Postgres = "Host=localhost;Port=5432;Database=aitohuman;Username=aitohuman;Password=local-development-only"
+```
+
+Compose 创建的 `aitohuman` 用户/数据库与本机默认的 `postgres` 用户/数据库不同，必须设置上面的连接串。未配置 PostgreSQL 时 API 可回退到内存任务/订单仓储，但注册、登录和角色切换不可用，只能使用 Development 合成会话。
 
 ## 6. SignalR 联调说明
 

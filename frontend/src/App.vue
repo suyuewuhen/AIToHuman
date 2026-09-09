@@ -485,7 +485,7 @@ onMounted(async () => {
     </section>
 
     <section id="orders" class="orders-section">
-      <header class="hall-head"><div><p class="eyebrow">ORDER DESK / 03</p><h2>我的订单</h2><p>分别管理你发布的订单，以及你接取的任务。订单不会主动推送，请手动刷新。</p></div><button type="button" @click="loadOrders">手动刷新订单 <span>↻</span></button></header>
+      <header class="hall-head"><div><p class="eyebrow">ORDER DESK / 03</p><h2>我的订单</h2><p>分别管理你发布的订单，以及你接取的任务。服务者在线时会实时收到订单通知。</p></div><button type="button" @click="loadOrders">刷新订单 <span>↻</span></button></header>
       <div class="order-tabs" role="tablist" aria-label="订单类型">
         <button type="button" role="tab" :aria-selected="orderTab === 'published'" :class="{ active: orderTab === 'published' }" @click="orderTab = 'published'">我发布的订单 <span>{{ publishedOrders.length }}</span></button>
         <button type="button" role="tab" :aria-selected="orderTab === 'taken'" :class="{ active: orderTab === 'taken' }" @click="orderTab = 'taken'">我接取的任务 <span>{{ takenOrders.length }}</span></button>
