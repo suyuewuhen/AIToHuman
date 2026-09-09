@@ -3,7 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { requestRewardSuggestion } from './api/rewards'
 import { getDevSession, type DevSession } from './api/session'
 import { clearAccessToken, getAccessToken, getCurrentUser, login, register, type AuthResponse } from './api/auth'
-import { applyForTask, listPublishedTasks, listTaskApplications, selectTaskApplication, type TaskApplication, type TaskItem } from './api/tasks'
+import { applyForTask, createTask, listPublishedTasks, listTaskApplications, publishTask, selectTaskApplication, type TaskApplication, type TaskItem } from './api/tasks'
 
 type Step = { label: string; done: boolean }
 
@@ -31,6 +31,9 @@ const viewingApplicationsTaskId = ref('')
 const taskApplications = ref<TaskApplication[]>([])
 const applicationsLoading = ref(false)
 const selectingApplicationId = ref('')
+const publishing = ref(false)
+const publishPreview = ref<TaskItem | null>(null)
+const publishError = ref('')
 const steps = ref<Step[]>([
   { label: '确认取件地址与联系人', done: true },
   { label: '核对送达时间窗口', done: true },
@@ -64,6 +67,56 @@ async function submitPrompt() {
 
 function increaseReward() {
   reward.value += 5
+}
+
+function draftDeadline() {
+  const deadline = new Date()
+  deadline.setDate(deadline.getDate() + 1)
+  deadline.setHours(18, 0, 0, 0)
+  return deadline.toISOString()
+}
+
+async function openPublishPreview() {
+  if (!authUser.value || !isOwner.value) {
+    applicationNotice.value = '请先登录需求方账户，才能创建并发布任务。'
+    authMode.value = 'login'
+    authOpen.value = true
+    return
+  }
+  publishing.value = true
+  publishError.value = ''
+  try {
+    const task = await createTask({
+      ownerId: authUser.value.userId,
+      title: '明日下午代取并递送文件',
+      description: prompt.value,
+      district: '徐汇区 → 静安区',
+      deadline: draftDeadline(),
+      reward: reward.value,
+      acceptanceCriteria: steps.value.map((step) => step.label),
+    })
+    publishPreview.value = task
+  } catch (error) {
+    publishError.value = error instanceof Error ? error.message : '任务草稿创建失败'
+  } finally {
+    publishing.value = false
+  }
+}
+
+async function confirmPublish() {
+  if (!publishPreview.value || !authUser.value) return
+  publishing.value = true
+  publishError.value = ''
+  try {
+    await publishTask(publishPreview.value.id, authUser.value.userId)
+    applicationNotice.value = `任务「${publishPreview.value.title}」已发布到任务大厅。`
+    publishPreview.value = null
+    await loadTasks()
+  } catch (error) {
+    publishError.value = error instanceof Error ? error.message : '任务发布失败'
+  } finally {
+    publishing.value = false
+  }
 }
 
 async function loadTasks() {
@@ -284,11 +337,21 @@ onMounted(async () => {
             </div>
           </div>
 
-          <button class="publish" type="button" :disabled="completion < 100">确认草稿并预览发布</button>
+          <button class="publish" type="button" :disabled="completion < 100 || publishing" @click="openPublishPreview">{{ publishing ? '正在创建草稿…' : '确认草稿并预览发布' }}</button>
+          <p v-if="publishError" class="publish-error">{{ publishError }}</p>
           <p class="guardrail">服务者按固定悬赏报名，不进行竞价。发布后、分配前你仍可以加价。</p>
         </div>
       </aside>
     </section>
+
+    <div v-if="publishPreview" class="auth-backdrop" @click.self="publishPreview = null">
+      <section class="auth-dialog publish-dialog">
+        <div class="auth-dialog-head"><div><p class="eyebrow">PUBLISH CHECK / 03</p><h2>确认发布任务</h2></div><button type="button" class="icon-button" @click="publishPreview = null">×</button></div>
+        <div class="preview-card"><span>{{ publishPreview.district }} · 草稿已保存</span><h3>{{ publishPreview.title }}</h3><p>{{ publishPreview.description }}</p><div><strong>固定悬赏 ¥{{ publishPreview.reward }}</strong><small>截止 {{ formatDeadline(publishPreview.deadline) }} · {{ publishPreview.status }}</small></div></div>
+        <p class="publish-copy">发布后服务者将按 ¥{{ publishPreview.reward }} 报名。你可以在分配前加价，但不能降价。</p>
+        <button class="auth-submit" type="button" :disabled="publishing" @click="confirmPublish">{{ publishing ? '发布中…' : '确认并发布到任务大厅' }}</button>
+      </section>
+    </div>
 
     <section id="hall" class="task-hall">
       <header class="hall-head">

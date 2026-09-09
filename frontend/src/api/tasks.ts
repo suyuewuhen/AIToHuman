@@ -37,6 +37,16 @@ export interface SelectTaskResult {
   order: OrderItem
 }
 
+export interface CreateTaskInput {
+  ownerId: string
+  title: string
+  description: string
+  district: string
+  deadline: string
+  reward: number
+  acceptanceCriteria: string[]
+}
+
 async function parseResponse<T>(response: Response): Promise<T> {
   if (response.ok) return response.json() as Promise<T>
   const problem = await response.json().catch(() => null) as { detail?: string } | null
@@ -50,6 +60,21 @@ function authHeaders(): HeadersInit {
 
 export async function listPublishedTasks(): Promise<TaskItem[]> {
   return parseResponse<TaskItem[]>(await fetch('/api/v1/tasks', { headers: authHeaders() }))
+}
+
+export async function createTask(input: CreateTaskInput): Promise<TaskItem> {
+  return parseResponse<TaskItem>(await fetch('/api/v1/tasks', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify(input),
+  }))
+}
+
+export async function publishTask(taskId: string, ownerId: string): Promise<TaskItem> {
+  return parseResponse<TaskItem>(await fetch(`/api/v1/tasks/${taskId}/publish?ownerId=${encodeURIComponent(ownerId)}`, {
+    method: 'POST',
+    headers: authHeaders(),
+  }))
 }
 
 export async function applyForTask(taskId: string, workerId: string, note: string): Promise<TaskItem> {

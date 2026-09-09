@@ -39,6 +39,17 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .auth-submit:disabled { opacity: .6; cursor: wait; }
 .auth-switch { width: 100%; margin-top: 11px; padding: 9px; border: 0; background: transparent; color: var(--green); cursor: pointer; font-size: 11px; }
 .auth-error { margin: 14px 0 0; color: #9a321f; font-size: 12px; }
+.publish-dialog { width: min(520px, 100%); }
+.preview-card { padding: 18px; background: #eee9dc; border: 1px solid var(--line); }
+.preview-card > span { color: var(--green); font-size: 11px; }
+.preview-card h3 { margin: 9px 0; font: 700 22px 'Noto Serif SC',serif; }
+.preview-card p { color: #626b66; font-size: 12px; line-height: 1.7; }
+.preview-card > div { display: flex; align-items: baseline; justify-content: space-between; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); }
+.preview-card strong { color: var(--acid); font-size: 19px; }
+.preview-card small { color: #747b77; }
+.publish-copy,.publish-error { font-size: 12px; line-height: 1.7; }
+.publish-copy { color: #626b66; }
+.publish-error { margin: 10px 0 0; color: #9a321f; }
 
 .hero { max-width: 1420px; margin: 0 auto; padding: 58px 0 42px; display: flex; align-items: end; justify-content: space-between; animation: rise .7s ease both; }
 .eyebrow { font-size: 11px; letter-spacing: .18em; font-weight: 600; color: var(--green); }
