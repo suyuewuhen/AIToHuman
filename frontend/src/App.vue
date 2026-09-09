@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { requestRewardSuggestion } from './api/rewards'
 import { getDevSession, type DevSession } from './api/session'
-import { clearAccessToken, getAccessToken, getCurrentUser, login, register, type AuthResponse } from './api/auth'
+import { clearAccessToken, getAccessToken, getCurrentUser, login, register, switchRole, type ActiveRole, type AuthResponse } from './api/auth'
 import { applyForTask, createTask, listPublishedTasks, listTaskApplications, publishTask, selectTaskApplication, type TaskApplication, type TaskItem } from './api/tasks'
 
 type Step = { label: string; done: boolean }
@@ -22,6 +22,9 @@ const authMode = ref<'login' | 'register'>('login')
 const authBusy = ref(false)
 const authError = ref('')
 const authForm = ref({ email: '', password: '', displayName: '', role: 'worker' as 'owner' | 'worker' })
+const roleMenuOpen = ref(false)
+const roleSwitchBusy = ref(false)
+const roleSwitchError = ref('')
 const tasks = ref<TaskItem[]>([])
 const hallLoading = ref(true)
 const hallError = ref('')
@@ -231,9 +234,31 @@ async function submitAuth() {
   }
 }
 
+async function changeRole(role: ActiveRole) {
+  if (!authUser.value || authUser.value.role === role) {
+    roleMenuOpen.value = false
+    return
+  }
+  roleSwitchBusy.value = true
+  roleSwitchError.value = ''
+  try {
+    const result = await switchRole(role)
+    authUser.value = result
+    roleMenuOpen.value = false
+    viewingApplicationsTaskId.value = ''
+    applicationNotice.value = `已切换为${role === 'owner' ? '需求方' : '服务者'}身份。`
+    await loadTasks()
+  } catch (error) {
+    roleSwitchError.value = error instanceof Error ? error.message : '身份切换失败'
+  } finally {
+    roleSwitchBusy.value = false
+  }
+}
+
 function logout() {
   clearAccessToken()
   authUser.value = null
+  roleMenuOpen.value = false
   applicationNotice.value = '已退出登录，当前为开发会话。'
 }
 
@@ -256,7 +281,16 @@ onMounted(async () => {
         <a href="#hall">任务大厅</a>
         <a href="#orders">我的订单</a>
       </div>
-      <button class="profile" type="button" @click="authUser ? logout() : (authOpen = true)"><span>{{ (authUser?.displayName ?? session?.displayName ?? '开').slice(0, 1) }}</span> {{ authUser?.displayName ?? session?.displayName ?? '开发会话' }} · {{ authUser ? (authUser.role === 'worker' ? '服务者' : '需求方') : '开发会话 · 点击登录' }}</button>
+      <div class="profile-wrap">
+        <button class="profile" type="button" @click="authUser ? (roleMenuOpen = !roleMenuOpen) : (authOpen = true)"><span>{{ (authUser?.displayName ?? session?.displayName ?? '开').slice(0, 1) }}</span> {{ authUser?.displayName ?? session?.displayName ?? '开发会话' }} · {{ authUser ? (authUser.role === 'worker' ? '服务者' : '需求方') : '开发会话 · 点击登录' }} <b v-if="authUser">⌄</b></button>
+        <div v-if="authUser && roleMenuOpen" class="role-menu">
+          <p>当前账户 · {{ authUser.email }}</p>
+          <button type="button" :class="{ selected: authUser.role === 'owner' }" :disabled="roleSwitchBusy" @click="changeRole('owner')"><span>需求方</span><small>创建任务、查看报名、选择服务者</small></button>
+          <button type="button" :class="{ selected: authUser.role === 'worker' }" :disabled="roleSwitchBusy" @click="changeRole('worker')"><span>服务者</span><small>浏览大厅、按固定悬赏报名</small></button>
+          <p v-if="roleSwitchError" class="role-error">{{ roleSwitchError }}</p>
+          <button type="button" class="logout-button" @click="logout">退出登录</button>
+        </div>
+      </div>
     </nav>
 
     <div v-if="authOpen" class="auth-backdrop" @click.self="authOpen = false">

@@ -17,6 +17,8 @@ export interface RegisterRequest extends LoginRequest {
   role: 'owner' | 'worker'
 }
 
+export type ActiveRole = 'owner' | 'worker'
+
 async function parseAuth(response: Response): Promise<AuthResponse> {
   if (response.ok) return response.json() as Promise<AuthResponse>
   const problem = await response.json().catch(() => null) as { detail?: string } | null
@@ -39,6 +41,19 @@ export async function register(request: RegisterRequest): Promise<AuthResponse> 
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(request),
+  })
+  const auth = await parseAuth(response)
+  localStorage.setItem('aitohuman.accessToken', auth.accessToken)
+  return auth
+}
+
+export async function switchRole(role: ActiveRole): Promise<AuthResponse> {
+  const token = getAccessToken()
+  if (!token) throw new Error('未登录')
+  const response = await fetch('/api/v1/auth/switch-role', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ role }),
   })
   const auth = await parseAuth(response)
   localStorage.setItem('aitohuman.accessToken', auth.accessToken)

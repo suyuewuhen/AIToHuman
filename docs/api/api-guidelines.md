@@ -51,7 +51,7 @@ GET    /api/v1/workers/{workerId}/reviews
 
 命令型子资源表达业务动作，避免允许客户端通过通用 PATCH 任意设置状态。
 
-认证最小闭环当前提供：`POST /api/v1/auth/register` 注册并返回短时 Access Token，`POST /api/v1/auth/login` 登录，`GET /api/v1/auth/me` 需要 `Authorization: Bearer <token>`。任务写操作从 JWT 的用户 ID 与角色读取身份；Development 环境为兼容旧演示数据保留显式 ID 回退，生产环境必须配置 `Authentication__SigningKey` 并使用 JWT。
+认证最小闭环当前提供：`POST /api/v1/auth/register` 注册并返回短时 Access Token，`POST /api/v1/auth/login` 登录，`POST /api/v1/auth/switch-role` 在 `owner`/`worker` 间切换当前操作角色，`GET /api/v1/auth/me` 需要 `Authorization: Bearer <token>`。一个账户只有一个用户 ID，角色切换只重新签发带不同 role claim 的 JWT，不复制账户。任务写操作从 JWT 的用户 ID 与角色读取身份；Development 环境为兼容旧演示数据保留显式 ID 回退，生产环境必须配置 `Authentication__SigningKey` 并使用 JWT。
 
 任务大厅的 `GET /tasks` 与公开任务详情只返回区域、悬赏、验收标准和报名人数等公开摘要，不返回服务者 `workerId`、报名备注或联系方式。报名详情仅在后续完成认证和资源授权后，向任务所有者或对应服务者返回。
 

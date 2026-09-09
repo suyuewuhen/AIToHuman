@@ -29,14 +29,22 @@ public sealed class AuthService(TaskDbContext db, IConfiguration configuration, 
         return CreateResponse(user);
     }
 
-    private AuthResponse CreateResponse(UserRecord user)
+    public AuthResponse SwitchRole(Guid userId, string role)
+    {
+        if (!Roles.Contains(role, StringComparer.OrdinalIgnoreCase)) throw new InvalidOperationException("角色必须是 owner 或 worker。");
+        var user = db.Users.SingleOrDefault(item => item.Id == userId) ?? throw new UnauthorizedAccessException("用户不存在或已停用。");
+        return CreateResponse(user, role.ToLowerInvariant());
+    }
+
+    private AuthResponse CreateResponse(UserRecord user, string? activeRole = null)
     {
         var expires = configuration.GetValue("Authentication:AccessTokenMinutes", 60);
         var key = new SymmetricSecurityKey(Convert.FromBase64String(configuration["Authentication:SigningKey"] ?? "QUlUb0h1bWFuLWxvY2FsLWRldi1rZXktMzItYnl0ZXMhIQ=="));
         var credentials = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
-        var claims = new[] { new Claim(JwtRegisteredClaimNames.Sub, user.Id.ToString()), new Claim(ClaimTypes.NameIdentifier, user.Id.ToString()), new Claim(ClaimTypes.Email, user.Email), new Claim(ClaimTypes.Name, user.DisplayName), new Claim(ClaimTypes.Role, user.Role) };
+        var claims = new[] { new Claim(JwtRegisteredClaimNames.Sub, user.Id.ToString()), new Claim(ClaimTypes.NameIdentifier, user.Id.ToString()), new Claim(ClaimTypes.Email, user.Email), new Claim(ClaimTypes.Name, user.DisplayName), new Claim(ClaimTypes.Role, activeRole ?? user.Role) };
         var token = new JwtSecurityToken(claims: claims, expires: DateTime.UtcNow.AddMinutes(expires), signingCredentials: credentials);
-        return new(user.Id, user.Email, user.DisplayName, user.Role, new JwtSecurityTokenHandler().WriteToken(token), expires * 60);
+        var responseRole = activeRole ?? user.Role;
+        return new(user.Id, user.Email, user.DisplayName, responseRole, new JwtSecurityTokenHandler().WriteToken(token), expires * 60);
     }
 
     private static string NormalizeEmail(string email) => string.IsNullOrWhiteSpace(email) ? throw new InvalidOperationException("邮箱不能为空。") : email.Trim().ToLowerInvariant();

@@ -6,3 +6,4 @@ public sealed record RegisterRequest(string Email, string Password, string Displ
 public sealed record LoginRequest(string Email, string Password);
 public sealed record AuthResponse(Guid UserId, string Email, string DisplayName, string Role, string AccessToken, int ExpiresInSeconds);
 public sealed record CurrentUserResponse(Guid UserId, string Email, string DisplayName, string Role);
+public sealed record SwitchRoleRequest(string Role);

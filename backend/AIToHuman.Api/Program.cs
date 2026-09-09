@@ -137,6 +137,13 @@ auth.MapPost("/register", (RegisterRequest request, IServiceProvider services) =
 auth.MapPost("/login", (LoginRequest request, IServiceProvider services) => services.GetService<AuthService>() is { } service
     ? Results.Ok(service.Login(request))
     : Results.Problem("未配置 PostgreSQL，认证功能暂不可用。", statusCode: StatusCodes.Status503ServiceUnavailable));
+auth.MapPost("/switch-role", (SwitchRoleRequest request, ClaimsPrincipal user, IServiceProvider services) =>
+{
+    if (!Guid.TryParse(user.FindFirstValue(ClaimTypes.NameIdentifier), out var userId)) return Results.Unauthorized();
+    return services.GetService<AuthService>() is { } service
+        ? Results.Ok(service.SwitchRole(userId, request.Role))
+        : Results.Problem("未配置 PostgreSQL，认证功能暂不可用。", statusCode: StatusCodes.Status503ServiceUnavailable);
+}).RequireAuthorization();
 auth.MapGet("/me", (ClaimsPrincipal user) => Results.Ok(new CurrentUserResponse(
     Guid.Parse(user.FindFirstValue(ClaimTypes.NameIdentifier)!),
     user.FindFirstValue(ClaimTypes.Email)!,
