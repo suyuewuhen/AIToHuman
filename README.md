@@ -57,6 +57,7 @@ AIToHuman/
 - [API 设计约定](docs/api/api-guidelines.md)
 - [安全、隐私与风控](docs/security/security-and-risk.md)
 - [开发指南](docs/development/development-guide.md)
+- [项目交接文档](docs/development/handoff.md)
 - [路线图](docs/development/roadmap.md)
 - [贡献指南](CONTRIBUTING.md)
 

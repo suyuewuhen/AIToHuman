@@ -5,6 +5,8 @@ using AIToHuman.Domain.Common;
 using AIToHuman.Infrastructure.Tasks;
 using AIToHuman.Infrastructure.Orders;
 using AIToHuman.Application.Orders;
+using AIToHuman.Application.Notifications;
+using AIToHuman.Api.Notifications;
 using AIToHuman.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -34,10 +36,22 @@ else
     builder.Services.AddSingleton<IOrderRepository, InMemoryOrderRepository>();
 }
 builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddSignalR();
+builder.Services.AddSingleton<IOrderNotificationPublisher, SignalROrderNotificationPublisher>();
 builder.Services.AddScoped<TaskService>();
 builder.Services.AddProblemDetails();
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBearer(options =>
 {
+    options.Events = new JwtBearerEvents
+    {
+        OnMessageReceived = context =>
+        {
+            var accessToken = context.Request.Query["access_token"].ToString();
+            if (!string.IsNullOrEmpty(accessToken) && context.HttpContext.Request.Path.StartsWithSegments("/hubs"))
+                context.Token = accessToken;
+            return Task.CompletedTask;
+        }
+    };
     options.TokenValidationParameters = new TokenValidationParameters
     {
         ValidateIssuer = false,
@@ -121,6 +135,7 @@ app.UseExceptionHandler(errorApp => errorApp.Run(async context =>
 if (app.Environment.IsDevelopment()) app.UseCors("development");
 app.UseAuthentication();
 app.UseAuthorization();
+app.MapHub<NotificationsHub>("/hubs/notifications");
 
 app.MapGet("/health", () => Results.Ok(new { status = "healthy", service = "AIToHuman.Api", utc = DateTimeOffset.UtcNow }));
 

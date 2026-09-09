@@ -4,6 +4,7 @@ import { requestRewardSuggestion } from './api/rewards'
 import { getDevSession, type DevSession } from './api/session'
 import { clearAccessToken, getAccessToken, getCurrentUser, login, register, switchRole, type ActiveRole, type AuthResponse } from './api/auth'
 import { applyForTask, createTask, listMyOrders, listPublishedTasks, listTaskApplications, publishTask, selectTaskApplication, type OrderItem, type TaskApplication, type TaskItem } from './api/tasks'
+import { connectOrderNotifications, disconnectOrderNotifications } from './api/notifications'
 
 type Step = { label: string; done: boolean }
 
@@ -156,6 +157,18 @@ async function loadOrders() {
   finally { ordersLoading.value = false }
 }
 
+async function connectNotifications() {
+  const userId = currentUserId.value
+  if (!userId) return
+  try {
+    await connectOrderNotifications(userId, (order) => {
+      orders.value = [order, ...orders.value.filter((item) => item.id !== order.id)]
+      orderTab.value = 'taken'
+      applicationNotice.value = `需求方已同意你的报名：「${order.title}」已进入接取的任务。`
+    })
+  } catch { /* 手动刷新仍可使用 */ }
+}
+
 async function apply(task: TaskItem) {
   const workerId = authUser.value?.role === 'worker' ? authUser.value.userId : session.value?.userId
   if (!workerId) {
@@ -168,7 +181,6 @@ async function apply(task: TaskItem) {
     await applyForTask(task.id, workerId, '我已查看任务要求，可以按固定悬赏完成。')
     applicationNotice.value = `已报名「${task.title}」`
     await loadTasks()
-    await loadOrders()
   } catch (error) {
     applicationNotice.value = error instanceof Error ? error.message : '报名失败'
   } finally {
@@ -247,6 +259,8 @@ async function submitAuth() {
     authOpen.value = false
     applicationNotice.value = `已登录：${result.displayName}`
     await loadTasks()
+    await loadOrders()
+    await connectNotifications()
   } catch (error) {
     authError.value = error instanceof Error ? error.message : '认证失败'
   } finally {
@@ -268,6 +282,8 @@ async function changeRole(role: ActiveRole) {
     viewingApplicationsTaskId.value = ''
     applicationNotice.value = `已切换为${role === 'owner' ? '需求方' : '服务者'}身份。`
     await loadTasks()
+    await loadOrders()
+    await connectNotifications()
   } catch (error) {
     roleSwitchError.value = error instanceof Error ? error.message : '身份切换失败'
   } finally {
@@ -279,6 +295,7 @@ function logout() {
   clearAccessToken()
   authUser.value = null
   orders.value = []
+  void disconnectOrderNotifications()
   roleMenuOpen.value = false
   applicationNotice.value = '已退出登录，当前为开发会话。'
 }
@@ -288,6 +305,7 @@ onMounted(async () => {
   await loadDevSession()
   await loadTasks()
   await loadOrders()
+  await connectNotifications()
 })
 </script>
 
@@ -467,7 +485,7 @@ onMounted(async () => {
     </section>
 
     <section id="orders" class="orders-section">
-      <header class="hall-head"><div><p class="eyebrow">ORDER DESK / 03</p><h2>我的订单</h2><p>分别管理你发布的订单，以及你接取的任务。</p></div><button type="button" @click="loadOrders">刷新订单 <span>↻</span></button></header>
+      <header class="hall-head"><div><p class="eyebrow">ORDER DESK / 03</p><h2>我的订单</h2><p>分别管理你发布的订单，以及你接取的任务。订单不会主动推送，请手动刷新。</p></div><button type="button" @click="loadOrders">手动刷新订单 <span>↻</span></button></header>
       <div class="order-tabs" role="tablist" aria-label="订单类型">
         <button type="button" role="tab" :aria-selected="orderTab === 'published'" :class="{ active: orderTab === 'published' }" @click="orderTab = 'published'">我发布的订单 <span>{{ publishedOrders.length }}</span></button>
         <button type="button" role="tab" :aria-selected="orderTab === 'taken'" :class="{ active: orderTab === 'taken' }" @click="orderTab = 'taken'">我接取的任务 <span>{{ takenOrders.length }}</span></button>

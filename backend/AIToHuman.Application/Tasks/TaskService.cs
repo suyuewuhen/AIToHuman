@@ -2,10 +2,11 @@ using AIToHuman.Contracts.Tasks;
 using AIToHuman.Domain.Tasks;
 using AIToHuman.Application.Orders;
 using AIToHuman.Domain.Orders;
+using AIToHuman.Application.Notifications;
 
 namespace AIToHuman.Application.Tasks;
 
-public sealed class TaskService(ITaskRepository repository, IOrderRepository orderRepository, TimeProvider timeProvider)
+public sealed class TaskService(ITaskRepository repository, IOrderRepository orderRepository, TimeProvider timeProvider, IOrderNotificationPublisher notificationPublisher)
 {
     public TaskResponse Create(CreateTaskRequest request)
     {
@@ -45,6 +46,7 @@ public sealed class TaskService(ITaskRepository repository, IOrderRepository ord
         repository.Save(task);
         var order = new Order(task.Id, task.OwnerId, selected.WorkerId, task.Title, task.Reward, timeProvider.GetUtcNow());
         orderRepository.Add(order);
+        _ = notificationPublisher.PublishOrderCreatedAsync(selected.WorkerId, Map(order));
         return new(Map(task), Map(order));
     }
 
