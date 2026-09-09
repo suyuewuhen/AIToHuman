@@ -3,6 +3,8 @@ using AIToHuman.Contracts.Tasks;
 using AIToHuman.Contracts;
 using AIToHuman.Domain.Common;
 using AIToHuman.Infrastructure.Tasks;
+using AIToHuman.Infrastructure.Orders;
+using AIToHuman.Application.Orders;
 using AIToHuman.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -23,9 +25,14 @@ if (usePostgres)
 {
     builder.Services.AddDbContext<TaskDbContext>(options => options.UseNpgsql(postgresConnection));
     builder.Services.AddScoped<ITaskRepository, EfTaskRepository>();
+    builder.Services.AddScoped<IOrderRepository, EfOrderRepository>();
     builder.Services.AddScoped<AuthService>();
 }
-else builder.Services.AddSingleton<ITaskRepository, InMemoryTaskRepository>();
+else
+{
+    builder.Services.AddSingleton<ITaskRepository, InMemoryTaskRepository>();
+    builder.Services.AddSingleton<IOrderRepository, InMemoryOrderRepository>();
+}
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddScoped<TaskService>();
 builder.Services.AddProblemDetails();
@@ -67,6 +74,19 @@ if (app.Environment.IsDevelopment() && usePostgres)
             CONSTRAINT "PK_users" PRIMARY KEY ("Id")
         );
         CREATE UNIQUE INDEX IF NOT EXISTS "IX_users_Email" ON users ("Email");
+        CREATE TABLE IF NOT EXISTS orders (
+            "Id" uuid NOT NULL,
+            "TaskId" uuid NOT NULL,
+            "OwnerId" uuid NOT NULL,
+            "WorkerId" uuid NOT NULL,
+            "Title" character varying(80) NOT NULL,
+            "RewardAmount" numeric(18,2) NOT NULL,
+            "RewardCurrency" character varying(3) NOT NULL,
+            "Status" character varying(32) NOT NULL,
+            "CreatedAt" timestamp with time zone NOT NULL,
+            CONSTRAINT "PK_orders" PRIMARY KEY ("Id")
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS "IX_orders_TaskId" ON orders ("TaskId");
         """);
 }
     catch (Exception exception)
@@ -158,6 +178,16 @@ tasks.MapPost("/{id:guid}/applications/{applicationId:guid}/select", (Guid id, G
     EnsureRole(user, "owner", environment);
     var ownerId = ResolveUserId(user, request.OwnerId, environment);
     return Results.Ok(service.Select(id, applicationId, request with { OwnerId = ownerId }));
+});
+tasks.MapGet("/{id:guid}/order", (Guid id, ClaimsPrincipal user, IHostEnvironment environment, TaskService service) =>
+{
+    var claim = user.FindFirstValue(ClaimTypes.NameIdentifier);
+    if (!Guid.TryParse(claim, out var userId))
+    {
+        if (!environment.IsDevelopment()) throw new UnauthorizedAccessException("请先登录后再查看订单。");
+        userId = Guid.Empty;
+    }
+    return service.GetOrder(id, userId) is { } order ? Results.Ok(order) : Results.NotFound();
 });
 
 app.MapPost("/api/v1/reward-suggestions", (RewardSuggestionRequest request, TaskService service) => Results.Ok(service.SuggestReward(request)));

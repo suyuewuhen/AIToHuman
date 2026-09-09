@@ -1,9 +1,11 @@
 using AIToHuman.Contracts.Tasks;
 using AIToHuman.Domain.Tasks;
+using AIToHuman.Application.Orders;
+using AIToHuman.Domain.Orders;
 
 namespace AIToHuman.Application.Tasks;
 
-public sealed class TaskService(ITaskRepository repository, TimeProvider timeProvider)
+public sealed class TaskService(ITaskRepository repository, IOrderRepository orderRepository, TimeProvider timeProvider)
 {
     public TaskResponse Create(CreateTaskRequest request)
     {
@@ -36,12 +38,14 @@ public sealed class TaskService(ITaskRepository repository, TimeProvider timePro
         return Map(task);
     }
 
-    public TaskResponse Select(Guid id, Guid applicationId, SelectApplicationRequest request)
+    public SelectTaskResult Select(Guid id, Guid applicationId, SelectApplicationRequest request)
     {
         var task = GetOwned(id, request.OwnerId);
-        task.SelectApplication(applicationId);
+        var selected = task.SelectApplication(applicationId);
         repository.Save(task);
-        return Map(task);
+        var order = new Order(task.Id, task.OwnerId, selected.WorkerId, task.Title, task.Reward, timeProvider.GetUtcNow());
+        orderRepository.Add(order);
+        return new(Map(task), Map(order));
     }
 
     public IReadOnlyCollection<TaskApplicationResponse> ListApplications(Guid id, Guid ownerId)
@@ -53,6 +57,13 @@ public sealed class TaskService(ITaskRepository repository, TimeProvider timePro
     public IReadOnlyCollection<TaskSummaryResponse> ListPublished() => repository.ListPublished().Select(MapSummary).ToArray();
     public TaskResponse? Get(Guid id) => repository.Get(id) is { } task ? Map(task) : null;
     public TaskSummaryResponse? GetPublic(Guid id) => repository.Get(id) is { } task ? MapSummary(task) : null;
+    public OrderResponse? GetOrder(Guid id, Guid userId)
+    {
+        var order = orderRepository.Get(id);
+        if (order is null) return null;
+        if (order.OwnerId != userId && order.WorkerId != userId) throw new UnauthorizedAccessException("只有订单参与者可以查看订单。");
+        return Map(order);
+    }
 
     public RewardSuggestionResponse SuggestReward(RewardSuggestionRequest request)
     {
@@ -78,4 +89,5 @@ public sealed class TaskService(ITaskRepository repository, TimeProvider timePro
     private static TaskApplicationResponse MapApplication(TaskApplication application) => new(application.Id, application.WorkerId, application.Note, application.Status.ToString(), application.SubmittedAt);
 
     private static TaskSummaryResponse MapSummary(TaskItem task) => new(task.Id, task.OwnerId, task.Title, task.Description, task.District, task.Deadline, task.Reward.Amount, task.Reward.Currency, task.Status.ToString(), task.AcceptanceCriteria, task.Applications.Count);
+    private static OrderResponse Map(Order order) => new(order.Id, order.TaskId, order.OwnerId, order.WorkerId, order.Title, order.Reward.Amount, order.Reward.Currency, order.Status.ToString(), order.CreatedAt);
 }

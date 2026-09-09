@@ -7,6 +7,7 @@ public sealed class TaskDbContext(DbContextOptions<TaskDbContext> options) : DbC
     public DbSet<TaskRecord> Tasks => Set<TaskRecord>();
     public DbSet<ApplicationRecord> Applications => Set<ApplicationRecord>();
     public DbSet<UserRecord> Users => Set<UserRecord>();
+    public DbSet<OrderRecord> Orders => Set<OrderRecord>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -41,6 +42,17 @@ public sealed class TaskDbContext(DbContextOptions<TaskDbContext> options) : DbC
             entity.Property(item => item.PasswordHash).HasMaxLength(512).IsRequired();
             entity.Property(item => item.Role).HasMaxLength(16).IsRequired();
             entity.Property(item => item.CreatedAt).IsRequired();
+        });
+
+        modelBuilder.Entity<OrderRecord>(entity =>
+        {
+            entity.ToTable("orders");
+            entity.HasKey(item => item.Id);
+            entity.HasIndex(item => item.TaskId).IsUnique();
+            entity.Property(item => item.Title).HasMaxLength(80).IsRequired();
+            entity.Property(item => item.RewardAmount).HasPrecision(18, 2);
+            entity.Property(item => item.RewardCurrency).HasMaxLength(3).IsRequired();
+            entity.Property(item => item.Status).HasMaxLength(32).IsRequired();
         });
     }
 }
@@ -79,5 +91,18 @@ public sealed class UserRecord
     public string DisplayName { get; set; } = "";
     public string PasswordHash { get; set; } = "";
     public string Role { get; set; } = "worker";
+    public DateTimeOffset CreatedAt { get; set; }
+}
+
+public sealed class OrderRecord
+{
+    public Guid Id { get; set; }
+    public Guid TaskId { get; set; }
+    public Guid OwnerId { get; set; }
+    public Guid WorkerId { get; set; }
+    public string Title { get; set; } = "";
+    public decimal RewardAmount { get; set; }
+    public string RewardCurrency { get; set; } = "CNY";
+    public string Status { get; set; } = "Accepted";
     public DateTimeOffset CreatedAt { get; set; }
 }

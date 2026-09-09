@@ -124,8 +124,8 @@ async function selectApplication(task: TaskItem, application: TaskApplication) {
   selectingApplicationId.value = application.id
   applicationNotice.value = ''
   try {
-    await selectTaskApplication(task.id, application.id, authUser.value.userId)
-    applicationNotice.value = `已选择报名者，任务「${task.title}」进入已分配状态。`
+    const result = await selectTaskApplication(task.id, application.id, authUser.value.userId)
+    applicationNotice.value = `已选择报名者，任务「${task.title}」已创建订单（${result.order.status}）。`
     viewingApplicationsTaskId.value = ''
     await loadTasks()
   } catch (error) {

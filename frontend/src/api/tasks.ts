@@ -20,6 +20,23 @@ export interface TaskItem {
   applicationCount: number
 }
 
+export interface OrderItem {
+  id: string
+  taskId: string
+  ownerId: string
+  workerId: string
+  title: string
+  reward: number
+  currency: string
+  status: string
+  createdAt: string
+}
+
+export interface SelectTaskResult {
+  task: TaskItem
+  order: OrderItem
+}
+
 async function parseResponse<T>(response: Response): Promise<T> {
   if (response.ok) return response.json() as Promise<T>
   const problem = await response.json().catch(() => null) as { detail?: string } | null
@@ -47,8 +64,8 @@ export async function listTaskApplications(taskId: string, ownerId: string): Pro
   return parseResponse<TaskApplication[]>(await fetch(`/api/v1/tasks/${taskId}/applications?ownerId=${encodeURIComponent(ownerId)}`, { headers: authHeaders() }))
 }
 
-export async function selectTaskApplication(taskId: string, applicationId: string, ownerId: string): Promise<TaskItem> {
-  return parseResponse<TaskItem>(await fetch(`/api/v1/tasks/${taskId}/applications/${applicationId}/select`, {
+export async function selectTaskApplication(taskId: string, applicationId: string, ownerId: string): Promise<SelectTaskResult> {
+  return parseResponse<SelectTaskResult>(await fetch(`/api/v1/tasks/${taskId}/applications/${applicationId}/select`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify({ ownerId }),
