@@ -95,6 +95,8 @@ npm run dev
 
 前端地址为 `http://localhost:5173`，API 健康检查为 `http://localhost:5188/health`。任务与报名使用 PostgreSQL 持久化；Redis 和 MinIO 已提供本地依赖，后续里程碑接入缓存、实时通信和凭证存储。
 
+如果 Vite 输出 `http proxy error: ECONNREFUSED`，先确认后端终端仍在运行，并访问 `http://localhost:5188/health`。前端代理固定使用 `127.0.0.1:5188`，避免 Windows 将 `localhost` 解析到未监听的 IPv6 地址。
+
 ## 许可证
 
 尚未确定。确定开源策略前，保留全部权利；请勿将仓库内容视为已获开放源代码许可。

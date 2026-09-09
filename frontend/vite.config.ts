@@ -9,6 +9,6 @@ export default defineConfig({
   },
   server: {
     port: 5173,
-    proxy: { '/api': 'http://localhost:5188', '/health': 'http://localhost:5188' },
+    proxy: { '/api': 'http://127.0.0.1:5188', '/health': 'http://127.0.0.1:5188' },
   },
 })
