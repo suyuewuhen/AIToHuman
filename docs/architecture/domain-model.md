@@ -38,19 +38,23 @@ AI 与用户共同编辑的临时结构。保存字段完整性、风险检查�
 
 ```text
 Draft
-  ├─ user confirms + risk allowed → Published
+  ├─ user confirms + risk allowed → ReadyToPublish Task
   └─ user abandons               → Archived
+
+ReadyToPublish
+  ├─ owner publishes             → Published
+  └─ owner cancels               → Cancelled
 
 Published
   ├─ deadline reached            → Expired
   ├─ user cancels                → Cancelled
-  └─ offer selected              → Matched
+  └─ offer selected + order made → Assigned
 
-Matched
-  └─ order created               → Closed
+Assigned
+  └─ order reaches terminal state → Closed
 ```
 
-`Draft` 可建模为独立实体。正式 `Task` 建议从 `Published` 开始，避免草稿与大厅查询耦合。
+`TaskDraft` 是独立实体。确认操作固化字段并创建 `ReadyToPublish` Task，发布是随后由所有者执行的独立命令。这样用户可以在最终公开前预览；Task 一旦进入 `Published`，其交易快照不再被草稿编辑影响。
 
 ## 3. 报价状态
 
@@ -62,15 +66,11 @@ Pending
   └─ task unavailable → Expired
 ```
 
-报价选择必须在数据库事务中检查任务状态，并使用并发令牌保证最多一份报价成功。
+报价在服务者声明的有效期内构成接单承诺。报价选择必须在数据库事务中检查任务状态和报价有效期，并使用并发令牌保证最多一份报价成功；成功后订单直接进入 `Accepted`。
 
 ## 4. 订单状态
 
 ```text
-PendingAcceptance
-  ├─ worker accepts → Accepted
-  └─ timeout/reject → Cancelled
-
 Accepted → EnRoute → InProgress → AwaitingReview
                                       ├─ accepted → Completed
                                       ├─ rejected → InProgress
@@ -86,18 +86,18 @@ Disputed
   └─ terminate        → Cancelled
 ```
 
-是否需要 `PendingAcceptance` 取决于报价本身是否构成服务者承诺；在编码前应明确。首版建议保留，以处理服务者离线和超时。
+首版不设置 `PendingAcceptance`。服务者无法履行时必须走受审计的取消流程，平台据此计算履约指标；未来若引入非承诺型推荐或抢单模式，再通过独立 ADR 扩展状态机。
 
 ## 5. 不变量
 
 - Task 必须有所有者、截止时间、地点范围和至少一项验收标准。
-- Published Task 必须具有通过的风险决策版本。
+- Published Task 必须具有通过的风险决策版本。`ReadyToPublish` Task 只有所有者可以发布，发布时必须重新验证截止时间和风险决策是否仍有效。
 - 同一 Task 最多一个非终态 Order。
 - Offer 的服务者不能是 Task 所有者。
 - Order 的用户、服务者、任务快照和报价快照创建后不可替换。
 - 状态转换必须同时验证操作者、当前状态和必要材料。
 - AwaitingReview 必须至少有一份通过安全检查的 Evidence。
-- Completed、Cancelled 是普通流程下的终态；纠错由受控运营命令产生补偿事件。
+- Completed、Cancelled 是普通流程下的终态；纠错由受控运营命令产生补偿事件。终态任务和订单不重新开启；再次履约通过复制必要字段创建拥有新标识和新审计链的任务。
 
 ## 6. 领域事件
 
