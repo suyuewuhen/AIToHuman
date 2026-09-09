@@ -77,7 +77,11 @@ function draftDeadline() {
 }
 
 async function openPublishPreview() {
-  if (!authUser.value || !isOwner.value) {
+  if (authUser.value && !isOwner.value) {
+    applicationNotice.value = '当前账户是服务者，不能发布需求方任务。请退出后登录或注册一个“需求方”账户。'
+    return
+  }
+  if (!authUser.value && !session.value) {
     applicationNotice.value = '请先登录需求方账户，才能创建并发布任务。'
     authMode.value = 'login'
     authOpen.value = true
@@ -87,7 +91,7 @@ async function openPublishPreview() {
   publishError.value = ''
   try {
     const task = await createTask({
-      ownerId: authUser.value.userId,
+      ownerId: authUser.value?.userId ?? session.value!.userId,
       title: '明日下午代取并递送文件',
       description: prompt.value,
       district: '徐汇区 → 静安区',
@@ -104,11 +108,11 @@ async function openPublishPreview() {
 }
 
 async function confirmPublish() {
-  if (!publishPreview.value || !authUser.value) return
+  if (!publishPreview.value) return
   publishing.value = true
   publishError.value = ''
   try {
-    await publishTask(publishPreview.value.id, authUser.value.userId)
+    await publishTask(publishPreview.value.id, authUser.value?.userId ?? publishPreview.value.ownerId)
     applicationNotice.value = `任务「${publishPreview.value.title}」已发布到任务大厅。`
     publishPreview.value = null
     await loadTasks()
