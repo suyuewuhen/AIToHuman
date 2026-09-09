@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { requestRewardSuggestion } from './api/rewards'
+import { getDevSession, type DevSession } from './api/session'
 import { applyForTask, listPublishedTasks, listTaskApplications, selectTaskApplication, type TaskApplication, type TaskItem } from './api/tasks'
 
 type Step = { label: string; done: boolean }
@@ -12,6 +13,8 @@ const planning = ref(false)
 const suggestionMin = ref(55)
 const suggestionMax = ref(75)
 const suggestionSource = ref('演示建议')
+const session = ref<DevSession | null>(null)
+const sessionError = ref('')
 const tasks = ref<TaskItem[]>([])
 const hallLoading = ref(true)
 const hallError = ref('')
@@ -21,7 +24,6 @@ const viewingApplicationsTaskId = ref('')
 const taskApplications = ref<TaskApplication[]>([])
 const applicationsLoading = ref(false)
 const selectingApplicationId = ref('')
-const demoWorkerId = '20000000-0000-0000-0000-000000000001'
 const steps = ref<Step[]>([
   { label: '确认取件地址与联系人', done: true },
   { label: '核对送达时间窗口', done: true },
@@ -64,10 +66,14 @@ async function loadTasks() {
 }
 
 async function apply(task: TaskItem) {
+  if (!session.value) {
+    applicationNotice.value = '开发会话尚未就绪，请稍后重试。'
+    return
+  }
   applyingTaskId.value = task.id
   applicationNotice.value = ''
   try {
-    await applyForTask(task.id, demoWorkerId, '我已查看任务要求，可以按固定悬赏完成。')
+    await applyForTask(task.id, session.value.userId, '我已查看任务要求，可以按固定悬赏完成。')
     applicationNotice.value = `已报名「${task.title}」`
     await loadTasks()
   } catch (error) {
@@ -111,7 +117,18 @@ function formatDeadline(value: string) {
   return new Intl.DateTimeFormat('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(value))
 }
 
-onMounted(loadTasks)
+async function loadDevSession() {
+  try {
+    session.value = await getDevSession()
+  } catch (error) {
+    sessionError.value = error instanceof Error ? error.message : '开发会话加载失败'
+  }
+}
+
+onMounted(async () => {
+  await loadDevSession()
+  await loadTasks()
+})
 </script>
 
 <template>
@@ -126,7 +143,7 @@ onMounted(loadTasks)
         <a href="#hall">任务大厅</a>
         <a href="#orders">我的订单</a>
       </div>
-      <button class="profile" type="button"><span>曹</span> 需求方 · 试用账户</button>
+      <button class="profile" type="button"><span>{{ session?.displayName.slice(0, 1) ?? '开' }}</span> {{ session?.displayName ?? '开发会话' }} · {{ session?.role === 'worker' ? '服务者' : '需求方' }}</button>
     </nav>
 
     <section class="hero">
@@ -215,6 +232,7 @@ onMounted(loadTasks)
       </header>
 
       <p v-if="applicationNotice" class="notice">{{ applicationNotice }}</p>
+      <p v-if="sessionError" class="notice warning">{{ sessionError }}</p>
       <div v-if="hallLoading" class="hall-state">正在从 PostgreSQL 读取任务…</div>
       <div v-else-if="hallError" class="hall-state error">
         <strong>任务大厅暂时离线</strong><span>{{ hallError }}</span><button type="button" @click="loadTasks">重新连接</button>

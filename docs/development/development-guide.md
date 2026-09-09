@@ -16,6 +16,7 @@
 
 - 所有可共享配置提供 `.env.example` 或 `appsettings` 示例，不包含密钥。
 - 本地秘密使用 .NET User Secrets 或环境变量。
+- 本地联调可使用 `GET /api/v1/session/dev` 获取合成开发会话；该接口仅在 Development 环境开放，不能替代正式登录或授权。
 - 数据库结构只通过 EF Core Migration 演进。
 - 示例数据必须为合成数据。
 - 一条命令应能启动依赖，一条命令应能执行全部必要检查。

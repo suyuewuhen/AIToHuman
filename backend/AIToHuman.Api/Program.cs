@@ -1,5 +1,6 @@
 using AIToHuman.Application.Tasks;
 using AIToHuman.Contracts.Tasks;
+using AIToHuman.Contracts;
 using AIToHuman.Domain.Common;
 using AIToHuman.Infrastructure.Tasks;
 using AIToHuman.Infrastructure.Persistence;
@@ -58,6 +59,12 @@ app.UseExceptionHandler(errorApp => errorApp.Run(async context =>
 if (app.Environment.IsDevelopment()) app.UseCors("development");
 
 app.MapGet("/health", () => Results.Ok(new { status = "healthy", service = "AIToHuman.Api", utc = DateTimeOffset.UtcNow }));
+
+app.MapGet("/api/v1/session/dev", (IHostEnvironment environment) =>
+{
+    if (!environment.IsDevelopment()) return Results.NotFound();
+    return Results.Ok(new DevSessionResponse(Guid.Parse("20000000-0000-0000-0000-000000000001"), "开发服务者", "worker", ["owner", "worker"], true));
+});
 
 var tasks = app.MapGroup("/api/v1/tasks");
 tasks.MapGet("/", (TaskService service) => Results.Ok(service.ListPublished()));

@@ -12,6 +12,7 @@
 **/dist/
 **/.vite/
 **/.cache/
+**/.build/
 *.tsbuildinfo
 *.local
 
