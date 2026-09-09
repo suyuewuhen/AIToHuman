@@ -13,6 +13,8 @@
 **/.vite/
 **/.cache/
 **/.build/
+**/.authbuild*/
+**/.verifyauth/
 *.tsbuildinfo
 *.local
 

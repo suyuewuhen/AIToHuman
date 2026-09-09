@@ -26,26 +26,32 @@ async function parseResponse<T>(response: Response): Promise<T> {
   throw new Error(problem?.detail ?? `请求失败（${response.status}）`)
 }
 
+function authHeaders(): HeadersInit {
+  const token = getAccessToken()
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
+
 export async function listPublishedTasks(): Promise<TaskItem[]> {
-  return parseResponse<TaskItem[]>(await fetch('/api/v1/tasks'))
+  return parseResponse<TaskItem[]>(await fetch('/api/v1/tasks', { headers: authHeaders() }))
 }
 
 export async function applyForTask(taskId: string, workerId: string, note: string): Promise<TaskItem> {
   return parseResponse<TaskItem>(await fetch(`/api/v1/tasks/${taskId}/applications`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify({ workerId, note }),
   }))
 }
 
 export async function listTaskApplications(taskId: string, ownerId: string): Promise<TaskApplication[]> {
-  return parseResponse<TaskApplication[]>(await fetch(`/api/v1/tasks/${taskId}/applications?ownerId=${encodeURIComponent(ownerId)}`))
+  return parseResponse<TaskApplication[]>(await fetch(`/api/v1/tasks/${taskId}/applications?ownerId=${encodeURIComponent(ownerId)}`, { headers: authHeaders() }))
 }
 
 export async function selectTaskApplication(taskId: string, applicationId: string, ownerId: string): Promise<TaskItem> {
   return parseResponse<TaskItem>(await fetch(`/api/v1/tasks/${taskId}/applications/${applicationId}/select`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify({ ownerId }),
   }))
 }
+import { getAccessToken } from './auth'

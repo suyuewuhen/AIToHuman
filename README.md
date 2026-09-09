@@ -80,7 +80,8 @@ AIToHuman/
 
 ```powershell
 dotnet restore AIToHuman.sln --configfile NuGet.Config
-dotnet run --project backend/AIToHuman.Api
+$env:ASPNETCORE_ENVIRONMENT="Development"
+dotnet run --project backend/AIToHuman.Api --urls http://127.0.0.1:5188
 ```
 
 如果本机没有 PostgreSQL，也可以使用 `docker compose up -d postgres` 启动仓库定义的隔离开发数据库；此时请用环境变量覆盖连接串。
@@ -92,6 +93,8 @@ Set-Location frontend
 npm install
 npm run dev
 ```
+
+必须先启动后端，再启动 Vite；否则浏览器会看到 `vite http proxy error: ECONNREFUSED 127.0.0.1:5188`。可以先访问 `http://127.0.0.1:5188/health`，确认返回 `healthy` 后再打开前端。
 
 前端地址为 `http://localhost:5173`，API 健康检查为 `http://localhost:5188/health`。任务与报名使用 PostgreSQL 持久化；Redis 和 MinIO 已提供本地依赖，后续里程碑接入缓存、实时通信和凭证存储。
 

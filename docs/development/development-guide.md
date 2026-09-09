@@ -10,7 +10,7 @@
 - Docker Desktop / Docker Engine + Compose
 - PostgreSQL、Redis 和 MinIO（推荐通过 Compose 启动）
 
-仓库已经生成 Vue 与 ASP.NET Core 骨架。任务仓储支持 EF Core/PostgreSQL；未配置 `ConnectionStrings__Postgres` 时开发环境自动回退到内存实现，方便在没有 Docker 的机器上验证领域规则与 API。版本通过 `global.json`、`packageManager` 和容器镜像固定。
+仓库已经生成 Vue 与 ASP.NET Core 骨架。任务仓储支持 EF Core/PostgreSQL；未配置 `ConnectionStrings__Postgres` 时开发环境使用内存实现，方便在没有数据库的机器上验证领域规则与 API。配置了连接串但数据库暂时不可达时，API 会记录清晰错误并启动，后续数据库接口请求会失败，避免静默丢数据。版本通过 `global.json`、`packageManager` 和容器镜像固定。
 
 ## 2. 本地开发原则
 
@@ -18,6 +18,7 @@
 - 本地秘密使用 .NET User Secrets 或环境变量。
 - 本地联调可使用 `GET /api/v1/session/dev` 获取合成开发会话；该接口仅在 Development 环境开放，不能替代正式登录或授权。
 - 数据库结构只通过 EF Core Migration 演进。
+- 早期 `EnsureCreated()` 生成的本地开发库没有迁移历史；API 启动时会幂等补齐认证所需的 `users` 表，后续新环境使用 EF Core Migration。
 - 示例数据必须为合成数据。
 - 一条命令应能启动依赖，一条命令应能执行全部必要检查。
 

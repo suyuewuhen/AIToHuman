@@ -6,6 +6,7 @@ public sealed class TaskDbContext(DbContextOptions<TaskDbContext> options) : DbC
 {
     public DbSet<TaskRecord> Tasks => Set<TaskRecord>();
     public DbSet<ApplicationRecord> Applications => Set<ApplicationRecord>();
+    public DbSet<UserRecord> Users => Set<UserRecord>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -28,6 +29,18 @@ public sealed class TaskDbContext(DbContextOptions<TaskDbContext> options) : DbC
             entity.Property(item => item.Status).HasConversion<string>().HasMaxLength(32);
             entity.Property(item => item.Note).HasMaxLength(1000);
             entity.HasIndex(item => new { item.TaskId, item.WorkerId, item.Status });
+        });
+
+        modelBuilder.Entity<UserRecord>(entity =>
+        {
+            entity.ToTable("users");
+            entity.HasKey(item => item.Id);
+            entity.HasIndex(item => item.Email).IsUnique();
+            entity.Property(item => item.Email).HasMaxLength(320).IsRequired();
+            entity.Property(item => item.DisplayName).HasMaxLength(80).IsRequired();
+            entity.Property(item => item.PasswordHash).HasMaxLength(512).IsRequired();
+            entity.Property(item => item.Role).HasMaxLength(16).IsRequired();
+            entity.Property(item => item.CreatedAt).IsRequired();
         });
     }
 }
@@ -57,4 +70,14 @@ public sealed class ApplicationRecord
     public string Note { get; set; } = "";
     public DateTimeOffset SubmittedAt { get; set; }
     public string Status { get; set; } = "Pending";
+}
+
+public sealed class UserRecord
+{
+    public Guid Id { get; set; }
+    public string Email { get; set; } = "";
+    public string DisplayName { get; set; } = "";
+    public string PasswordHash { get; set; } = "";
+    public string Role { get; set; } = "worker";
+    public DateTimeOffset CreatedAt { get; set; }
 }
