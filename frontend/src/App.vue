@@ -3,7 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { requestRewardSuggestion } from './api/rewards'
 import { getDevSession, type DevSession } from './api/session'
 import { clearAccessToken, getAccessToken, getCurrentUser, login, register, switchRole, type ActiveRole, type AuthResponse } from './api/auth'
-import { applyForTask, createTask, listPublishedTasks, listTaskApplications, publishTask, selectTaskApplication, type TaskApplication, type TaskItem } from './api/tasks'
+import { applyForTask, createTask, listMyOrders, listPublishedTasks, listTaskApplications, publishTask, selectTaskApplication, type OrderItem, type TaskApplication, type TaskItem } from './api/tasks'
 
 type Step = { label: string; done: boolean }
 
