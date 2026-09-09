@@ -198,6 +198,7 @@ tasks.MapGet("/{id:guid}/order", (Guid id, ClaimsPrincipal user, IHostEnvironmen
 });
 
 app.MapPost("/api/v1/reward-suggestions", (RewardSuggestionRequest request, TaskService service) => Results.Ok(service.SuggestReward(request)));
+app.MapGet("/api/v1/orders", (Guid? userId, ClaimsPrincipal user, IHostEnvironment environment, TaskService service) => Results.Ok(service.ListOrders(ResolveUserId(user, userId ?? Guid.Empty, environment))));
 
 app.Run();
 

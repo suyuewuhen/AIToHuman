@@ -127,6 +127,12 @@ h1 em { color: var(--acid); font-style: normal; }
 .trust-strip span { padding: 7px 11px; border: 1px solid var(--line); color: #606963; font-size: 10px; letter-spacing: .05em; }
 
 .task-hall { max-width: 1420px; margin: 92px auto 54px; }
+.orders-section { max-width: 1420px; margin: 92px auto 54px; }
+.orders-list { border-left: 1px solid var(--ink); border-top: 1px solid var(--ink); }
+.order-row { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 20px 25px; border-right: 1px solid var(--ink); border-bottom: 1px solid var(--ink); background: rgba(247,243,232,.72); }
+.order-row small,.order-row span { color: #747b77; font-size: 10px; }
+.order-row h3 { margin: 8px 0; font: 700 18px 'Noto Serif SC',serif; }
+.order-row > strong { color: var(--acid); font: 700 24px Georgia,serif; }
 .hall-head { display: flex; align-items: end; justify-content: space-between; padding-bottom: 24px; border-bottom: 1px solid var(--ink); }
 .hall-head h2 { margin: 5px 0 8px; font: 900 clamp(34px,4vw,52px) 'Noto Serif SC',serif; letter-spacing: -.04em; }
 .hall-head p:last-child { margin: 0; color: #626b66; font-size: 13px; }

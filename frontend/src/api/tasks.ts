@@ -77,6 +77,10 @@ export async function publishTask(taskId: string, ownerId: string): Promise<Task
   }))
 }
 
+export async function listMyOrders(userId: string): Promise<OrderItem[]> {
+  return parseResponse<OrderItem[]>(await fetch(`/api/v1/orders?userId=${encodeURIComponent(userId)}`, { headers: authHeaders() }))
+}
+
 export async function applyForTask(taskId: string, workerId: string, note: string): Promise<TaskItem> {
   return parseResponse<TaskItem>(await fetch(`/api/v1/tasks/${taskId}/applications`, {
     method: 'POST',

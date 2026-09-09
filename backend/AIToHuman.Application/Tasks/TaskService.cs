@@ -64,6 +64,7 @@ public sealed class TaskService(ITaskRepository repository, IOrderRepository ord
         if (order.OwnerId != userId && order.WorkerId != userId) throw new UnauthorizedAccessException("只有订单参与者可以查看订单。");
         return Map(order);
     }
+    public IReadOnlyCollection<OrderResponse> ListOrders(Guid userId) => orderRepository.ListByUser(userId).Select(Map).ToArray();
 
     public RewardSuggestionResponse SuggestReward(RewardSuggestionRequest request)
     {

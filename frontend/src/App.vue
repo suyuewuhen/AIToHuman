@@ -37,6 +37,9 @@ const selectingApplicationId = ref('')
 const publishing = ref(false)
 const publishPreview = ref<TaskItem | null>(null)
 const publishError = ref('')
+const orders = ref<OrderItem[]>([])
+const ordersLoading = ref(false)
+const ordersError = ref('')
 const steps = ref<Step[]>([
   { label: '确认取件地址与联系人', done: true },
   { label: '核对送达时间窗口', done: true },
@@ -138,6 +141,16 @@ async function loadTasks() {
   }
 }
 
+async function loadOrders() {
+  const userId = authUser.value?.userId ?? session.value?.userId
+  if (!userId) return
+  ordersLoading.value = true
+  ordersError.value = ''
+  try { orders.value = await listMyOrders(userId) }
+  catch (error) { ordersError.value = error instanceof Error ? error.message : '订单加载失败' }
+  finally { ordersLoading.value = false }
+}
+
 async function apply(task: TaskItem) {
   const workerId = authUser.value?.role === 'worker' ? authUser.value.userId : session.value?.userId
   if (!workerId) {
@@ -150,6 +163,7 @@ async function apply(task: TaskItem) {
     await applyForTask(task.id, workerId, '我已查看任务要求，可以按固定悬赏完成。')
     applicationNotice.value = `已报名「${task.title}」`
     await loadTasks()
+    await loadOrders()
   } catch (error) {
     applicationNotice.value = error instanceof Error ? error.message : '报名失败'
   } finally {
@@ -188,6 +202,7 @@ async function selectApplication(task: TaskItem, application: TaskApplication) {
     applicationNotice.value = `已选择报名者，任务「${task.title}」已创建订单（${result.order.status}）。`
     viewingApplicationsTaskId.value = ''
     await loadTasks()
+    await loadOrders()
   } catch (error) {
     applicationNotice.value = error instanceof Error ? error.message : '选择报名者失败'
   } finally {
@@ -258,6 +273,7 @@ async function changeRole(role: ActiveRole) {
 function logout() {
   clearAccessToken()
   authUser.value = null
+  orders.value = []
   roleMenuOpen.value = false
   applicationNotice.value = '已退出登录，当前为开发会话。'
 }
@@ -266,6 +282,7 @@ onMounted(async () => {
   await restoreAuth()
   await loadDevSession()
   await loadTasks()
+  await loadOrders()
 })
 </script>
 
@@ -441,6 +458,16 @@ onMounted(async () => {
             </div>
           </div>
         </article>
+      </div>
+    </section>
+
+    <section id="orders" class="orders-section">
+      <header class="hall-head"><div><p class="eyebrow">ORDER DESK / 03</p><h2>我的订单</h2><p>查看已选中的服务安排与固定悬赏。</p></div><button type="button" @click="loadOrders">刷新订单 <span>↻</span></button></header>
+      <div v-if="ordersLoading" class="hall-state">正在读取订单…</div>
+      <div v-else-if="ordersError" class="hall-state error"><strong>订单暂时离线</strong><span>{{ ordersError }}</span><button type="button" @click="loadOrders">重新连接</button></div>
+      <div v-else-if="orders.length === 0" class="hall-state"><strong>还没有订单</strong><span>选择报名者后，订单会显示在这里。</span></div>
+      <div v-else class="orders-list">
+        <article v-for="order in orders" :key="order.id" class="order-row"><div><small>{{ formatDeadline(order.createdAt) }} · {{ order.status }}</small><h3>{{ order.title }}</h3><span>订单号 {{ order.id.slice(0, 8) }}</span></div><strong>¥{{ order.reward }}</strong></article>
       </div>
     </section>
 
