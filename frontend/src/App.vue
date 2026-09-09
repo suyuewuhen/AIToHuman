@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { requestRewardSuggestion } from './api/rewards'
+import { applyForTask, listPublishedTasks, type TaskItem } from './api/tasks'
 
 type Step = { label: string; done: boolean }
 
@@ -11,6 +12,12 @@ const planning = ref(false)
 const suggestionMin = ref(55)
 const suggestionMax = ref(75)
 const suggestionSource = ref('演示建议')
+const tasks = ref<TaskItem[]>([])
+const hallLoading = ref(true)
+const hallError = ref('')
+const applyingTaskId = ref('')
+const applicationNotice = ref('')
+const demoWorkerId = '20000000-0000-0000-0000-000000000001'
 const steps = ref<Step[]>([
   { label: '确认取件地址与联系人', done: true },
   { label: '核对送达时间窗口', done: true },
@@ -39,6 +46,38 @@ async function submitPrompt() {
 function increaseReward() {
   reward.value += 5
 }
+
+async function loadTasks() {
+  hallLoading.value = true
+  hallError.value = ''
+  try {
+    tasks.value = await listPublishedTasks()
+  } catch (error) {
+    hallError.value = error instanceof Error ? error.message : '任务大厅加载失败'
+  } finally {
+    hallLoading.value = false
+  }
+}
+
+async function apply(task: TaskItem) {
+  applyingTaskId.value = task.id
+  applicationNotice.value = ''
+  try {
+    await applyForTask(task.id, demoWorkerId, '我已查看任务要求，可以按固定悬赏完成。')
+    applicationNotice.value = `已报名「${task.title}」`
+    await loadTasks()
+  } catch (error) {
+    applicationNotice.value = error instanceof Error ? error.message : '报名失败'
+  } finally {
+    applyingTaskId.value = ''
+  }
+}
+
+function formatDeadline(value: string) {
+  return new Intl.DateTimeFormat('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(value))
+}
+
+onMounted(loadTasks)
 </script>
 
 <template>
@@ -129,6 +168,45 @@ function increaseReward() {
           <p class="guardrail">服务者按固定悬赏报名，不进行竞价。发布后、分配前你仍可以加价。</p>
         </div>
       </aside>
+    </section>
+
+    <section id="hall" class="task-hall">
+      <header class="hall-head">
+        <div>
+          <p class="eyebrow">OPEN TASK BOARD / 02</p>
+          <h2>任务大厅</h2>
+          <p>价格由用户确认，服务者按固定悬赏报名。先看清任务，也看清彼此。</p>
+        </div>
+        <button type="button" @click="loadTasks">刷新任务 <span>↻</span></button>
+      </header>
+
+      <p v-if="applicationNotice" class="notice">{{ applicationNotice }}</p>
+      <div v-if="hallLoading" class="hall-state">正在从 PostgreSQL 读取任务…</div>
+      <div v-else-if="hallError" class="hall-state error">
+        <strong>任务大厅暂时离线</strong><span>{{ hallError }}</span><button type="button" @click="loadTasks">重新连接</button>
+      </div>
+      <div v-else-if="tasks.length === 0" class="hall-state">
+        <strong>还没有可报名的任务</strong><span>发布第一条任务后，它会出现在这里。</span>
+      </div>
+      <div v-else class="task-grid">
+        <article v-for="(task, index) in tasks" :key="task.id" class="task-card">
+          <div class="task-meta"><span>NO. {{ String(index + 1).padStart(2, '0') }}</span><span>{{ task.district }}</span></div>
+          <h3>{{ task.title }}</h3>
+          <p>{{ task.description }}</p>
+          <div class="task-facts">
+            <div><small>固定悬赏</small><strong>¥{{ task.reward }}</strong></div>
+            <div><small>截止</small><strong>{{ formatDeadline(task.deadline) }}</strong></div>
+          </div>
+          <div class="owner-trust">
+            <span class="mini-avatar">需</span>
+            <div><strong>需求方信用待接入</strong><small>已公开评价将在这里展示</small></div>
+          </div>
+          <div class="task-actions">
+            <span>{{ task.applications.length }} 人已报名</span>
+            <button type="button" :disabled="applyingTaskId === task.id" @click="apply(task)">{{ applyingTaskId === task.id ? '提交中…' : '按此悬赏报名' }}</button>
+          </div>
+        </article>
+      </div>
     </section>
 
     <footer class="trust-strip">

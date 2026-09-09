@@ -91,6 +91,38 @@ h1 em { color: var(--acid); font-style: normal; }
 .trust-strip { max-width: 1420px; margin: 22px auto 0; display: flex; gap: 10px; flex-wrap: wrap; }
 .trust-strip span { padding: 7px 11px; border: 1px solid var(--line); color: #606963; font-size: 10px; letter-spacing: .05em; }
 
+.task-hall { max-width: 1420px; margin: 92px auto 54px; }
+.hall-head { display: flex; align-items: end; justify-content: space-between; padding-bottom: 24px; border-bottom: 1px solid var(--ink); }
+.hall-head h2 { margin: 5px 0 8px; font: 900 clamp(34px,4vw,52px) 'Noto Serif SC',serif; letter-spacing: -.04em; }
+.hall-head p:last-child { margin: 0; color: #626b66; font-size: 13px; }
+.hall-head button, .hall-state button { border: 1px solid var(--ink); background: transparent; padding: 10px 14px; cursor: pointer; }
+.hall-head button span { color: var(--acid); margin-left: 8px; font-size: 17px; }
+.notice { padding: 12px 16px; margin: 18px 0 0; background: var(--green); color: white; font-size: 13px; animation: rise .35s ease both; }
+.hall-state { min-height: 210px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; border-bottom: 1px solid var(--line); color: #747b77; }
+.hall-state strong { font: 700 20px 'Noto Serif SC',serif; color: var(--ink); }
+.hall-state.error strong { color: #9a321f; }
+.hall-state button { margin-top: 8px; }
+.task-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); border-left: 1px solid var(--ink); }
+.task-card { min-width: 0; padding: 25px; background: rgba(247,243,232,.72); border-right: 1px solid var(--ink); border-bottom: 1px solid var(--ink); transition: background .2s, transform .2s; }
+.task-card:hover { background: #fffaf0; transform: translateY(-3px); }
+.task-meta { display: flex; justify-content: space-between; color: var(--green); font: 600 10px Georgia,serif; letter-spacing: .08em; }
+.task-card h3 { margin: 22px 0 10px; font: 700 22px/1.35 'Noto Serif SC',serif; }
+.task-card > p { height: 44px; overflow: hidden; margin: 0; color: #626b66; font-size: 12px; line-height: 1.7; }
+.task-facts { display: grid; grid-template-columns: 1fr 1fr; margin: 23px 0; border: 1px solid var(--line); }
+.task-facts div { padding: 13px; }
+.task-facts div + div { border-left: 1px solid var(--line); }
+.task-facts small,.owner-trust small { display: block; margin-bottom: 5px; color: #747b77; font-size: 9px; }
+.task-facts strong { font: 700 17px Georgia,'Noto Serif SC',serif; }
+.task-facts div:first-child strong { color: var(--acid); font-size: 22px; }
+.owner-trust { display: flex; align-items: center; gap: 10px; padding-bottom: 18px; }
+.owner-trust strong { display: block; font-size: 11px; }
+.mini-avatar { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 50%; background: #d7d1c2; font: 700 11px 'Noto Serif SC',serif; }
+.task-actions { display: flex; align-items: center; justify-content: space-between; border-top: 1px solid var(--line); padding-top: 16px; }
+.task-actions > span { color: #747b77; font-size: 10px; }
+.task-actions button { border: 0; padding: 10px 12px; background: var(--ink); color: white; cursor: pointer; font-size: 11px; }
+.task-actions button:hover:not(:disabled) { background: var(--acid); }
+.task-actions button:disabled { opacity: .55; }
+
 @keyframes rise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes pulse { 70% { box-shadow: 0 0 0 10px rgba(255,90,54,0); } 100% { box-shadow: 0 0 0 0 rgba(255,90,54,0); } }
 
@@ -102,6 +134,7 @@ h1 em { color: var(--acid); font-style: normal; }
   .workspace { grid-template-columns: 1fr; }
   .conversation { border-right: 0; border-bottom: 1px solid var(--ink); }
   .messages { min-height: 260px; }
+  .task-grid { grid-template-columns: 1fr 1fr; }
 }
 
 @media (max-width: 560px) {
@@ -115,6 +148,8 @@ h1 em { color: var(--acid); font-style: normal; }
   .composer { margin: auto 20px 20px; }
   .composer-actions > span { display: none; }
   .composer-actions { justify-content: flex-end; }
+  .hall-head { align-items: flex-start; flex-direction: column; gap: 20px; }
+  .task-grid { grid-template-columns: 1fr; }
 }
 
 @media (prefers-reduced-motion: reduce) {
