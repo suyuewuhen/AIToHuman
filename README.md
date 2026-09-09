@@ -76,14 +76,14 @@ AIToHuman/
 
 ### 本地启动
 
-前提：.NET 10 SDK、Node.js 24、npm。需要持久化验证时再安装 Docker；未配置 PostgreSQL 连接串时 API 会自动使用内存仓储。
+前提：.NET 10 SDK、Node.js 24、npm，以及本机 PostgreSQL。当前本机开发连接使用 `localhost:5432` 的 `postgres` 用户和 `postgres` 数据库，密码保存在被 Git 忽略的 `backend/AIToHuman.Api/appsettings.Development.json` 中。部署或其他机器请通过 `ConnectionStrings__Postgres` 覆盖。
 
 ```powershell
 dotnet restore AIToHuman.sln --configfile NuGet.Config
 dotnet run --project backend/AIToHuman.Api
 ```
 
-需要本地基础设施时，先执行 `docker compose up -d`，API 会自动连接 PostgreSQL。
+如果本机没有 PostgreSQL，也可以使用 `docker compose up -d postgres` 启动仓库定义的隔离开发数据库；此时请用环境变量覆盖连接串。
 
 另开一个终端：
 
@@ -93,7 +93,7 @@ npm install
 npm run dev
 ```
 
-前端地址为 `http://localhost:5173`，API 健康检查为 `http://localhost:5188/health`。配置 PostgreSQL 后任务与报名持久化；Redis 和 MinIO 已提供本地依赖，后续里程碑接入缓存、实时通信和凭证存储。
+前端地址为 `http://localhost:5173`，API 健康检查为 `http://localhost:5188/health`。任务与报名使用 PostgreSQL 持久化；Redis 和 MinIO 已提供本地依赖，后续里程碑接入缓存、实时通信和凭证存储。
 
 ## 许可证
 

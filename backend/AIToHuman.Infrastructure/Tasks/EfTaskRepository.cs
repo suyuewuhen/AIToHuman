@@ -19,6 +19,7 @@ public sealed class EfTaskRepository(TaskDbContext db) : ITaskRepository
         .ToArray();
 
     public TaskItem? Get(Guid id) => db.Tasks
+        .AsNoTracking()
         .Include(task => task.Applications)
         .SingleOrDefault(task => task.Id == id) is { } record ? Map(record) : null;
 
@@ -30,18 +31,24 @@ public sealed class EfTaskRepository(TaskDbContext db) : ITaskRepository
 
     public void Save(TaskItem task)
     {
-        var record = db.Tasks.Include(item => item.Applications).Single(item => item.Id == task.Id);
+        var record = db.Tasks.Single(item => item.Id == task.Id);
         record.Status = task.Status.ToString();
         record.RewardAmount = task.Reward.Amount;
         record.RewardCurrency = task.Reward.Currency;
-        foreach (var existing in record.Applications)
+        var storedApplications = db.Applications.Where(item => item.TaskId == task.Id).ToDictionary(item => item.Id);
+        foreach (var current in task.Applications)
         {
-            var current = task.Applications.SingleOrDefault(item => item.Id == existing.Id);
-            if (current is not null) existing.Status = current.Status.ToString();
+            if (storedApplications.TryGetValue(current.Id, out var existing))
+            {
+                existing.Status = current.Status.ToString();
+                existing.Note = current.Note;
+                existing.SubmittedAt = current.SubmittedAt;
+            }
+            else
+            {
+                db.Applications.Add(ToRecord(current, task.Id));
+            }
         }
-
-        var existingIds = record.Applications.Select(item => item.Id).ToHashSet();
-        record.Applications.AddRange(task.Applications.Where(item => !existingIds.Contains(item.Id)).Select(item => ToRecord(item, task.Id)));
         db.SaveChanges();
     }
 
