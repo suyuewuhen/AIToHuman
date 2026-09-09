@@ -46,6 +46,7 @@ public sealed class TaskService(ITaskRepository repository, TimeProvider timePro
 
     public IReadOnlyCollection<TaskSummaryResponse> ListPublished() => repository.ListPublished().Select(MapSummary).ToArray();
     public TaskResponse? Get(Guid id) => repository.Get(id) is { } task ? Map(task) : null;
+    public TaskSummaryResponse? GetPublic(Guid id) => repository.Get(id) is { } task ? MapSummary(task) : null;
 
     public RewardSuggestionResponse SuggestReward(RewardSuggestionRequest request)
     {
