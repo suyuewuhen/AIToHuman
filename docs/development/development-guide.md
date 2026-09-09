@@ -2,15 +2,15 @@
 
 ## 1. 前提条件
 
-计划使用：
+当前使用：
 
-- .NET SDK 8 LTS 或项目确定后的更新 LTS 版本
-- Node.js LTS
-- pnpm
+- .NET SDK 10（由 `global.json` 锁定）
+- Node.js 24
+- npm 11（由 `package.json` 声明）
 - Docker Desktop / Docker Engine + Compose
 - PostgreSQL、Redis 和 MinIO（推荐通过 Compose 启动）
 
-仓库尚未生成应用代码，实际版本会在初始化里程碑锁定，并通过 `global.json`、`packageManager` 和容器镜像固定。
+仓库已经生成 Vue 与 ASP.NET Core 骨架。当前任务仓储是内存实现，用于尽早验证领域规则与 API；后续将用 EF Core/PostgreSQL 替换。版本通过 `global.json`、`packageManager` 和容器镜像固定。
 
 ## 2. 本地开发原则
 

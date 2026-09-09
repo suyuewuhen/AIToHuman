@@ -1,0 +1,63 @@
+using AIToHuman.Application.Tasks;
+using AIToHuman.Contracts.Tasks;
+using AIToHuman.Domain.Common;
+using AIToHuman.Infrastructure.Tasks;
+using Microsoft.AspNetCore.Diagnostics;
+using Microsoft.AspNetCore.Mvc;
+
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddSingleton<ITaskRepository, InMemoryTaskRepository>();
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddScoped<TaskService>();
+builder.Services.AddProblemDetails();
+builder.Services.AddCors(options => options.AddPolicy("development", policy => policy
+    .WithOrigins("http://localhost:5173")
+    .AllowAnyHeader()
+    .AllowAnyMethod()));
+
+var app = builder.Build();
+
+app.UseExceptionHandler(errorApp => errorApp.Run(async context =>
+{
+    var exception = context.Features.Get<IExceptionHandlerFeature>()?.Error;
+    var (status, title) = exception switch
+    {
+        DomainException => (StatusCodes.Status422UnprocessableEntity, "业务规则不允许该操作"),
+        KeyNotFoundException => (StatusCodes.Status404NotFound, "资源不存在"),
+        UnauthorizedAccessException => (StatusCodes.Status403Forbidden, "无权执行该操作"),
+        _ => (StatusCodes.Status500InternalServerError, "服务器内部错误")
+    };
+
+    context.Response.StatusCode = status;
+    await context.Response.WriteAsJsonAsync(new ProblemDetails
+    {
+        Status = status,
+        Title = title,
+        Detail = exception is DomainException or KeyNotFoundException or UnauthorizedAccessException ? exception.Message : "请求暂时无法处理。",
+        Instance = context.Request.Path
+    });
+}));
+
+if (app.Environment.IsDevelopment()) app.UseCors("development");
+
+app.MapGet("/health", () => Results.Ok(new { status = "healthy", service = "AIToHuman.Api", utc = DateTimeOffset.UtcNow }));
+
+var tasks = app.MapGroup("/api/v1/tasks");
+tasks.MapGet("/", (TaskService service) => Results.Ok(service.ListPublished()));
+tasks.MapGet("/{id:guid}", (Guid id, TaskService service) => service.Get(id) is { } task ? Results.Ok(task) : Results.NotFound());
+tasks.MapPost("/", (CreateTaskRequest request, TaskService service) =>
+{
+    var task = service.Create(request);
+    return Results.Created($"/api/v1/tasks/{task.Id}", task);
+});
+tasks.MapPost("/{id:guid}/publish", (Guid id, Guid ownerId, TaskService service) => Results.Ok(service.Publish(id, ownerId)));
+tasks.MapPost("/{id:guid}/increase-reward", (Guid id, Guid ownerId, IncreaseRewardRequest request, TaskService service) => Results.Ok(service.IncreaseReward(id, ownerId, request)));
+tasks.MapPost("/{id:guid}/applications", (Guid id, ApplyForTaskRequest request, TaskService service) => Results.Ok(service.Apply(id, request)));
+tasks.MapPost("/{id:guid}/applications/{applicationId:guid}/select", (Guid id, Guid applicationId, SelectApplicationRequest request, TaskService service) => Results.Ok(service.Select(id, applicationId, request)));
+
+app.MapPost("/api/v1/reward-suggestions", (RewardSuggestionRequest request, TaskService service) => Results.Ok(service.SuggestReward(request)));
+
+app.Run();
+
+public partial class Program;

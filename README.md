@@ -6,7 +6,7 @@ AIToHuman 是一个“AI 任务管家 + 真人服务任务大厅”平台。用�
 
 ## 当前状态
 
-项目处于产品设计和 MVP 准备阶段。首个版本聚焦同城低风险任务，优先打通以下闭环：
+项目已进入 MVP 开发阶段。首个版本聚焦同城低风险任务，优先打通以下闭环：
 
 ```text
 需求对话 → AI 澄清与规划 → 任务草稿 → 用户确认发布
@@ -73,6 +73,26 @@ AIToHuman/
 ## 参与开发
 
 项目当前优先完善产品边界和技术基线。开始编码前请先阅读 [CONTRIBUTING.md](CONTRIBUTING.md) 和 [开发指南](docs/development/development-guide.md)。
+
+### 本地启动
+
+前提：.NET 10 SDK、Node.js 24、npm 和 Docker。
+
+```powershell
+docker compose up -d
+dotnet restore AIToHuman.sln --configfile NuGet.Config
+dotnet run --project backend/AIToHuman.Api
+```
+
+另开一个终端：
+
+```powershell
+Set-Location frontend
+npm install
+npm run dev
+```
+
+前端地址为 `http://localhost:5173`，API 健康检查为 `http://localhost:5188/health`。当前仓储为内存实现，用于验证领域与 API；PostgreSQL、Redis 和 MinIO 已提供本地依赖，后续里程碑接入持久化。
 
 ## 许可证
 

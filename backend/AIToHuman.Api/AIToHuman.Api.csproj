@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <ItemGroup>
+    <ProjectReference Include="..\AIToHuman.Application\AIToHuman.Application.csproj" />
+    <ProjectReference Include="..\AIToHuman.Infrastructure\AIToHuman.Infrastructure.csproj" />
+    <ProjectReference Include="..\AIToHuman.Contracts\AIToHuman.Contracts.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+</Project>
