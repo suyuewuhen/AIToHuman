@@ -38,6 +38,12 @@ const steps = ref<Step[]>([
 ])
 
 const completion = computed(() => Math.round((steps.value.filter((step) => step.done).length / steps.value.length) * 100))
+const currentRole = computed(() => authUser.value?.role ?? session.value?.role ?? '')
+const isWorker = computed(() => currentRole.value === 'worker')
+const isOwner = computed(() => currentRole.value === 'owner')
+function canManageTask(task: TaskItem) {
+  return isOwner.value && authUser.value?.userId === task.ownerId
+}
 
 async function submitPrompt() {
   planning.value = true
@@ -92,12 +98,16 @@ async function apply(task: TaskItem) {
 }
 
 async function viewApplications(task: TaskItem) {
+  if (!authUser.value || !isOwner.value) {
+    applicationNotice.value = '请先以需求方身份登录。'
+    return
+  }
   viewingApplicationsTaskId.value = task.id
   taskApplications.value = []
   applicationsLoading.value = true
   applicationNotice.value = ''
   try {
-    taskApplications.value = await listTaskApplications(task.id, task.ownerId)
+    taskApplications.value = await listTaskApplications(task.id, authUser.value.userId)
   } catch (error) {
     applicationNotice.value = error instanceof Error ? error.message : '报名列表加载失败'
     viewingApplicationsTaskId.value = ''
@@ -107,10 +117,14 @@ async function viewApplications(task: TaskItem) {
 }
 
 async function selectApplication(task: TaskItem, application: TaskApplication) {
+  if (!authUser.value || !isOwner.value) {
+    applicationNotice.value = '请先以需求方身份登录。'
+    return
+  }
   selectingApplicationId.value = application.id
   applicationNotice.value = ''
   try {
-    await selectTaskApplication(task.id, application.id, task.ownerId)
+    await selectTaskApplication(task.id, application.id, authUser.value.userId)
     applicationNotice.value = `已选择报名者，任务「${task.title}」进入已分配状态。`
     viewingApplicationsTaskId.value = ''
     await loadTasks()
@@ -311,8 +325,9 @@ onMounted(async () => {
           <div class="task-actions">
             <span>{{ task.applicationCount }} 人已报名</span>
             <div class="task-action-buttons">
-              <button v-if="task.applicationCount > 0" type="button" class="secondary-action" @click="viewApplications(task)">{{ viewingApplicationsTaskId === task.id ? '收起报名' : '查看报名' }}</button>
-              <button type="button" :disabled="applyingTaskId === task.id" @click="apply(task)">{{ applyingTaskId === task.id ? '提交中…' : '按此悬赏报名' }}</button>
+              <button v-if="canManageTask(task) && task.applicationCount > 0" type="button" class="secondary-action" @click="viewApplications(task)">{{ viewingApplicationsTaskId === task.id ? '收起报名' : '查看报名' }}</button>
+              <button v-if="isWorker" type="button" :disabled="applyingTaskId === task.id" @click="apply(task)">{{ applyingTaskId === task.id ? '提交中…' : '按此悬赏报名' }}</button>
+              <button v-if="!authUser && !session" type="button" class="secondary-action" @click="authOpen = true">登录后操作</button>
             </div>
           </div>
           <div v-if="viewingApplicationsTaskId === task.id" class="applications-panel">

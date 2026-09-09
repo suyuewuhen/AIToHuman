@@ -81,6 +81,8 @@ app.UseExceptionHandler(errorApp => errorApp.Run(async context =>
     var (status, title) = exception switch
     {
         DomainException => (StatusCodes.Status422UnprocessableEntity, "业务规则不允许该操作"),
+        InvalidOperationException invalid when invalid.Message.Contains("已注册", StringComparison.Ordinal) => (StatusCodes.Status409Conflict, "资源冲突"),
+        InvalidOperationException => (StatusCodes.Status422UnprocessableEntity, "请求参数不符合要求"),
         KeyNotFoundException => (StatusCodes.Status404NotFound, "资源不存在"),
         UnauthorizedAccessException => (StatusCodes.Status403Forbidden, "无权执行该操作"),
         _ => (StatusCodes.Status500InternalServerError, "服务器内部错误")
