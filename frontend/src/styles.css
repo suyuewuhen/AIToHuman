@@ -28,6 +28,17 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .nav-links a.active { color: var(--ink); border-color: var(--acid); }
 .profile { justify-self: end; border: 0; background: none; color: var(--ink); cursor: pointer; }
 .profile span { display: inline-grid; place-items: center; width: 32px; height: 32px; margin-right: 8px; background: #d7d1c2; border-radius: 50%; }
+.auth-backdrop { position: fixed; inset: 0; z-index: 10; display: grid; place-items: center; padding: 20px; background: rgba(24,33,29,.42); backdrop-filter: blur(5px); }
+.auth-dialog { width: min(430px, 100%); padding: 28px; background: var(--paper); border: 1px solid var(--ink); box-shadow: 10px 10px 0 rgba(24,33,29,.28); animation: rise .25s ease both; }
+.auth-dialog-head { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 24px; }
+.auth-dialog h2 { margin: 5px 0 0; font: 700 26px 'Noto Serif SC',serif; }
+.icon-button { border: 0; background: transparent; font-size: 26px; line-height: 1; cursor: pointer; }
+.auth-dialog label { display: block; margin-top: 14px; color: #626b66; font-size: 11px; }
+.auth-dialog input,.auth-dialog select { width: 100%; margin-top: 6px; padding: 11px 12px; border: 1px solid var(--line); background: #fffdf7; color: var(--ink); }
+.auth-submit { width: 100%; margin-top: 22px; padding: 13px; border: 0; background: var(--acid); color: white; cursor: pointer; font-weight: 600; }
+.auth-submit:disabled { opacity: .6; cursor: wait; }
+.auth-switch { width: 100%; margin-top: 11px; padding: 9px; border: 0; background: transparent; color: var(--green); cursor: pointer; font-size: 11px; }
+.auth-error { margin: 14px 0 0; color: #9a321f; font-size: 12px; }
 
 .hero { max-width: 1420px; margin: 0 auto; padding: 58px 0 42px; display: flex; align-items: end; justify-content: space-between; animation: rise .7s ease both; }
 .eyebrow { font-size: 11px; letter-spacing: .18em; font-weight: 600; color: var(--green); }

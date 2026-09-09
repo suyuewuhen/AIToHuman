@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { requestRewardSuggestion } from './api/rewards'
 import { getDevSession, type DevSession } from './api/session'
+import { clearAccessToken, getAccessToken, getCurrentUser, login, register, type AuthResponse } from './api/auth'
 import { applyForTask, listPublishedTasks, listTaskApplications, selectTaskApplication, type TaskApplication, type TaskItem } from './api/tasks'
 
 type Step = { label: string; done: boolean }
@@ -14,7 +15,13 @@ const suggestionMin = ref(55)
 const suggestionMax = ref(75)
 const suggestionSource = ref('演示建议')
 const session = ref<DevSession | null>(null)
+const authUser = ref<Pick<AuthResponse, 'userId' | 'email' | 'displayName' | 'role'> | null>(null)
 const sessionError = ref('')
+const authOpen = ref(false)
+const authMode = ref<'login' | 'register'>('login')
+const authBusy = ref(false)
+const authError = ref('')
+const authForm = ref({ email: '', password: '', displayName: '', role: 'worker' as 'owner' | 'worker' })
 const tasks = ref<TaskItem[]>([])
 const hallLoading = ref(true)
 const hallError = ref('')
@@ -66,14 +73,15 @@ async function loadTasks() {
 }
 
 async function apply(task: TaskItem) {
-  if (!session.value) {
-    applicationNotice.value = '开发会话尚未就绪，请稍后重试。'
+  const workerId = authUser.value?.role === 'worker' ? authUser.value.userId : session.value?.userId
+  if (!workerId) {
+    applicationNotice.value = '请先以服务者身份登录。'
     return
   }
   applyingTaskId.value = task.id
   applicationNotice.value = ''
   try {
-    await applyForTask(task.id, session.value.userId, '我已查看任务要求，可以按固定悬赏完成。')
+    await applyForTask(task.id, workerId, '我已查看任务要求，可以按固定悬赏完成。')
     applicationNotice.value = `已报名「${task.title}」`
     await loadTasks()
   } catch (error) {
@@ -125,7 +133,41 @@ async function loadDevSession() {
   }
 }
 
+async function restoreAuth() {
+  if (!getAccessToken()) return
+  try {
+    authUser.value = await getCurrentUser()
+  } catch {
+    authUser.value = null
+  }
+}
+
+async function submitAuth() {
+  authBusy.value = true
+  authError.value = ''
+  try {
+    const result = authMode.value === 'login'
+      ? await login({ email: authForm.value.email, password: authForm.value.password })
+      : await register(authForm.value)
+    authUser.value = result
+    authOpen.value = false
+    applicationNotice.value = `已登录：${result.displayName}`
+    await loadTasks()
+  } catch (error) {
+    authError.value = error instanceof Error ? error.message : '认证失败'
+  } finally {
+    authBusy.value = false
+  }
+}
+
+function logout() {
+  clearAccessToken()
+  authUser.value = null
+  applicationNotice.value = '已退出登录，当前为开发会话。'
+}
+
 onMounted(async () => {
+  await restoreAuth()
   await loadDevSession()
   await loadTasks()
 })
@@ -143,8 +185,21 @@ onMounted(async () => {
         <a href="#hall">任务大厅</a>
         <a href="#orders">我的订单</a>
       </div>
-      <button class="profile" type="button"><span>{{ session?.displayName.slice(0, 1) ?? '开' }}</span> {{ session?.displayName ?? '开发会话' }} · {{ session?.role === 'worker' ? '服务者' : '需求方' }}</button>
+      <button class="profile" type="button" @click="authUser ? logout() : (authOpen = true)"><span>{{ (authUser?.displayName ?? session?.displayName ?? '开').slice(0, 1) }}</span> {{ authUser?.displayName ?? session?.displayName ?? '开发会话' }} · {{ authUser ? (authUser.role === 'worker' ? '服务者' : '需求方') : '开发会话 · 点击登录' }}</button>
     </nav>
+
+    <div v-if="authOpen" class="auth-backdrop" @click.self="authOpen = false">
+      <form class="auth-dialog" @submit.prevent="submitAuth">
+        <div class="auth-dialog-head"><div><p class="eyebrow">IDENTITY GATE / LOCAL</p><h2>{{ authMode === 'login' ? '登录你的账户' : '创建一个账户' }}</h2></div><button type="button" class="icon-button" @click="authOpen = false">×</button></div>
+        <label>邮箱<input v-model.trim="authForm.email" type="email" required autocomplete="email" /></label>
+        <label>密码<input v-model="authForm.password" type="password" required minlength="8" autocomplete="current-password" /></label>
+        <label v-if="authMode === 'register'">显示名称<input v-model.trim="authForm.displayName" required maxlength="80" /></label>
+        <label v-if="authMode === 'register'">角色<select v-model="authForm.role"><option value="worker">服务者</option><option value="owner">需求方</option></select></label>
+        <p v-if="authError" class="auth-error">{{ authError }}</p>
+        <button class="auth-submit" type="submit" :disabled="authBusy">{{ authBusy ? '处理中…' : (authMode === 'login' ? '登录' : '注册并登录') }}</button>
+        <button class="auth-switch" type="button" @click="authMode = authMode === 'login' ? 'register' : 'login'; authError = ''">{{ authMode === 'login' ? '还没有账户？创建一个' : '已有账户？返回登录' }}</button>
+      </form>
+    </div>
 
     <section class="hero">
       <div>
