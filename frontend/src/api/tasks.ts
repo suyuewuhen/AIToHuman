@@ -37,3 +37,15 @@ export async function applyForTask(taskId: string, workerId: string, note: strin
     body: JSON.stringify({ workerId, note }),
   }))
 }
+
+export async function listTaskApplications(taskId: string, ownerId: string): Promise<TaskApplication[]> {
+  return parseResponse<TaskApplication[]>(await fetch(`/api/v1/tasks/${taskId}/applications?ownerId=${encodeURIComponent(ownerId)}`))
+}
+
+export async function selectTaskApplication(taskId: string, applicationId: string, ownerId: string): Promise<TaskItem> {
+  return parseResponse<TaskItem>(await fetch(`/api/v1/tasks/${taskId}/applications/${applicationId}/select`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ownerId }),
+  }))
+}

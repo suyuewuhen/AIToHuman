@@ -62,6 +62,7 @@ app.MapGet("/health", () => Results.Ok(new { status = "healthy", service = "AITo
 var tasks = app.MapGroup("/api/v1/tasks");
 tasks.MapGet("/", (TaskService service) => Results.Ok(service.ListPublished()));
 tasks.MapGet("/{id:guid}", (Guid id, TaskService service) => service.GetPublic(id) is { } task ? Results.Ok(task) : Results.NotFound());
+tasks.MapGet("/{id:guid}/applications", (Guid id, Guid ownerId, TaskService service) => Results.Ok(service.ListApplications(id, ownerId)));
 tasks.MapPost("/", (CreateTaskRequest request, TaskService service) =>
 {
     var task = service.Create(request);

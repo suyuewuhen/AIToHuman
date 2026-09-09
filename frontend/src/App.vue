@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { requestRewardSuggestion } from './api/rewards'
-import { applyForTask, listPublishedTasks, type TaskItem } from './api/tasks'
+import { applyForTask, listPublishedTasks, listTaskApplications, selectTaskApplication, type TaskApplication, type TaskItem } from './api/tasks'
 
 type Step = { label: string; done: boolean }
 
@@ -17,6 +17,10 @@ const hallLoading = ref(true)
 const hallError = ref('')
 const applyingTaskId = ref('')
 const applicationNotice = ref('')
+const viewingApplicationsTaskId = ref('')
+const taskApplications = ref<TaskApplication[]>([])
+const applicationsLoading = ref(false)
+const selectingApplicationId = ref('')
 const demoWorkerId = '20000000-0000-0000-0000-000000000001'
 const steps = ref<Step[]>([
   { label: '确认取件地址与联系人', done: true },
@@ -70,6 +74,36 @@ async function apply(task: TaskItem) {
     applicationNotice.value = error instanceof Error ? error.message : '报名失败'
   } finally {
     applyingTaskId.value = ''
+  }
+}
+
+async function viewApplications(task: TaskItem) {
+  viewingApplicationsTaskId.value = task.id
+  taskApplications.value = []
+  applicationsLoading.value = true
+  applicationNotice.value = ''
+  try {
+    taskApplications.value = await listTaskApplications(task.id, task.ownerId)
+  } catch (error) {
+    applicationNotice.value = error instanceof Error ? error.message : '报名列表加载失败'
+    viewingApplicationsTaskId.value = ''
+  } finally {
+    applicationsLoading.value = false
+  }
+}
+
+async function selectApplication(task: TaskItem, application: TaskApplication) {
+  selectingApplicationId.value = application.id
+  applicationNotice.value = ''
+  try {
+    await selectTaskApplication(task.id, application.id, task.ownerId)
+    applicationNotice.value = `已选择报名者，任务「${task.title}」进入已分配状态。`
+    viewingApplicationsTaskId.value = ''
+    await loadTasks()
+  } catch (error) {
+    applicationNotice.value = error instanceof Error ? error.message : '选择报名者失败'
+  } finally {
+    selectingApplicationId.value = ''
   }
 }
 
@@ -203,7 +237,19 @@ onMounted(loadTasks)
           </div>
           <div class="task-actions">
             <span>{{ task.applicationCount }} 人已报名</span>
-            <button type="button" :disabled="applyingTaskId === task.id" @click="apply(task)">{{ applyingTaskId === task.id ? '提交中…' : '按此悬赏报名' }}</button>
+            <div class="task-action-buttons">
+              <button v-if="task.applicationCount > 0" type="button" class="secondary-action" @click="viewApplications(task)">{{ viewingApplicationsTaskId === task.id ? '收起报名' : '查看报名' }}</button>
+              <button type="button" :disabled="applyingTaskId === task.id" @click="apply(task)">{{ applyingTaskId === task.id ? '提交中…' : '按此悬赏报名' }}</button>
+            </div>
+          </div>
+          <div v-if="viewingApplicationsTaskId === task.id" class="applications-panel">
+            <strong>报名者</strong>
+            <span v-if="applicationsLoading">正在读取报名信息…</span>
+            <span v-else-if="taskApplications.length === 0">暂无有效报名</span>
+            <div v-for="application in taskApplications" v-else :key="application.id" class="application-row">
+              <div><strong>服务者 {{ application.workerId.slice(0, 8) }}</strong><small>{{ application.note || '未附加备注' }}</small></div>
+              <button type="button" :disabled="selectingApplicationId === application.id || application.status !== 'Pending'" @click="selectApplication(task, application)">{{ application.status === 'Pending' ? (selectingApplicationId === application.id ? '选择中…' : '选择') : application.status }}</button>
+            </div>
           </div>
         </article>
       </div>

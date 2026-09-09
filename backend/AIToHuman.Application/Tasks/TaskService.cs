@@ -44,6 +44,12 @@ public sealed class TaskService(ITaskRepository repository, TimeProvider timePro
         return Map(task);
     }
 
+    public IReadOnlyCollection<TaskApplicationResponse> ListApplications(Guid id, Guid ownerId)
+    {
+        var task = GetOwned(id, ownerId);
+        return task.Applications.Select(MapApplication).ToArray();
+    }
+
     public IReadOnlyCollection<TaskSummaryResponse> ListPublished() => repository.ListPublished().Select(MapSummary).ToArray();
     public TaskResponse? Get(Guid id) => repository.Get(id) is { } task ? Map(task) : null;
     public TaskSummaryResponse? GetPublic(Guid id) => repository.Get(id) is { } task ? MapSummary(task) : null;
@@ -67,7 +73,9 @@ public sealed class TaskService(ITaskRepository repository, TimeProvider timePro
 
     private TaskItem GetRequired(Guid id) => repository.Get(id) ?? throw new KeyNotFoundException("任务不存在。");
 
-    private static TaskResponse Map(TaskItem task) => new(task.Id, task.OwnerId, task.Title, task.Description, task.District, task.Deadline, task.Reward.Amount, task.Reward.Currency, task.Status.ToString(), task.AcceptanceCriteria, task.Applications.Select(item => new TaskApplicationResponse(item.Id, item.WorkerId, item.Note, item.Status.ToString(), item.SubmittedAt)).ToArray());
+    private static TaskResponse Map(TaskItem task) => new(task.Id, task.OwnerId, task.Title, task.Description, task.District, task.Deadline, task.Reward.Amount, task.Reward.Currency, task.Status.ToString(), task.AcceptanceCriteria, task.Applications.Select(MapApplication).ToArray());
+
+    private static TaskApplicationResponse MapApplication(TaskApplication application) => new(application.Id, application.WorkerId, application.Note, application.Status.ToString(), application.SubmittedAt);
 
     private static TaskSummaryResponse MapSummary(TaskItem task) => new(task.Id, task.OwnerId, task.Title, task.Description, task.District, task.Deadline, task.Reward.Amount, task.Reward.Currency, task.Status.ToString(), task.AcceptanceCriteria, task.Applications.Count);
 }
