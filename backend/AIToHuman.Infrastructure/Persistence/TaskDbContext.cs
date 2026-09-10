@@ -8,6 +8,7 @@ public sealed class TaskDbContext(DbContextOptions<TaskDbContext> options) : DbC
     public DbSet<ApplicationRecord> Applications => Set<ApplicationRecord>();
     public DbSet<UserRecord> Users => Set<UserRecord>();
     public DbSet<OrderRecord> Orders => Set<OrderRecord>();
+    public DbSet<ReviewRecord> Reviews => Set<ReviewRecord>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -55,6 +56,15 @@ public sealed class TaskDbContext(DbContextOptions<TaskDbContext> options) : DbC
             entity.Property(item => item.Status).HasMaxLength(32).IsRequired();
             entity.Property(item => item.EvidenceNote).HasMaxLength(4000);
             entity.Property(item => item.ReviewNote).HasMaxLength(4000);
+        });
+
+        modelBuilder.Entity<ReviewRecord>(entity =>
+        {
+            entity.ToTable("reviews");
+            entity.HasKey(item => item.Id);
+            entity.HasIndex(item => new { item.OrderId, item.ReviewerId }).IsUnique();
+            entity.HasIndex(item => item.RevieweeId);
+            entity.Property(item => item.Comment).HasMaxLength(1000).IsRequired();
         });
     }
 }
@@ -111,4 +121,15 @@ public sealed class OrderRecord
     public string? ReviewNote { get; set; }
     public DateTimeOffset? SubmittedAt { get; set; }
     public DateTimeOffset? ReviewedAt { get; set; }
+}
+
+public sealed class ReviewRecord
+{
+    public Guid Id { get; set; }
+    public Guid OrderId { get; set; }
+    public Guid ReviewerId { get; set; }
+    public Guid RevieweeId { get; set; }
+    public int Rating { get; set; }
+    public string Comment { get; set; } = "";
+    public DateTimeOffset CreatedAt { get; set; }
 }

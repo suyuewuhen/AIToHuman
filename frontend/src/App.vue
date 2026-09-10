@@ -3,7 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { requestRewardSuggestion } from './api/rewards'
 import { getDevSession, type DevSession } from './api/session'
 import { clearAccessToken, getAccessToken, getCurrentUser, login, register, switchRole, type ActiveRole, type AuthResponse } from './api/auth'
-import { applyForTask, approveOrder, createTask, listMyOrders, listPublishedTasks, listTaskApplications, publishTask, rejectOrder, selectTaskApplication, startOrder, submitOrder, type OrderItem, type TaskApplication, type TaskItem } from './api/tasks'
+import { applyForTask, approveOrder, createOrderReview, createTask, listMyOrders, listOrderReviews, listPublishedTasks, listTaskApplications, publishTask, rejectOrder, selectTaskApplication, startOrder, submitOrder, type OrderItem, type ReviewItem, type TaskApplication, type TaskItem } from './api/tasks'
 import { connectOrderNotifications, disconnectOrderNotifications } from './api/notifications'
 
 type Step = { label: string; done: boolean }
@@ -39,6 +39,9 @@ const publishing = ref(false)
 const publishPreview = ref<TaskItem | null>(null)
 const publishError = ref('')
 const orders = ref<OrderItem[]>([])
+const orderReviews = ref<Record<string, ReviewItem[]>>({})
+const reviewDraft = ref<{ orderId: string; rating: number; comment: string } | null>(null)
+const reviewBusy = ref(false)
 const ordersLoading = ref(false)
 const ordersError = ref('')
 const orderTab = ref<'published' | 'taken'>('taken')
@@ -175,6 +178,29 @@ async function transitionOrder(order: OrderItem, action: 'start' | 'submit' | 'a
   } catch (error) {
     applicationNotice.value = error instanceof Error ? error.message : '订单操作失败'
   }
+}
+
+async function loadReviews(order: OrderItem) {
+  try { orderReviews.value[order.id] = await listOrderReviews(order.id) } catch (error) { applicationNotice.value = error instanceof Error ? error.message : '评价加载失败' }
+}
+
+function openReview(order: OrderItem) {
+  reviewDraft.value = { orderId: order.id, rating: 5, comment: '' }
+  void loadReviews(order)
+}
+
+async function submitReview() {
+  if (!reviewDraft.value || !authUser.value) return
+  reviewBusy.value = true
+  try {
+    const draft = reviewDraft.value
+    await createOrderReview(draft.orderId, authUser.value.userId, draft.rating, draft.comment)
+    applicationNotice.value = '评价已提交。双方都评价后会立即公开。'
+    reviewDraft.value = null
+    const order = orders.value.find(item => item.id === draft.orderId)
+    if (order) await loadReviews(order)
+  } catch (error) { applicationNotice.value = error instanceof Error ? error.message : '评价提交失败' }
+  finally { reviewBusy.value = false }
 }
 
 function orderStatusLabel(status: string) {
@@ -518,9 +544,11 @@ onMounted(async () => {
       <div v-else-if="ordersError" class="hall-state error"><strong>订单暂时离线</strong><span>{{ ordersError }}</span><button type="button" @click="loadOrders">重新连接</button></div>
       <div v-else-if="visibleOrders.length === 0" class="hall-state"><strong>{{ orderTab === 'published' ? '还没有发布订单' : '还没有接取任务' }}</strong><span>{{ orderTab === 'published' ? '确认发布并选择服务者后，订单会显示在这里。' : '在任务大厅报名并被需求方选中后，任务会显示在这里。' }}</span></div>
       <div v-else class="orders-list">
-        <article v-for="order in visibleOrders" :key="order.id" class="order-row"><div><small>{{ formatDeadline(order.createdAt) }} · {{ orderStatusLabel(order.status) }}</small><h3>{{ order.title }}</h3><span>订单号 {{ order.id.slice(0, 8) }} · {{ orderTab === 'published' ? '服务者待执行' : '需求方已确认' }}</span><p v-if="order.evidenceNote" class="order-note"><b>执行凭证：</b>{{ order.evidenceNote }}</p><p v-if="order.reviewNote" class="order-note"><b>验收意见：</b>{{ order.reviewNote }}</p><div class="order-actions"><button v-if="orderTab === 'taken' && order.status === 'Accepted'" type="button" @click="transitionOrder(order, 'start')">开始执行</button><button v-if="orderTab === 'taken' && order.status === 'InProgress'" type="button" @click="transitionOrder(order, 'submit')">提交验收</button><button v-if="orderTab === 'published' && order.status === 'Submitted'" type="button" @click="transitionOrder(order, 'approve')">确认完成</button><button v-if="orderTab === 'published' && order.status === 'Submitted'" type="button" class="secondary-action" @click="transitionOrder(order, 'reject')">需要补充</button></div></div><strong>¥{{ order.reward }}</strong></article>
+        <article v-for="order in visibleOrders" :key="order.id" class="order-row"><div><small>{{ formatDeadline(order.createdAt) }} · {{ orderStatusLabel(order.status) }}</small><h3>{{ order.title }}</h3><span>订单号 {{ order.id.slice(0, 8) }} · {{ orderTab === 'published' ? '服务者待执行' : '需求方已确认' }}</span><p v-if="order.evidenceNote" class="order-note"><b>执行凭证：</b>{{ order.evidenceNote }}</p><p v-if="order.reviewNote" class="order-note"><b>验收意见：</b>{{ order.reviewNote }}</p><div class="order-actions"><button v-if="orderTab === 'taken' && order.status === 'Accepted'" type="button" @click="transitionOrder(order, 'start')">开始执行</button><button v-if="orderTab === 'taken' && order.status === 'InProgress'" type="button" @click="transitionOrder(order, 'submit')">提交验收</button><button v-if="orderTab === 'published' && order.status === 'Submitted'" type="button" @click="transitionOrder(order, 'approve')">确认完成</button><button v-if="orderTab === 'published' && order.status === 'Submitted'" type="button" class="secondary-action" @click="transitionOrder(order, 'reject')">需要补充</button><button v-if="order.status === 'Approved'" type="button" class="secondary-action" @click="openReview(order)">写评价</button></div><div v-if="orderReviews[order.id]?.length" class="review-list"><div v-for="review in orderReviews[order.id]" :key="review.id"><span class="review-stars">{{ '★'.repeat(review.rating) }}{{ '☆'.repeat(5 - review.rating) }}</span><span>{{ review.comment }}</span><small>{{ review.isVisible ? '已公开' : '盲期中' }}</small></div></div></div><strong>¥{{ order.reward }}</strong></article>
       </div>
     </section>
+
+    <div v-if="reviewDraft" class="auth-backdrop" @click.self="reviewDraft = null"><form class="auth-dialog" @submit.prevent="submitReview"><div class="auth-dialog-head"><div><p class="eyebrow">DOUBLE-SIDED REVIEW / 04</p><h2>完成这次互相确认</h2></div><button type="button" class="icon-button" @click="reviewDraft = null">×</button></div><label>评分<select v-model.number="reviewDraft.rating"><option v-for="rating in 5" :key="rating" :value="rating">{{ '★'.repeat(rating) }}{{ '☆'.repeat(5 - rating) }}</option></select></label><label>评价内容<textarea v-model.trim="reviewDraft.comment" rows="4" maxlength="1000" placeholder="说说这次协作中值得被记住的细节" /></label><p class="review-hint">双方都提交评价后立即公开；如果只有一方评价，7 天后自动公开。</p><button class="auth-submit" type="submit" :disabled="reviewBusy">{{ reviewBusy ? '提交中…' : '提交评价' }}</button></form></div>
 
     <footer class="trust-strip">
       <span>固定悬赏</span><span>双向评价</span><span>隐私分级披露</span><span>关键操作需确认</span>

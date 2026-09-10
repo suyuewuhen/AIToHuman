@@ -216,3 +216,4 @@ h1 em { color: var(--acid); font-style: normal; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; }
 }
+.review-list{display:grid;gap:8px;margin-top:12px;padding-top:12px;border-top:1px solid rgba(31,34,28,.12)}.review-list div{display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:13px}.review-stars{color:#c77b30;letter-spacing:1px}.review-list small,.review-hint{color:#72766c;font-size:12px}

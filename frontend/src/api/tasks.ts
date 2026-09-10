@@ -36,6 +36,17 @@ export interface OrderItem {
   reviewedAt?: string | null
 }
 
+export interface ReviewItem {
+  id: string
+  orderId: string
+  reviewerId: string
+  revieweeId: string
+  rating: number
+  comment: string
+  createdAt: string
+  isVisible: boolean
+}
+
 export interface SelectTaskResult {
   task: TaskItem
   order: OrderItem
@@ -95,6 +106,16 @@ export const startOrder = (orderId: string, actorId: string) => orderAction(orde
 export const submitOrder = (orderId: string, actorId: string, note: string) => orderAction(orderId, 'submit', actorId, note)
 export const approveOrder = (orderId: string, actorId: string, note?: string) => orderAction(orderId, 'approve', actorId, note)
 export const rejectOrder = (orderId: string, actorId: string, note: string) => orderAction(orderId, 'reject', actorId, note)
+
+export async function listOrderReviews(orderId: string): Promise<ReviewItem[]> {
+  return parseResponse<ReviewItem[]>(await fetch(`/api/v1/orders/${orderId}/reviews`, { headers: authHeaders() }))
+}
+
+export async function createOrderReview(orderId: string, reviewerId: string, rating: number, comment: string): Promise<ReviewItem> {
+  return parseResponse<ReviewItem>(await fetch(`/api/v1/orders/${orderId}/reviews`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ reviewerId, rating, comment }),
+  }))
+}
 
 export async function applyForTask(taskId: string, workerId: string, note: string): Promise<TaskItem> {
   return parseResponse<TaskItem>(await fetch(`/api/v1/tasks/${taskId}/applications`, {

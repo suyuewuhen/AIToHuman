@@ -2,11 +2,12 @@ using AIToHuman.Contracts.Tasks;
 using AIToHuman.Domain.Tasks;
 using AIToHuman.Application.Orders;
 using AIToHuman.Domain.Orders;
+using AIToHuman.Domain.Common;
 using AIToHuman.Application.Notifications;
 
 namespace AIToHuman.Application.Tasks;
 
-public sealed class TaskService(ITaskRepository repository, IOrderRepository orderRepository, TimeProvider timeProvider, IOrderNotificationPublisher notificationPublisher)
+public sealed class TaskService(ITaskRepository repository, IOrderRepository orderRepository, IReviewRepository reviewRepository, TimeProvider timeProvider, IOrderNotificationPublisher notificationPublisher)
 {
     public TaskResponse Create(CreateTaskRequest request)
     {
@@ -72,6 +73,27 @@ public sealed class TaskService(ITaskRepository repository, IOrderRepository ord
     public OrderResponse ApproveOrder(Guid id, Guid actorId, string? note) => TransitionOrder(id, actorId, order => order.Approve(actorId, note, timeProvider.GetUtcNow()));
     public OrderResponse RejectOrder(Guid id, Guid actorId, string? note) => TransitionOrder(id, actorId, order => order.Reject(actorId, note, timeProvider.GetUtcNow()));
 
+    public IReadOnlyCollection<ReviewResponse> ListReviews(Guid orderId, Guid viewerId)
+    {
+        var order = orderRepository.Get(orderId) ?? throw new KeyNotFoundException("订单不存在。");
+        EnsureParticipant(order, viewerId);
+        var reviews = reviewRepository.ListByOrder(orderId);
+        var revealAt = reviews.Count == 0 ? DateTimeOffset.MaxValue : reviews.Min(item => item.CreatedAt).AddDays(7);
+        var visible = reviews.Count >= 2 || timeProvider.GetUtcNow() >= revealAt;
+        return reviews.Select(item => MapReview(item, visible || item.ReviewerId == viewerId)).ToArray();
+    }
+
+    public ReviewResponse CreateReview(Guid orderId, CreateReviewRequest request, Guid actorId)
+    {
+        var order = orderRepository.Get(orderId) ?? throw new KeyNotFoundException("订单不存在。");
+        EnsureParticipant(order, actorId);
+        if (order.Status != OrderStatus.Approved) throw new DomainException("只有已完成订单才能评价。");
+        var revieweeId = actorId == order.OwnerId ? order.WorkerId : order.OwnerId;
+        var review = new Review(orderId, actorId, revieweeId, request.Rating, request.Comment, timeProvider.GetUtcNow());
+        reviewRepository.Add(review);
+        return MapReview(review, true);
+    }
+
     public RewardSuggestionResponse SuggestReward(RewardSuggestionRequest request)
     {
         var travel = (decimal)Math.Max(request.DistanceKilometers, 0) * 2.2m;
@@ -105,4 +127,6 @@ public sealed class TaskService(ITaskRepository repository, IOrderRepository ord
 
     private static TaskSummaryResponse MapSummary(TaskItem task) => new(task.Id, task.OwnerId, task.Title, task.Description, task.District, task.Deadline, task.Reward.Amount, task.Reward.Currency, task.Status.ToString(), task.AcceptanceCriteria, task.Applications.Count);
     private static OrderResponse Map(Order order) => new(order.Id, order.TaskId, order.OwnerId, order.WorkerId, order.Title, order.Reward.Amount, order.Reward.Currency, order.Status.ToString(), order.CreatedAt, order.EvidenceNote, order.ReviewNote, order.SubmittedAt, order.ReviewedAt);
+    private static ReviewResponse MapReview(Review review, bool visible) => new(review.Id, review.OrderId, review.ReviewerId, review.RevieweeId, review.Rating, visible ? review.Comment : "评价将在双方完成后公开", review.CreatedAt, visible);
+    private static void EnsureParticipant(Order order, Guid actorId) { if (order.OwnerId != actorId && order.WorkerId != actorId) throw new UnauthorizedAccessException("只有订单参与者可以执行该操作。"); }
 }

@@ -28,12 +28,14 @@ if (usePostgres)
     builder.Services.AddDbContext<TaskDbContext>(options => options.UseNpgsql(postgresConnection));
     builder.Services.AddScoped<ITaskRepository, EfTaskRepository>();
     builder.Services.AddScoped<IOrderRepository, EfOrderRepository>();
+    builder.Services.AddScoped<IReviewRepository, EfReviewRepository>();
     builder.Services.AddScoped<AuthService>();
 }
 else
 {
     builder.Services.AddSingleton<ITaskRepository, InMemoryTaskRepository>();
     builder.Services.AddSingleton<IOrderRepository, InMemoryOrderRepository>();
+    builder.Services.AddSingleton<IReviewRepository, InMemoryReviewRepository>();
 }
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSignalR();
@@ -105,6 +107,18 @@ if (app.Environment.IsDevelopment() && usePostgres)
         ALTER TABLE orders ADD COLUMN IF NOT EXISTS "ReviewNote" character varying(4000);
         ALTER TABLE orders ADD COLUMN IF NOT EXISTS "SubmittedAt" timestamp with time zone;
         ALTER TABLE orders ADD COLUMN IF NOT EXISTS "ReviewedAt" timestamp with time zone;
+        CREATE TABLE IF NOT EXISTS reviews (
+            "Id" uuid NOT NULL,
+            "OrderId" uuid NOT NULL,
+            "ReviewerId" uuid NOT NULL,
+            "RevieweeId" uuid NOT NULL,
+            "Rating" integer NOT NULL,
+            "Comment" character varying(1000) NOT NULL,
+            "CreatedAt" timestamp with time zone NOT NULL,
+            CONSTRAINT "PK_reviews" PRIMARY KEY ("Id")
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS "IX_reviews_OrderId_ReviewerId" ON reviews ("OrderId", "ReviewerId");
+        CREATE INDEX IF NOT EXISTS "IX_reviews_RevieweeId" ON reviews ("RevieweeId");
         """);
 }
     catch (Exception exception)
@@ -222,6 +236,8 @@ app.MapPost("/api/v1/orders/{id:guid}/start", (Guid id, OrderActionRequest reque
 app.MapPost("/api/v1/orders/{id:guid}/submit", (Guid id, OrderActionRequest request, ClaimsPrincipal user, IHostEnvironment environment, TaskService service) => Results.Ok(service.SubmitOrder(id, ResolveUserId(user, request.ActorId, environment), request.Note)));
 app.MapPost("/api/v1/orders/{id:guid}/approve", (Guid id, OrderActionRequest request, ClaimsPrincipal user, IHostEnvironment environment, TaskService service) => Results.Ok(service.ApproveOrder(id, ResolveUserId(user, request.ActorId, environment), request.Note)));
 app.MapPost("/api/v1/orders/{id:guid}/reject", (Guid id, OrderActionRequest request, ClaimsPrincipal user, IHostEnvironment environment, TaskService service) => Results.Ok(service.RejectOrder(id, ResolveUserId(user, request.ActorId, environment), request.Note)));
+app.MapGet("/api/v1/orders/{id:guid}/reviews", (Guid id, ClaimsPrincipal user, IHostEnvironment environment, TaskService service) => Results.Ok(service.ListReviews(id, ResolveUserId(user, Guid.Empty, environment))));
+app.MapPost("/api/v1/orders/{id:guid}/reviews", (Guid id, CreateReviewRequest request, ClaimsPrincipal user, IHostEnvironment environment, TaskService service) => Results.Ok(service.CreateReview(id, request with { ReviewerId = ResolveUserId(user, request.ReviewerId, environment) }, ResolveUserId(user, request.ReviewerId, environment))));
 
 app.Run();
 
