@@ -94,6 +94,13 @@ public sealed class TaskService(ITaskRepository repository, IOrderRepository ord
         return MapReview(review, true);
     }
 
+    public ReviewSummaryResponse GetReviewSummary(Guid userId)
+    {
+        var visible = reviewRepository.ListByReviewee(userId).Where(item => IsReviewPublic(item.OrderId, item.CreatedAt)).ToArray();
+        var average = visible.Length == 0 ? 0m : Math.Round((decimal)visible.Average(item => item.Rating), 1);
+        return new(userId, average, visible.Length, visible.Take(5).Select(item => MapReview(item, true)).ToArray());
+    }
+
     public RewardSuggestionResponse SuggestReward(RewardSuggestionRequest request)
     {
         var travel = (decimal)Math.Max(request.DistanceKilometers, 0) * 2.2m;
@@ -129,4 +136,9 @@ public sealed class TaskService(ITaskRepository repository, IOrderRepository ord
     private static OrderResponse Map(Order order) => new(order.Id, order.TaskId, order.OwnerId, order.WorkerId, order.Title, order.Reward.Amount, order.Reward.Currency, order.Status.ToString(), order.CreatedAt, order.EvidenceNote, order.ReviewNote, order.SubmittedAt, order.ReviewedAt);
     private static ReviewResponse MapReview(Review review, bool visible) => new(review.Id, review.OrderId, review.ReviewerId, review.RevieweeId, review.Rating, visible ? review.Comment : "评价将在双方完成后公开", review.CreatedAt, visible);
     private static void EnsureParticipant(Order order, Guid actorId) { if (order.OwnerId != actorId && order.WorkerId != actorId) throw new UnauthorizedAccessException("只有订单参与者可以执行该操作。"); }
+    private bool IsReviewPublic(Guid orderId, DateTimeOffset createdAt)
+    {
+        var reviews = reviewRepository.ListByOrder(orderId);
+        return reviews.Count >= 2 || timeProvider.GetUtcNow() >= reviews.Min(item => item.CreatedAt).AddDays(7);
+    }
 }

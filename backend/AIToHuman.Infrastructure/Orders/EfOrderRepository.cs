@@ -33,6 +33,7 @@ public sealed class EfOrderRepository(TaskDbContext db) : IOrderRepository
 public sealed class EfReviewRepository(TaskDbContext db) : IReviewRepository
 {
     public IReadOnlyCollection<Review> ListByOrder(Guid orderId) => db.Reviews.AsNoTracking().Where(item => item.OrderId == orderId).OrderBy(item => item.CreatedAt).AsEnumerable().Select(Map).ToArray();
+    public IReadOnlyCollection<Review> ListByReviewee(Guid revieweeId) => db.Reviews.AsNoTracking().Where(item => item.RevieweeId == revieweeId).OrderByDescending(item => item.CreatedAt).AsEnumerable().Select(Map).ToArray();
     public Review? GetByReviewer(Guid orderId, Guid reviewerId) => db.Reviews.AsNoTracking().SingleOrDefault(item => item.OrderId == orderId && item.ReviewerId == reviewerId) is { } record ? Map(record) : null;
     public void Add(Review review) { db.Reviews.Add(ToRecord(review)); db.SaveChanges(); }
     private static ReviewRecord ToRecord(Review review) => new() { Id = review.Id, OrderId = review.OrderId, ReviewerId = review.ReviewerId, RevieweeId = review.RevieweeId, Rating = review.Rating, Comment = review.Comment, CreatedAt = review.CreatedAt };

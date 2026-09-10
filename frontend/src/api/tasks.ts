@@ -46,6 +46,12 @@ export interface ReviewItem {
   createdAt: string
   isVisible: boolean
 }
+export interface ReviewSummary {
+  userId: string
+  averageRating: number
+  reviewCount: number
+  recentReviews: ReviewItem[]
+}
 
 export interface SelectTaskResult {
   task: TaskItem
@@ -115,6 +121,10 @@ export async function createOrderReview(orderId: string, reviewerId: string, rat
   return parseResponse<ReviewItem>(await fetch(`/api/v1/orders/${orderId}/reviews`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ reviewerId, rating, comment }),
   }))
+}
+
+export async function getReviewSummary(userId: string): Promise<ReviewSummary> {
+  return parseResponse<ReviewSummary>(await fetch(`/api/v1/users/${userId}/review-summary`, { headers: authHeaders() }))
 }
 
 export async function applyForTask(taskId: string, workerId: string, note: string): Promise<TaskItem> {

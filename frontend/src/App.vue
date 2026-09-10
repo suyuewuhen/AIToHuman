@@ -3,7 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { requestRewardSuggestion } from './api/rewards'
 import { getDevSession, type DevSession } from './api/session'
 import { clearAccessToken, getAccessToken, getCurrentUser, login, register, switchRole, type ActiveRole, type AuthResponse } from './api/auth'
-import { applyForTask, approveOrder, createOrderReview, createTask, listMyOrders, listOrderReviews, listPublishedTasks, listTaskApplications, publishTask, rejectOrder, selectTaskApplication, startOrder, submitOrder, type OrderItem, type ReviewItem, type TaskApplication, type TaskItem } from './api/tasks'
+import { applyForTask, approveOrder, createOrderReview, createTask, getReviewSummary, listMyOrders, listOrderReviews, listPublishedTasks, listTaskApplications, publishTask, rejectOrder, selectTaskApplication, startOrder, submitOrder, type OrderItem, type ReviewItem, type TaskApplication, type TaskItem, type ReviewSummary } from './api/tasks'
 import { connectOrderNotifications, disconnectOrderNotifications } from './api/notifications'
 
 type Step = { label: string; done: boolean }
@@ -27,6 +27,7 @@ const roleMenuOpen = ref(false)
 const roleSwitchBusy = ref(false)
 const roleSwitchError = ref('')
 const tasks = ref<TaskItem[]>([])
+const reviewSummaries = ref<Record<string, ReviewSummary>>({})
 const hallLoading = ref(true)
 const hallError = ref('')
 const applyingTaskId = ref('')
@@ -143,6 +144,9 @@ async function loadTasks() {
   hallError.value = ''
   try {
     tasks.value = await listPublishedTasks()
+    const owners = [...new Set(tasks.value.map(task => task.ownerId))]
+    const summaries = await Promise.all(owners.map(async userId => [userId, await getReviewSummary(userId)] as const).map(item => item.catch(() => null)))
+    for (const item of summaries) if (item) reviewSummaries.value[item[0]] = item[1]
   } catch (error) {
     hallError.value = error instanceof Error ? error.message : '任务大厅加载失败'
   } finally {
@@ -511,7 +515,7 @@ onMounted(async () => {
           </div>
           <div class="owner-trust">
             <span class="mini-avatar">需</span>
-            <div><strong>需求方信用待接入</strong><small>已公开评价将在这里展示</small></div>
+            <div><strong>{{ reviewSummaries[task.ownerId] ? `需求方 ${reviewSummaries[task.ownerId]!.averageRating.toFixed(1)} 分` : '需求方暂未有评价' }}</strong><small>{{ reviewSummaries[task.ownerId] ? `${reviewSummaries[task.ownerId]!.reviewCount} 条已公开评价` : '完成订单后可互相评价' }}</small></div>
           </div>
           <div class="task-actions">
             <span>{{ task.applicationCount }} 人已报名</span>

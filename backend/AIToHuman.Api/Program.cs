@@ -238,6 +238,7 @@ app.MapPost("/api/v1/orders/{id:guid}/approve", (Guid id, OrderActionRequest req
 app.MapPost("/api/v1/orders/{id:guid}/reject", (Guid id, OrderActionRequest request, ClaimsPrincipal user, IHostEnvironment environment, TaskService service) => Results.Ok(service.RejectOrder(id, ResolveUserId(user, request.ActorId, environment), request.Note)));
 app.MapGet("/api/v1/orders/{id:guid}/reviews", (Guid id, ClaimsPrincipal user, IHostEnvironment environment, TaskService service) => Results.Ok(service.ListReviews(id, ResolveUserId(user, Guid.Empty, environment))));
 app.MapPost("/api/v1/orders/{id:guid}/reviews", (Guid id, CreateReviewRequest request, ClaimsPrincipal user, IHostEnvironment environment, TaskService service) => Results.Ok(service.CreateReview(id, request with { ReviewerId = ResolveUserId(user, request.ReviewerId, environment) }, ResolveUserId(user, request.ReviewerId, environment))));
+app.MapGet("/api/v1/users/{id:guid}/review-summary", (Guid id, TaskService service) => Results.Ok(service.GetReviewSummary(id)));
 
 app.Run();
 
