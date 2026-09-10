@@ -1,3 +1,5 @@
+using AIToHuman.Domain.Common;
+
 namespace AIToHuman.Domain.Tasks;
 
 public enum TaskApplicationStatus
@@ -16,7 +18,7 @@ public sealed class TaskApplication
         Id = Guid.NewGuid();
         WorkerId = workerId;
         Note = note.Trim();
-        SubmittedAt = submittedAt;
+        SubmittedAt = UtcTimestamp.Normalize(submittedAt);
     }
 
     public Guid Id { get; private set; }

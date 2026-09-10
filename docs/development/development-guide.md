@@ -18,7 +18,7 @@
 - 本地秘密使用 .NET User Secrets 或环境变量。
 - 本地联调可使用 `GET /api/v1/session/dev` 获取合成开发会话；该接口仅在 Development 环境开放，不能替代正式登录或授权。
 - 数据库结构只通过 EF Core Migration 演进。
-- 早期 `EnsureCreated()` 生成的本地开发库没有迁移历史；API 启动时会幂等补齐认证所需的 `users` 表，后续新环境使用 EF Core Migration。
+- 早期 `EnsureCreated()` 生成的本地开发库没有迁移历史；Development 启动时会检测并按情况处理：表与当前模型一致时把已有迁移整体标记为已应用（打警告日志），表不齐时直接报错并提示重建，避免在错误的 schema 上运行。
 - 示例数据必须为合成数据。
 - 一条命令应能启动依赖，一条命令应能执行全部必要检查。
 
@@ -45,6 +45,7 @@
 
 - 单元测试：领域状态机、风险规则、金额和权限决策。
 - 集成测试：真实 PostgreSQL/Redis/对象存储兼容服务下的 API 与持久化。
+- AI 协议集成测试：`backend/tests/AIToHuman.IntegrationTests` 用替身上游覆盖 SSE 分片、转义、缺少结束标记、超时与上游错误，不联网也不依赖数据库。
 - 契约测试：OpenAPI、生成客户端和 Problem Details。
 - 端到端测试：AI 草稿到任务完成的关键路径。
 - 安全测试：跨用户访问、角色提升、文件 ID 枚举、状态绕过和速率限制。
@@ -56,7 +57,7 @@
 
 - 每个结构变化附 EF Core Migration。
 - Migration 名称描述业务变化。
-- 生产环境由部署流程执行迁移，不由每个 API 实例启动时自动执行。
+- 生产环境由部署流程执行迁移，不由每个 API 实例启动时自动执行；Development 启动时自动应用迁移。
 - 破坏性变化先扩展、迁移数据、再收缩，明确回滚方案。
 
 ## 6. API 开发流程

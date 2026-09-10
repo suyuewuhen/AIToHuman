@@ -22,7 +22,8 @@ public sealed class TaskItem
         DateTimeOffset deadline,
         Money reward,
         IEnumerable<string> acceptanceCriteria,
-        DateTimeOffset createdAt)
+        DateTimeOffset createdAt,
+        string? executionAddress = null)
     {
         var criteria = acceptanceCriteria
             .Where(item => !string.IsNullOrWhiteSpace(item))
@@ -34,31 +35,42 @@ public sealed class TaskItem
         if (string.IsNullOrWhiteSpace(title) || title.Trim().Length > 80) throw new DomainException("任务标题必须为 1 到 80 个字符。");
         if (string.IsNullOrWhiteSpace(description)) throw new DomainException("任务描述不能为空。");
         if (string.IsNullOrWhiteSpace(district)) throw new DomainException("任务必须包含公开区域。");
-        if (deadline <= createdAt) throw new DomainException("截止时间必须晚于创建时间。");
+        if (UtcTimestamp.Normalize(deadline) <= UtcTimestamp.Normalize(createdAt)) throw new DomainException("截止时间必须晚于创建时间。");
         if (criteria.Length == 0) throw new DomainException("任务至少需要一项验收标准。");
+        if (executionAddress?.Trim().Length > MaxExecutionAddressLength) throw new DomainException($"执行地址不能超过 {MaxExecutionAddressLength} 个字符。");
 
         Id = Guid.NewGuid();
         OwnerId = ownerId;
         Title = title.Trim();
         Description = description.Trim();
         District = district.Trim();
-        Deadline = deadline;
+        Deadline = UtcTimestamp.Normalize(deadline);
         Reward = reward;
         AcceptanceCriteria = criteria;
-        CreatedAt = createdAt;
+        CreatedAt = UtcTimestamp.Normalize(createdAt);
+        ExecutionAddress = NormalizeExecutionAddress(executionAddress);
     }
+
+    /// <summary>执行地址属于订单参与者层信息，最长 200 字。</summary>
+    public const int MaxExecutionAddressLength = 200;
 
     public Guid Id { get; private set; }
     public Guid OwnerId { get; private set; }
     public string Title { get; private set; }
     public string Description { get; private set; }
     public string District { get; private set; }
+
+    /// <summary>精确执行地址，只在订单成立后向参与者披露；大厅与公开详情永远不含它。</summary>
+    public string? ExecutionAddress { get; private set; }
+
     public DateTimeOffset Deadline { get; private set; }
     public Money Reward { get; private set; }
     public IReadOnlyList<string> AcceptanceCriteria { get; private set; }
     public DateTimeOffset CreatedAt { get; private set; }
     public TaskStatus Status { get; private set; } = TaskStatus.ReadyToPublish;
     public IReadOnlyCollection<TaskApplication> Applications => _applications.AsReadOnly();
+
+    public bool HasExecutionAddress => !string.IsNullOrWhiteSpace(ExecutionAddress);
 
     public static TaskItem Rehydrate(
         Guid id,
@@ -71,7 +83,8 @@ public sealed class TaskItem
         IReadOnlyList<string> acceptanceCriteria,
         DateTimeOffset createdAt,
         TaskStatus status,
-        IEnumerable<TaskApplication> applications)
+        IEnumerable<TaskApplication> applications,
+        string? executionAddress = null)
     {
         var task = new TaskItem
         {
@@ -84,10 +97,30 @@ public sealed class TaskItem
             Reward = reward,
             AcceptanceCriteria = acceptanceCriteria,
             CreatedAt = createdAt,
-            Status = status
+            Status = status,
+            ExecutionAddress = NormalizeExecutionAddress(executionAddress)
         };
         task._applications.AddRange(applications);
         return task;
+    }
+
+    /// <summary>
+    /// 执行地址的分阶段披露：所有者始终可见；被选中的服务者在订单成立后可见；
+    /// 其他任何人（包括已报名但未被选中的服务者）都拿不到。
+    /// </summary>
+    public string? ExecutionAddressFor(Guid? viewerId)
+    {
+        if (viewerId is null || viewerId == Guid.Empty) return null;
+        if (viewerId == OwnerId) return ExecutionAddress;
+
+        var selected = _applications.FirstOrDefault(item => item.Status == TaskApplicationStatus.Selected);
+        return selected is not null && selected.WorkerId == viewerId ? ExecutionAddress : null;
+    }
+
+    private static string? NormalizeExecutionAddress(string? value)
+    {
+        var trimmed = value?.Trim();
+        return string.IsNullOrEmpty(trimmed) ? null : trimmed;
     }
 
     public void Publish(DateTimeOffset now)
@@ -138,6 +171,13 @@ public sealed class TaskItem
 
         Status = TaskStatus.Assigned;
         return selected;
+    }
+
+    /// <summary>订单验收通过后关闭任务。只有已分配的任务可以关闭，关闭后不再出现在任务大厅。</summary>
+    public void Close()
+    {
+        EnsureStatus(TaskStatus.Assigned);
+        Status = TaskStatus.Closed;
     }
 
     private void EnsureStatus(TaskStatus expected)

@@ -18,6 +18,7 @@ export interface TaskItem {
   status: string
   acceptanceCriteria: string[]
   applicationCount: number
+  hasExecutionAddress?: boolean
 }
 
 export interface OrderItem {
@@ -34,6 +35,9 @@ export interface OrderItem {
   reviewNote?: string | null
   submittedAt?: string | null
   reviewedAt?: string | null
+  reworkCount: number
+  rejectionNote?: string | null
+  unreadMessageCount?: number
 }
 
 export interface ReviewItem {
@@ -66,6 +70,7 @@ export interface CreateTaskInput {
   deadline: string
   reward: number
   acceptanceCriteria: string[]
+  executionAddress?: string
 }
 
 async function parseResponse<T>(response: Response): Promise<T> {
@@ -79,8 +84,39 @@ function authHeaders(): HeadersInit {
   return token ? { Authorization: `Bearer ${token}` } : {}
 }
 
-export async function listPublishedTasks(): Promise<TaskItem[]> {
-  return parseResponse<TaskItem[]>(await fetch('/api/v1/tasks', { headers: authHeaders() }))
+export interface TaskListPage {
+  items: TaskItem[]
+  nextCursor: string | null
+  hasMore: boolean
+}
+
+export interface TaskListQuery {
+  district?: string
+  minReward?: number
+  maxReward?: number
+  limit?: number
+  cursor?: string
+}
+
+export async function listPublishedTasks(query: TaskListQuery = {}): Promise<TaskListPage> {
+  const params = new URLSearchParams()
+  if (query.district) params.set('district', query.district)
+  if (query.minReward !== undefined) params.set('minReward', String(query.minReward))
+  if (query.maxReward !== undefined) params.set('maxReward', String(query.maxReward))
+  params.set('limit', String(query.limit ?? 12))
+  if (query.cursor) params.set('cursor', query.cursor)
+  return parseResponse<TaskListPage>(await fetch(`/api/v1/tasks?${params.toString()}`, { headers: authHeaders() }))
+}
+
+/** 精确执行地址：只有所有者与被选中的服务者能读到值。 */
+export async function getExecutionAddress(taskId: string, userId: string): Promise<{ taskId: string; executionAddress: string | null }> {
+  return parseResponse<{ taskId: string; executionAddress: string | null }>(
+    await fetch(`/api/v1/tasks/${taskId}/execution-address?userId=${encodeURIComponent(userId)}`, { headers: authHeaders() }),
+  )
+}
+
+export async function listMyTasks(ownerId: string): Promise<TaskItem[]> {
+  return parseResponse<TaskItem[]>(await fetch(`/api/v1/tasks/mine?ownerId=${encodeURIComponent(ownerId)}`, { headers: authHeaders() }))
 }
 
 export async function createTask(input: CreateTaskInput): Promise<TaskItem> {
@@ -98,11 +134,18 @@ export async function publishTask(taskId: string, ownerId: string): Promise<Task
   }))
 }
 
+export async function increaseTaskReward(taskId: string, ownerId: string, reward: number): Promise<TaskItem> {
+  return parseResponse<TaskItem>(await fetch(`/api/v1/tasks/${taskId}/increase-reward?ownerId=${encodeURIComponent(ownerId)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ reward }),
+  }))
+}
+
 export async function listMyOrders(userId: string): Promise<OrderItem[]> {
   return parseResponse<OrderItem[]>(await fetch(`/api/v1/orders?userId=${encodeURIComponent(userId)}`, { headers: authHeaders() }))
 }
-
-async function orderAction(orderId: string, action: 'start' | 'submit' | 'approve' | 'reject', actorId: string, note?: string): Promise<OrderItem> {
+async function orderAction(orderId: string, action: 'start' | 'submit' | 'approve' | 'reject' | 'resume', actorId: string, note?: string): Promise<OrderItem> {
   return parseResponse<OrderItem>(await fetch(`/api/v1/orders/${orderId}/${action}`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ actorId, note }),
   }))
@@ -112,6 +155,7 @@ export const startOrder = (orderId: string, actorId: string) => orderAction(orde
 export const submitOrder = (orderId: string, actorId: string, note: string) => orderAction(orderId, 'submit', actorId, note)
 export const approveOrder = (orderId: string, actorId: string, note?: string) => orderAction(orderId, 'approve', actorId, note)
 export const rejectOrder = (orderId: string, actorId: string, note: string) => orderAction(orderId, 'reject', actorId, note)
+export const resumeOrder = (orderId: string, actorId: string) => orderAction(orderId, 'resume', actorId)
 
 export async function listOrderReviews(orderId: string): Promise<ReviewItem[]> {
   return parseResponse<ReviewItem[]>(await fetch(`/api/v1/orders/${orderId}/reviews`, { headers: authHeaders() }))

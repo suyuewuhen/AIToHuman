@@ -18,30 +18,53 @@ AIToHuman 是一个“AI 任务管家 + 真人服务任务大厅”平台。用�
 
 ## 技术方向
 
-- 前端：Vue 3、TypeScript、Vite、Pinia、Vue Router、Element Plus
-- 后端：ASP.NET Core Web API、C#、Entity Framework Core
-- 数据：PostgreSQL、Redis
-- 实时通信：SignalR
-- 后台任务：Hangfire
-- 文件存储：S3 兼容对象存储（开发环境可用 MinIO）
-- AI：通过可替换的模型适配层接入支持结构化输出的模型服务
-- 部署：Docker Compose、Nginx
-- 架构：前后端分离的模块化单体
+已接入并有代码可验证：
 
-## 仓库规划
+- 前端：Vue 3、TypeScript、Vite（严格模式，`npm run typecheck`）
+- 后端：ASP.NET Core 10 Minimal API、C#、Entity Framework Core
+- 架构：前后端分离的模块化单体，依赖方向 `Api → Application → Domain`
+- 数据：PostgreSQL（当前开发事实来源；未配置连接串时回退内存仓储）
+- 实时通信：SignalR（当前仅选人后的 `OrderCreated` 通知）
+- AI：火山引擎 Ark OpenAI 兼容接口，SSE 流式多轮澄清
+- 本地依赖：`compose.yaml` 定义 PostgreSQL、Redis 和 MinIO
+
+规划中、代码尚未接入：
+
+- 前端 Pinia、Vue Router、Element Plus（当前是单页 `App.vue`，未引入路由和状态库）
+- Redis 缓存与分布式锁、Hangfire 后台作业、S3 兼容对象存储凭证
+- Nginx 与生产环境部署编排
+
+## 仓库结构
 
 ```text
 AIToHuman/
-├── frontend/                  # Vue 用户端与服务者端（后续创建）
-├── backend/                   # .NET 后端（后续创建）
+├── frontend/                       # Vue 用户端与服务者端（单页工作台）
+│   └── src/
+│       ├── api/                    # AI SSE、认证、任务、订单、评价、SignalR 客户端
+│       ├── App.vue                 # 对话工作台、草稿、大厅、订单与评价
+│       └── styles.css
+├── backend/
+│   ├── AIToHuman.Api/              # HTTP、JWT、AI SSE、SignalR Hub
+│   ├── AIToHuman.Application/      # 用例、仓储与通知接口
+│   ├── AIToHuman.Domain/           # 实体、值对象与状态机
+│   ├── AIToHuman.Infrastructure/   # EF Core、PostgreSQL 与内存仓储
+│   ├── AIToHuman.Contracts/        # 请求与响应 DTO
+│   └── tests/
+│       ├── AIToHuman.Domain.Tests/          # 领域单元测试
+│       └── AIToHuman.IntegrationTests/      # AI 多轮协议与 SSE 集成测试
 ├── docs/
-│   ├── product/              # 产品定位、MVP 与用户故事
-│   ├── architecture/         # 系统设计、领域模型与 ADR
-│   ├── api/                  # API 约定
-│   ├── security/             # 安全、隐私、风控与合规边界
-│   └── development/          # 开发规范与路线图
+│   ├── product/                    # 产品定位、MVP 与用户故事
+│   ├── architecture/               # 系统设计、领域模型与 ADR
+│   ├── api/                        # API 约定
+│   ├── security/                   # 安全、隐私、风控与合规边界
+│   ├── development/                # 开发规范、路线图与交接文档
+│   └── ai-planning.md              # AI 多轮澄清与火山引擎配置
+├── .github/workflows/ci.yml        # 后端构建测试与前端构建
+├── compose.yaml                    # 本地 PostgreSQL、Redis、MinIO
+├── AIToHuman.sln
 ├── .editorconfig
-├── .gitignore
+├── .env.example
+├── CONTRIBUTING.md
 └── README.md
 ```
 
@@ -58,18 +81,21 @@ AIToHuman/
 - [安全、隐私与风控](docs/security/security-and-risk.md)
 - [开发指南](docs/development/development-guide.md)
 - [项目交接文档](docs/development/handoff.md)
+- [AI 多轮需求澄清配置](docs/ai-planning.md)
 - [路线图](docs/development/roadmap.md)
 - [贡献指南](CONTRIBUTING.md)
 
 ## MVP 成功标准
 
-- 用户能在 AI 引导下生成一份字段完整、可编辑的任务草稿。
-- 用户能明确确认后发布任务，AI 不能绕过确认直接发布。
-- 服务者能查看任务悬赏和用户历史评价，并按固定悬赏报名。
-- 用户能查看报名服务者的历史评价并选择合适人选。
-- 双方能围绕订单沟通、更新进度并上传执行凭证。
-- 用户能验收、拒绝并说明原因，系统完整保留审计记录。
-- 禁止任务会被拦截，高风险任务不会自动进入大厅。
+以下为 MVP 目标，不代表当前已具备的能力。截至 2026-09-10，AI 建单、固定悬赏报名、双向选择、订单状态流转和双向评价已可端到端演示；订单内沟通、文件凭证上传、禁止任务拦截和审计记录尚未实现（凭证目前只能提交文本说明）。
+
+- ⚠️ 用户能在 AI 引导下生成一份字段完整、可编辑的任务草稿（草稿已生成，但只有悬赏可按 +5 调整，标题、描述、截止时间和验收标准不可在页面编辑）。
+- ✅ 用户能明确确认后发布任务，AI 不能绕过确认直接发布。
+- ✅ 服务者能查看任务悬赏和用户历史评价，并按固定悬赏报名。
+- ⚠️ 用户能查看报名服务者的历史评价并选择合适人选（选择报名者已实现，但报名列表不返回服务者评价，需求方目前看不到服务者信用）。
+- ⚠️ 双方能围绕订单沟通、更新进度并上传执行凭证（状态更新已实现，订单内消息和文件上传未实现）。
+- ⚠️ 用户能验收、拒绝并说明原因，系统完整保留审计记录（验收与驳回原因已实现，审计记录未实现）。
+- ⛔ 禁止任务会被拦截，高风险任务不会自动进入大厅。
 
 ## 参与开发
 

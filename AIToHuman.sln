@@ -19,6 +19,8 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{F57642F3
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AIToHuman.Domain.Tests", "backend\tests\AIToHuman.Domain.Tests\AIToHuman.Domain.Tests.csproj", "{ACAE9D01-16FD-43CE-83B2-61C3DC8D9BD6}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AIToHuman.IntegrationTests", "backend\tests\AIToHuman.IntegrationTests\AIToHuman.IntegrationTests.csproj", "{DD40CB0A-A2BF-408D-9C86-A87E01A66328}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -101,6 +103,18 @@ Global
 		{ACAE9D01-16FD-43CE-83B2-61C3DC8D9BD6}.Release|x64.Build.0 = Release|Any CPU
 		{ACAE9D01-16FD-43CE-83B2-61C3DC8D9BD6}.Release|x86.ActiveCfg = Release|Any CPU
 		{ACAE9D01-16FD-43CE-83B2-61C3DC8D9BD6}.Release|x86.Build.0 = Release|Any CPU
+		{DD40CB0A-A2BF-408D-9C86-A87E01A66328}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{DD40CB0A-A2BF-408D-9C86-A87E01A66328}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{DD40CB0A-A2BF-408D-9C86-A87E01A66328}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{DD40CB0A-A2BF-408D-9C86-A87E01A66328}.Debug|x64.Build.0 = Debug|Any CPU
+		{DD40CB0A-A2BF-408D-9C86-A87E01A66328}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{DD40CB0A-A2BF-408D-9C86-A87E01A66328}.Debug|x86.Build.0 = Debug|Any CPU
+		{DD40CB0A-A2BF-408D-9C86-A87E01A66328}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{DD40CB0A-A2BF-408D-9C86-A87E01A66328}.Release|Any CPU.Build.0 = Release|Any CPU
+		{DD40CB0A-A2BF-408D-9C86-A87E01A66328}.Release|x64.ActiveCfg = Release|Any CPU
+		{DD40CB0A-A2BF-408D-9C86-A87E01A66328}.Release|x64.Build.0 = Release|Any CPU
+		{DD40CB0A-A2BF-408D-9C86-A87E01A66328}.Release|x86.ActiveCfg = Release|Any CPU
+		{DD40CB0A-A2BF-408D-9C86-A87E01A66328}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -113,5 +127,6 @@ Global
 		{192E4C5E-E0E1-4E67-BADF-0BBEEAC715A1} = {1AE8ACA6-933B-BF2A-3671-3E2EAC007D16}
 		{F57642F3-C37C-D174-720E-6A6AAD5BEE22} = {1AE8ACA6-933B-BF2A-3671-3E2EAC007D16}
 		{ACAE9D01-16FD-43CE-83B2-61C3DC8D9BD6} = {F57642F3-C37C-D174-720E-6A6AAD5BEE22}
+		{DD40CB0A-A2BF-408D-9C86-A87E01A66328} = {F57642F3-C37C-D174-720E-6A6AAD5BEE22}
 	EndGlobalSection
 EndGlobal

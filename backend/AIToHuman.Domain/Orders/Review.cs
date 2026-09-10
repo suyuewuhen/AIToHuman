@@ -11,7 +11,7 @@ public sealed class Review
         if (reviewerId == revieweeId) throw new DomainException("不能评价自己。");
         if (rating is < 1 or > 5) throw new DomainException("评分必须在 1 到 5 星之间。");
         if (comment?.Length > 1000) throw new DomainException("评价内容不能超过 1000 个字符。");
-        Id = Guid.NewGuid(); OrderId = orderId; ReviewerId = reviewerId; RevieweeId = revieweeId; Rating = rating; Comment = comment?.Trim() ?? string.Empty; CreatedAt = createdAt;
+        Id = Guid.NewGuid(); OrderId = orderId; ReviewerId = reviewerId; RevieweeId = revieweeId; Rating = rating; Comment = comment?.Trim() ?? string.Empty; CreatedAt = UtcTimestamp.Normalize(createdAt);
     }
     public Guid Id { get; private set; }
     public Guid OrderId { get; private set; }

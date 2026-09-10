@@ -27,6 +27,7 @@ POST   /api/v1/task-drafts/{draftId}/reward-suggestion
 POST   /api/v1/task-drafts/{draftId}/confirm
 
 GET    /api/v1/tasks
+GET    /api/v1/tasks/mine
 GET    /api/v1/tasks/{taskId}
 POST   /api/v1/tasks/{taskId}/publish
 POST   /api/v1/tasks/{taskId}/cancel
@@ -43,6 +44,7 @@ POST   /api/v1/orders/{orderId}/start-work
 POST   /api/v1/orders/{orderId}/submit
 POST   /api/v1/orders/{orderId}/approve
 POST   /api/v1/orders/{orderId}/reject
+POST   /api/v1/orders/{orderId}/resume
 POST   /api/v1/orders/{orderId}/disputes
 POST   /api/v1/orders/{orderId}/reviews
 GET    /api/v1/users/{userId}/reviews
@@ -55,7 +57,13 @@ GET    /api/v1/workers/{workerId}/reviews
 
 任务大厅的 `GET /tasks` 与公开任务详情只返回区域、悬赏、验收标准和报名人数等公开摘要，不返回服务者 `workerId`、报名备注或联系方式。报名详情仅在后续完成认证和资源授权后，向任务所有者或对应服务者返回。
 
+公开详情 `GET /tasks/{id}` 不返回他人的草稿：`ReadyToPublish` 状态只有所有者能读到，其他人（含匿名）得到 `404`。精确执行地址走独立接口 `GET /tasks/{id}/execution-address`，只有所有者与被选中的服务者可读，其余返回 `403`；大厅与公开详情只暴露 `hasExecutionAddress` 布尔值。
+
+`GET /tasks/mine` 是所有者视角的任务列表：返回当前用户作为所有者的全部任务及其状态（`ReadyToPublish`、`Published`、`Assigned`、`Closed` 等）和报名人数，避免草稿、已分配和已结束的任务只在公开大厅里消失。身份优先取 JWT，Development 环境可用 `?ownerId=...` 回退；已认证时请求里的 `ownerId` 会被忽略。
+
 建议价响应至少包含建议金额、建议区间、币种、主要估价因素、数据充分度和规则/模型版本。它不修改草稿金额；用户另行编辑并确认的 `reward` 才是任务悬赏。
+
+对话最少闭环当前提供：`POST /api/v1/conversations` 创建会话（服务端写入开场白），`GET /api/v1/conversations/{id}?userId=...` 读取历史与当前草稿用于刷新恢复，`GET /api/v1/conversations?userId=...&limit=...` 列出该用户的会话。会话历史以服务端为准：`POST /api/v1/ai/plan/stream` 的请求体是 `{ conversationId, userId, message }`，服务端取出最近 29 条历史并接上本轮消息发给模型，回合完整成功后才写入用户消息与 AI 回复。会话仅所有者可读可写，越权返回 `403`；会话不存在返回 `404`；消息为空或超长返回 `422`。这三类问题在开始写 SSE 之前判定，因此仍用 HTTP 状态码表达。
 
 ## 3. 成功响应
 
@@ -117,6 +125,8 @@ GET /api/v1/tasks?category=pickup&district=chaoyang&limit=20&cursor=...
 
 排序字段采用白名单，不能将客户端字段直接拼接为 SQL。
 
+已实现：`GET /api/v1/tasks` 按截止时间升序游标分页，返回 `items`/`nextCursor`/`hasMore`；支持 `district`、`minReward`、`maxReward` 筛选，`limit` 上限 50、默认 12。游标是不透明字符串（编码上一页最后一条的截止时间与 Id），排序第二关键字用 Id 保证同一截止时间下不丢条不重复。非法区间或非法游标返回 `400` 与可读原因，而不是静默忽略。
+
 ## 6. 认证与授权
 
 - Access Token 短时有效，Refresh Token 轮换并可撤销。
@@ -132,6 +142,8 @@ GET /api/v1/tasks?category=pickup&district=chaoyang&limit=20&cursor=...
 - 更新资源返回 ETag 或版本字段；冲突返回 `409`。
 - 客户端超时后可以使用相同幂等键安全重试。
 
+已实现的并发控制：`tasks` 与 `orders` 各有一个 `Version` 乐观并发令牌，并发加价、并发选人、并发提交或验收时后写入者返回 `409` 与“该任务或订单刚刚被其他人更新，请刷新后重试。”；选择报名者和验收在同一数据库事务内完成；`orders.TaskId` 唯一索引保证一个任务最多一个订单。`Idempotency-Key` 与 ETag 尚未实现，响应里也不返回版本字段。
+
 ## 8. 文件上传
 
 推荐三步流程：
@@ -141,6 +153,13 @@ GET /api/v1/tasks?category=pickup&district=chaoyang&limit=20&cursor=...
 3. 客户端提交文件 ID，服务端确认存在且安全扫描通过后关联订单。
 
 服务端不信任扩展名，应检查 MIME、文件签名、大小和图片元数据；必要时重新编码图片并移除 EXIF。
+
+已实现的凭证流程（单次 multipart 上传 + 鉴权流式下载，而不是两步签名 URL）：
+
+- `POST /api/v1/orders/{orderId}/evidence` 使用 `multipart/form-data`（字段名 `file`），仅订单服务者可调用；服务端按白名单校验 MIME、按文件签名校验内容、核对声明大小与实际字节数，超出 5 MB 返回 `413`、类型或内容不符返回 `422`。
+- `GET /api/v1/orders/{orderId}/evidence` 返回元数据（含扫描状态与是否可下载），仅订单参与者。
+- `GET /api/v1/evidence/{id}/content` 在鉴权后流式返回文件，响应带 `X-Content-Type-Options: nosniff`，下载文件名由系统生成（不使用用户原始文件名，避免响应头注入）；未通过扫描的凭证返回 `403`。
+- 换成 S3/OSS 时保持同样的授权判定，只是把流式转发改为签发短时 URL；`IFileStorage` 已经把这个差异隔离在基础设施层。
 
 ## 9. SignalR 事件
 
@@ -154,3 +173,22 @@ GET /api/v1/tasks?category=pickup&district=chaoyang&limit=20&cursor=...
 - `notification.created`
 
 实时事件只是刷新提示，客户端断线重连后必须通过 REST 获取事实状态，不能只依赖事件恢复数据。
+
+已实现的推送是统一的 `notification.created`，载荷为版本化信封：
+
+```json
+{
+  "eventId": "347dd6a9-6c1d-4007-9424-a45c192636bd",
+  "type": "order.created",
+  "version": 1,
+  "occurredAt": "2026-09-10T13:29:04.496024+00:00",
+  "payload": { "orderId": "347dd6a9-...", "status": "Accepted", "title": "通知骨干验证" }
+}
+```
+
+- `eventId` 是幂等键，客户端可据此去重；订单创建用订单 ID，状态变化由订单 ID 与状态推导，重放同一状态不会产生第二条。
+- `version` 是信封版本，客户端应忽略高于自身支持版本的推送，并改用 REST 刷新。
+- 推送前通知已经落库，`GET /api/v1/notifications` 能拿到同一批数据；`POST /api/v1/notifications/read` 标记已读并返回最新未读数。
+- 服务端不等待推送结果：写库成功即视为该业务事件成立，派发失败由后台任务重试。
+
+已实现的订单会话接口：`GET /api/v1/orders/{orderId}/messages`（参与者读取消息与未读数）、`POST /api/v1/orders/{orderId}/messages`（发送消息，同时在事务内写入通知）、`POST /api/v1/orders/{orderId}/messages/read`（标记已读并返回最新未读数）。非参与者一律 `403`，与订单相关的其它端点保持同一套参与者校验。订单列表的 `GET /api/v1/orders` 会附带每个订单的 `unreadMessageCount`，便于前端直接渲染未读徽标。

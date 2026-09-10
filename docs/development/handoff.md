@@ -1,103 +1,299 @@
 # AIToHuman 项目交接文档
 
-最后更新：2026-09-09  
-仓库：[suyuewuhen/AIToHuman](https://github.com/suyuewuhen/AIToHuman)  
-当前分支：`main`  
-当前基线：`cd733e5 feat: add SignalR order notifications`
+最后更新：2026-09-10
 
-本文面向接手项目的开发者、评审者和本地联调人员。内容以当前代码为准；产品文档中标记为“规划中”的模块不代表已经实现。
+仓库：[suyuewuhen/AIToHuman](https://github.com/suyuewuhen/AIToHuman)
 
-## 1. 项目定位与当前闭环
+当前分支：`main`
 
-AIToHuman 是“AI 任务管家 + 真人服务任务大厅”。用户先用自然语言描述需求，AI 帮助澄清、规划并建议悬赏；需要现实世界执行的部分，经用户确认后发布到任务大厅，由其他用户按固定悬赏报名，需求方选择服务者并形成订单。
+最新已提交基线：`f196850 fix: handle AI planning timeouts`
 
-当前已经打通的 MVP 闭环：
+本文面向接手开发、代码评审和本地联调人员。内容以当前工作区代码为准；“已提交基线”和“当前未提交实现”必须区分看待。
+
+## 1. 产品定位与当前闭环
+
+AIToHuman 是“AI 任务管家 + 真人服务任务大厅”。用户不需要填写复杂表单，而是与 AI 一句一句对话；AI 每轮只询问一个关键问题，在后台逐步理解目标、地点或执行方式、时间、验收标准和重要限制。信息足够后才生成任务草稿，经用户确认悬赏并主动发布，由服务者按固定价格报名。
+
+当前闭环：
 
 ```text
-AI 需求输入 → 规则/AI 建议悬赏 → 创建任务草稿 → 用户确认并预览
-→ 发布到任务大厅 → 服务者按固定悬赏报名 → 需求方查看报名并选择服务者
-→ 自动创建 Accepted 订单 → SignalR 主动通知被选中的服务者
+AI 多轮澄清（每轮一个问题）
+→ 信息完整后生成结构化草稿
+→ 用户检查草稿和固定悬赏
+→ 发布到任务大厅
+→ 服务者查看需求方评价并报名
+→ 需求方查看服务者评价并选择
+→ 自动创建 Accepted 订单并主动通知服务者
+→ 服务者开始、提交凭证
+→ 需求方验收或驳回
+→ 双方评价，双方提交或 7 天后公开
 ```
 
-尚未实现：真实支付和托管、实名认证、文件凭证、订单履约状态流转、双向评价盲期、争议处理、运营后台和正式消息中心。
+尚未实现：真实支付和托管、实名认证、正式聊天与未读消息、文件上传与扫描、争议处理、取消与超时、运营后台、生产级风控和多实例可靠消息。
 
-## 2. 当前已实现功能
+## 2. 当前工作区状态
+
+当前 `main` 相对 `origin/main` 有未提交修改，核心是：
+
+- 火山引擎请求改为 SSE 流式响应。
+- 单轮“输入一句话直接生成草稿”改为多轮需求澄清。
+- 浏览器只显示 `assistantMessage`，后端不会把内部任务 JSON 作为增量发送给用户。
+- `readyToDraft=false` 时右侧草稿保持锁定，不再使用演示任务或默认字段兜底。
+- `readyToDraft=true` 时才返回并显示完整 `plan`。
+- AI 无活动超时调整为 120 秒，每收到上游数据后重新计时。
+- `AIToHuman.Api.csproj` 含本机 `UserSecretsId`；提交前检查该修改和文件 BOM 是否符合团队约定。
+- 订单驳回后新增返工闭环：服务者可重新进入执行并再次提交，`ReworkCount` 记录返工次数、`RejectionNote` 保留驳回原因。
+- 订单验收通过后自动把任务从 `Assigned` 推进到 `Closed`，关闭后的任务不再出现在任务大厅。
+- `orders` 表新增 `RejectionNote`、`ReworkCount` 两列，并有 EF Core 迁移 `20260910112753_AddOrderRework`。
+- 对话改为服务端持久化：新增 `Conversation` 聚合与 `conversations`、`conversation_messages` 两张表（迁移 `20260910122327_AddConversations`），AI 流端点按会话历史生成请求并落库回合，前端刷新后可恢复对话与草稿。
+- 请求 DTO `AiTaskPlanRequest` 由 `messages` 数组改为 `conversationId` + `userId` + `message`；旧前端不再兼容。
+
+当前修改涉及：
+
+```text
+README.md
+backend/AIToHuman.Api/AIToHuman.Api.csproj
+backend/AIToHuman.Api/AiPlanningService.cs
+backend/AIToHuman.Api/AiPlanStreamWriter.cs（新增文件）
+backend/AIToHuman.Api/AiTaskPlanValidator.cs（新增文件）
+backend/AIToHuman.Api/Notifications/NotificationDispatcher.cs（新增文件）
+backend/AIToHuman.Api/Program.cs
+backend/AIToHuman.Api/appsettings.json
+backend/AIToHuman.Application/Common/（新增：IUnitOfWork）
+backend/AIToHuman.Application/Notifications/（新增：INotificationRepository、NotificationService；已删除 IOrderNotificationPublisher）
+backend/AIToHuman.Application/Orders/（新增：IOrderMessageRepository、OrderChatService）
+backend/AIToHuman.Contracts/Notifications/（新增：通知信封与载荷 DTO）
+backend/AIToHuman.Contracts/Orders/（新增：订单会话消息 DTO）
+backend/AIToHuman.Domain/Notifications/（新增：Notification）
+backend/AIToHuman.Domain/Orders/OrderMessage.cs（新增文件）
+backend/AIToHuman.Infrastructure/Notifications/（新增：通知仓储）
+backend/AIToHuman.Infrastructure/Orders/OrderMessageRepository.cs（新增文件）
+backend/AIToHuman.Infrastructure/Persistence/Migrations/（新增：AddNotifications、AddOrderMessages）
+frontend/src/api/messages.ts（新增文件）
+backend/AIToHuman.Application/Conversations/（新增：IConversationRepository、ConversationService）
+backend/AIToHuman.Application/Tasks/TaskService.cs
+backend/AIToHuman.Contracts/Conversations/（新增：ConversationContracts）
+backend/AIToHuman.Contracts/Tasks/TaskContracts.cs
+backend/AIToHuman.Domain/Common/UtcTimestamp.cs（新增文件）
+backend/AIToHuman.Domain/Conversations/（新增：Conversation）
+backend/AIToHuman.Domain/Orders/Order.cs
+backend/AIToHuman.Domain/Orders/Review.cs
+backend/AIToHuman.Domain/Tasks/TaskApplication.cs
+backend/AIToHuman.Domain/Tasks/TaskItem.cs
+backend/AIToHuman.Infrastructure/Conversations/（新增：EF 与内存会话仓储）
+backend/AIToHuman.Infrastructure/Orders/EfOrderRepository.cs
+backend/AIToHuman.Infrastructure/Persistence/TaskDbContext.cs
+backend/AIToHuman.Infrastructure/Persistence/Migrations/TaskDbContextModelSnapshot.cs
+backend/AIToHuman.Infrastructure/Persistence/Migrations/20260910112753_AddOrderRework.cs（新增文件）
+backend/AIToHuman.Infrastructure/Persistence/Migrations/20260910122327_AddConversations.cs（新增文件）
+backend/AIToHuman.Infrastructure/Persistence/Migrations/20260910125745_AddTaskTables.cs（新增文件）
+backend/AIToHuman.Infrastructure/Persistence/Migrations/（新增：AddConcurrencyTokens）
+backend/tests/AIToHuman.Domain.Tests/ConversationTests.cs（新增文件）
+backend/tests/AIToHuman.Domain.Tests/OrderTests.cs
+backend/tests/AIToHuman.Domain.Tests/TaskItemTests.cs
+backend/tests/AIToHuman.IntegrationTests/（新增工程）
+docs/ai-planning.md
+docs/api/api-guidelines.md
+docs/architecture/domain-model.md
+docs/development/handoff.md
+docs/development/roadmap.md
+frontend/src/App.vue
+frontend/src/api/ai.ts
+frontend/src/api/tasks.ts
+frontend/src/styles.css
+```
+
+不要为了清理工作区覆盖这些文件。先执行 `git diff`，确认 AI 模型、超时和 User Secrets 配置后再拆分提交。
+
+## 3. 已实现功能
 
 ### 账户与身份
 
-- 邮箱、密码、显示名称注册；登录后返回 JWT Access Token。
+- 邮箱、密码和显示名称注册，登录后返回 JWT Access Token。
 - `GET /api/v1/auth/me` 查询当前用户。
-- 一个账号同时支持需求方（`owner`）和服务者（`worker`），可在右上角身份菜单切换；用户 ID、历史任务和订单归属不变。
-- 密码使用 PBKDF2 加盐哈希保存，不保存明文密码。
-- Development 环境提供固定合成联调会话；生产环境不可用。
+- 同一账号可在需求方 `owner` 和服务者 `worker` 间切换；用户 ID 与历史归属不变。
+- 密码使用 PBKDF2 加盐哈希保存。
+- Development 环境提供固定合成会话；生产环境不允许该回退。
+
+### AI 多轮澄清与草稿
+
+- 对话历史以服务端为准：`POST /api/v1/conversations` 创建会话（含开场白），每轮只提交新消息，服务端按保存的历史构造模型请求并把完成的回合落库。
+- 后端最多取 29 条历史加本轮消息共 30 条，每条 1 至 4000 个字符，最后一条必须是 `user`；超出的历史从最早的回合开始丢弃。
+- 模型输出内部 JSON：`assistantMessage`、`readyToDraft`、`plan`。
+- 后端从流式 JSON 中只提取 `assistantMessage` 发给页面；用户看不到字段名、内部分析和半截任务 JSON。
+- AI 每轮应回应已有信息并只问一个最关键问题；用户不确定时应提供少量例子或选择。
+- 草稿未完成时不能创建任务；完成后用户仍须检查任务字段和固定悬赏，再确认发布。
+- 刷新页面或换设备后，前端用会话 ID 读取历史并恢复对话与草稿；`readyToDraft` 的回合连同 `plan` 一起持久化。
+- 回合只在模型完整成功后才落库：AI 失败时对话保持原样，前端把刚才的输入还给用户重试。
 
 ### 任务、悬赏与报名
 
-- 创建任务初始状态为 `ReadyToPublish`。
-- 悬赏建议只返回建议金额、区间、因素和数据充分度，不绕过用户确认。
-- 确认草稿后先创建任务并打开预览，再由用户点击最终确认发布。
-- 发布后、分配服务者前可以提高悬赏，不支持降价。
-- 服务者只能按固定悬赏报名，不支持竞价、互相报价或私下加价。
-- 公开任务列表只返回区域级信息、悬赏、验收标准摘要和报名人数。
+- 创建任务初始状态为 `ReadyToPublish`，预览确认后才发布。
+- AI 建议悬赏不等于交易金额，最终悬赏由用户确认。
+- 发布后、分配服务者前只允许加价，不允许降价。
+- 服务者按固定悬赏报名，不支持竞价、互相报价或服务者改价。
+- 任务大厅展示区域级地点、悬赏、验收标准和报名数，不应公开精确地址或联系方式。
+- 大厅列表按截止时间升序游标分页（`items`/`nextCursor`/`hasMore`），支持按区域、悬赏区间筛选；非法区间或非法游标返回 `400` 与可读原因。
+- 公开详情只对已发布及之后的状态开放；`ReadyToPublish` 草稿仅所有者可见，其他人（含匿名）一律 `404`，避免草稿内容泄露。
+- 精确执行地址属于订单参与者层信息：所有者始终可读，被选中的服务者在订单成立后可读，已报名但未被选中的服务者与其他人返回 `403`；大厅与公开详情只暴露 `hasExecutionAddress` 布尔值，永远不含地址本身。
+- 需求方可查看报名者和评价摘要，再选择服务者。
 
-### 订单与主动通知
+### 订单、通知与评价
 
-- 需求方选择服务者后自动创建 `Accepted` 订单，并保存任务标题和悬赏金额快照。
-- “我的订单”分为“我发布的订单”和“我接取的任务”两个页签，按 `ownerId` / `workerId` 分类。
-- 前端通过 SignalR 连接 `/hubs/notifications`。
-- 选择服务者后，后端向被选服务者用户组发送 `OrderCreated`；服务者页面收到后立即显示通知并更新接取任务。
-- 当前用户组和通知发布器为单实例内存实现；多实例部署需要 Redis backplane 或共享消息总线。
+- 选中服务者后自动创建订单，并固化任务标题和悬赏快照。
+- “我的订单”分为“我发布的订单”和“我接取的任务”。
+- 已实现 `Accepted → InProgress → Submitted → Approved`，需求方也可将 `Submitted` 驳回为 `Rejected`。
+- 被驳回的订单可以由服务者返工：`POST /api/v1/orders/{id}/resume` 把 `Rejected` 退回 `InProgress`，服务者可再次提交，`ReworkCount` 累加、`RejectionNote` 保留最近一次驳回原因。
+- 需求方验收通过时，同一用例内把订单置为 `Approved` 并把任务从 `Assigned` 推进到 `Closed`；任务关闭后不再出现在任务大厅，公开详情仍可查询。
+- 服务者提交时必须填写执行凭证或完成说明；需求方驳回时必须填写原因。
+- 通知走 Outbox：业务事务内写入 `notifications` 行，后台 `NotificationDispatcher` 每 2 秒扫描未派发记录并通过 SignalR 推 `notification.created`，成功后标记派发时间；推送失败不标记，下个周期重试，进程重启也不会丢。
+- 推送使用版本化信封 `{ eventId, type, version, occurredAt, payload }`；`eventId` 是幂等键（订单创建用订单 ID，状态变化由订单 ID + 状态推导），同一业务事件重复入队只保留一条。
+- 收件箱与未读数来自 `GET /api/v1/notifications`；`POST /api/v1/notifications/read` 支持按 ID 或整体标记已读。
+- 事件只是刷新提示：客户端收到推送后重新拉取订单与通知列表，断线重连也能通过 REST 恢复事实状态。
 
-## 3. 已确定的产品规则
+### 执行凭证（文件）
 
-1. 一个账号对应一个用户 ID，可在需求方和服务者身份之间切换。
-2. 当前角色只决定本次操作权限，不代表两个独立账户。
-3. AI 只能建议和规划，不能绕过用户确认直接发布任务。
-4. 悬赏由用户结合 AI 建议确认；服务者不能互相竞价，用户可以在分配前主动加价。
-5. 需求方先看服务者评价再选择；服务者先看需求方评价再报名。双方完成订单后互评，计划采用双方提交或 7 天后公开的盲评规则，当前尚未实现。
-6. 任务分配前只展示区域级位置，避免公开精确地址。
-7. 订单创建后向被选服务者主动推送；聊天、未读数和系统通知应复用 SignalR 通道扩展。
-8. 当前不接入真实支付，也不使用模拟支付冒充合规支付方案。
+- 只有订单服务者可以上传，且订单必须处于 `InProgress` 或 `Submitted`；每个订单最多 10 份，单份不超过 5 MB。
+- 类型白名单为 JPEG / PNG / WebP / PDF。服务端不信客户端声明的 MIME：先做白名单校验，再按**文件签名**核对内容（PNG 头、JPEG SOI、WebP RIFF+WEBP、`%PDF`），不一致直接拒绝。
+- 声明大小必须与实际字节数一致；读取时按上限截断，防止谎报大小绕过限额；摘要为 SHA-256。
+- 存储键完全由系统生成（`{orderId:N}/{evidenceId:N}.{ext}`），原始文件名只作为展示元数据，永不参与路径拼接。
+- 文件存私有存储（Development 为本机目录 `ObjectStorage__LocalRoot`，默认应用目录下的 `evidence`），下载前重新校验当前用户与订单关系与扫描状态。
+- 扫描状态：`Pending`（不可下载）/`Clean`/`Rejected`，终态不可回退；被拒绝的内容不落库也不留在存储里。
+- 尚未实现：真实对象存储（S3/OSS）与签名 URL、真实病毒/内容扫描、上传限速、图片重新编码与 EXIF 去除。当前 `IEvidenceScanner` 是显式放行的占位实现，并会在日志里打警告。
 
-## 4. 技术架构与目录
+### 订单会话（聊天）
+
+- 只有订单服务者可以上传，且订单必须处于 `InProgress` 或 `Submitted`；每个订单最多 10 份，单份不超过 5 MB。
+- 类型白名单为 JPEG / PNG / WebP / PDF。服务端不信客户端声明的 MIME：先做白名单校验，再按**文件签名**核对内容（PNG 头、JPEG SOI、WebP RIFF+WEBP、`%PDF`），不一致直接拒绝。
+- 声明大小必须与实际字节数一致；读取时按上限截断，防止谎报大小绕过限额；摘要为 SHA-256。
+- 存储键完全由系统生成（`{orderId:N}/{evidenceId:N}.{ext}`），原始文件名只作为展示元数据，永不参与路径拼接。
+- 文件存私有存储（Development 为本机目录 `ObjectStorage__LocalRoot`，默认应用目录下的 `evidence`），下载前重新校验当前用户与订单关系与扫描状态。
+- 扫描状态：`Pending`（不可下载）/`Clean`/`Rejected`，终态不可回退；被拒绝的内容不落库也不留在存储里。
+
+- 只有订单双方可以读写会话消息；非参与者返回 `403`，订单不存在返回 `404`。
+- 消息内容 1 至 2000 字；发送与写入通知在同一事务内完成。
+- 未读按“对方发来的且未标记已读”计算：单条消息只有一个 `ReadAt`，因为会话只有两个参与者。打开会话即标记已读。
+- 订单列表会为每个订单返回会话未读数（`unreadMessageCount`），前端在“消息”按钮上显示徽标。新消息通过 `order.messageCreated` 通知推送，载荷带标题与 60 字预览，完整内容走 REST。
+- 订单批准后双方可以分别评价；双方都提交后立即公开，只有一方提交时在 7 天后公开。
+- 每方每个订单只能评价一次，重复提交由应用层判定并返回 `422`“你已经评价过该订单。”（数据库 `(OrderId, ReviewerId)` 唯一索引作为兜底，不再依赖它抛出 500）。
+- 任务大厅会读取公开评价摘要，支持服务者查看需求方信用、需求方查看服务者信用。
+
+## 4. 已确定产品规则
+
+1. 一个账号对应一个用户 ID，角色切换只改变当前操作权限。
+2. AI 负责澄清、规划和建议，不得绕过用户确认发布任务。
+3. AI 每轮只问一个问题，避免把表单问题清单伪装成聊天。
+4. 内部任务梳理默认不可见；信息足够后才展示可检查的最终草稿。
+5. 悬赏由用户结合 AI 建议确认；服务者不能竞价，用户只能在分配前主动加价。
+6. 服务者先看需求方评价再报名，需求方先看服务者评价再选择。
+7. 公开大厅仅展示区域级位置；精确地址和联系方式属于订单执行阶段私密信息。
+8. 当前不接入真实支付，也不以模拟支付冒充合规交易能力。
+9. 聊天、未读数和系统通知后续应复用 SignalR，但需要先补持久化和可靠投递。
+
+## 5. 技术架构与目录
 
 ```text
 Vue 3 + TypeScript + Vite
-        │ REST/JSON + SignalR
+        │ REST/JSON + SSE + SignalR
         ▼
 ASP.NET Core 10 Minimal API / C#
-        ├─ Domain：实体、值对象、状态和规则
-        ├─ Application：任务、订单、通知抽象
+        ├─ Api：HTTP、JWT、SSE、SignalR、火山引擎适配
+        ├─ Application：任务、订单、评价和通知用例
+        ├─ Domain：实体、值对象、状态与业务规则
         ├─ Infrastructure：EF Core、PostgreSQL、内存仓储
-        └─ Contracts：请求/响应 DTO
+        └─ Contracts：跨层请求与响应 DTO
         ▼
 PostgreSQL（当前开发事实来源）
 ```
 
 ```text
-backend/AIToHuman.Api/                  # 路由、JWT、SignalR Hub、异常处理
-backend/AIToHuman.Application/         # TaskService、仓储/通知接口
-backend/AIToHuman.Contracts/           # 请求/响应 record
-backend/AIToHuman.Domain/              # TaskItem、TaskApplication、Order、Money
+backend/AIToHuman.Api/                  # 路由、认证、AI SSE、SignalR Hub
+backend/AIToHuman.Application/         # TaskService、仓储和通知接口
+backend/AIToHuman.Contracts/           # API record 与对话 DTO
+backend/AIToHuman.Domain/              # TaskItem、Order、Review、Conversation、Money
 backend/AIToHuman.Infrastructure/      # EF Core/PostgreSQL 与内存仓储
 backend/tests/AIToHuman.Domain.Tests/  # 领域单元测试
-frontend/src/App.vue                   # 工作台、任务大厅、订单页签
-frontend/src/api/                      # auth、tasks、rewards、notifications
-frontend/src/styles.css                # 全局样式
+backend/tests/AIToHuman.IntegrationTests/ # AI 多轮协议与 SSE 集成测试（上游替身）
+frontend/src/App.vue                   # 对话工作台、草稿、大厅、订单和评价
+frontend/src/api/ai.ts                 # SSE 客户端与多轮对话协议
+frontend/src/api/conversations.ts       # 会话创建、读取与列表
+frontend/src/api/tasks.ts              # 任务、订单和评价 API
+frontend/src/api/notifications.ts      # SignalR 客户端
+frontend/src/styles.css                # 全局响应式样式
 ```
 
-依赖方向保持为：`Api → Application → Domain`，`Infrastructure → Application + Domain`。领域层不得引用 EF Core、HTTP、SignalR 或 AI SDK；SignalR 具体实现放在 Api 层，通过 Application 的通知接口调用。
+依赖方向保持为 `Api → Application → Domain`，`Infrastructure → Application + Domain`。领域层不得引用 EF Core、HTTP、SignalR 或模型供应商代码。
 
-## 5. 本地开发
+## 6. AI 对话与 SSE 协议
+
+接口：`POST /api/v1/ai/plan/stream`
+
+请求示例：
+
+```json
+{
+  "conversationId": "0f0b1a2c-...",
+  "userId": "11111111-1111-1111-1111-111111111111",
+  "message": "明天下午帮我取一份文件"
+}
+```
+
+`userId` 只在 Development 合成会话下作为回退使用；携带 JWT 时以令牌中的用户为准，会话归属不匹配返回 `403`。
+
+SSE 事件：
+
+```text
+event: delta
+data: {"text":"可以，"}
+
+event: delta
+data: {"text":"你希望在哪里取件？"}
+
+event: complete
+data: {"turn":{"assistantMessage":"可以，你希望在哪里取件？","readyToDraft":false,"plan":null}}
+```
+
+模型输出没通过校验、服务端要重试这一轮时，会先插入一个清屏事件，页面必须丢弃已经显示的半截回复：
+
+```text
+event: restart
+data: {"reason":"AI 返回的草稿缺少任务标题，请重试。"}
+```
+
+- `delta` 只能包含可见的自然语言回复。
+- `complete.turn.readyToDraft=false` 时 `plan` 必须为 `null`。
+- 信息完整后 `readyToDraft=true`，`plan` 包含标题、描述、区域、截止时间、验收标准、建议悬赏和空的澄清数组。
+- `restart` 只出现在重试之前；收到后前端应清空本轮正在显示的流式文本，再接收后续 `delta`。
+- 会话归属、消息长度这类可在开始前判定的问题仍然返回普通 HTTP 状态码：`403` 会话不属于当前用户、`404` 会话不存在、`422` 消息为空或超长。一旦开始写 SSE，模型侧的问题才通过 `event: error` 返回，不能再依赖 HTTP 状态码表达失败。
+- 落库失败（例如数据库写入异常）也走流内 `error`，文案为“本轮对话保存失败，请重试。”；因为响应已经开始，不能用状态码表达。
+- 前端必须同时处理流正常结束但没有 `complete` 的情况。
+- 线格式由 `backend/AIToHuman.Api/AiPlanStreamWriter.cs` 统一写出，端点只负责事件分发；该文件与协议解析都有集成测试覆盖（见第 11 节）。
+- 上游响应可能分片到任意字节边界，增量只从 `assistantMessage` 字段里提取；模型把整个 JSON 分片发送时，拼接后的增量必须等于最终 `assistantMessage`。
+- 模型输出由 `backend/AIToHuman.Api/AiTaskPlanValidator.cs` 严格校验：`assistantMessage` 非空且不超过 4000 字；`readyToDraft=true` 时必须带 `plan`，且标题 1 至 80 字、描述与区域非空、验收标准至少 1 条且每条不超过 200 字、建议悬赏大于 0 且不超过 100000；验收标准与澄清分别截断到 6 条；`readyToDraft=false` 时即使模型带了 `plan` 也一律丢弃。字段缺失不再抛 `KeyNotFoundException`，而是给出可展示的原因。
+- 校验失败最多重试一次（共 2 次尝试），失败原因会作为修复指令追加到对话尾部；超时和上游不可用不重试。两次都失败时用流内 `error` 返回校验原因。
+
+火山引擎配置优先级遵循 ASP.NET Core 默认规则：环境变量和 User Secrets 会覆盖 `appsettings.json`。当前 `appsettings.json` 配置模型为 `glm-4-7-251222`、无活动超时为 120 秒；`AiPlanningService` 中的模型属性只在配置缺失时作为默认值。实际模型应以火山控制台中已启用的模型 ID 或 `ep-...` 推理接入点为准。
+
+API Key 不得写入 Git：
+
+```powershell
+dotnet user-secrets --project backend/AIToHuman.Api set "VolcengineAI:ApiKey" "你的 API Key"
+dotnet user-secrets --project backend/AIToHuman.Api set "VolcengineAI:Model" "控制台中的模型或 ep-... ID"
+```
+
+## 7. 本地开发
 
 ### 前置条件
 
-- .NET SDK 10（由根目录 `global.json` 锁定）。
+- .NET SDK 10（根目录 `global.json`）。
 - Node.js 24、npm 11。
-- 本机 PostgreSQL，或 Docker Compose PostgreSQL。
+- 本机 PostgreSQL；Docker 不是必需条件。
 - PowerShell。
+- 凭证文件默认写到应用目录下的 `evidence`；可用 `ObjectStorage__LocalRoot` 指定其他目录。
 
-### PostgreSQL 连接
+### PostgreSQL
+
+当前本机开发连接：
 
 ```text
 Host=localhost
@@ -107,17 +303,17 @@ Username=postgres
 Password=123456
 ```
 
-连接串位于被 Git 忽略的 `backend/AIToHuman.Api/appsettings.Development.json`，严禁提交。其他机器请通过 `ConnectionStrings__Postgres` 环境变量覆盖。
+连接串存放在被 Git 忽略的 `backend/AIToHuman.Api/appsettings.Development.json`，严禁提交。其他环境通过 `ConnectionStrings__Postgres` 覆盖。
 
 ### 启动后端
 
 ```powershell
 dotnet restore AIToHuman.sln --configfile NuGet.Config
 $env:ASPNETCORE_ENVIRONMENT = "Development"
-dotnet run --project backend/AIToHuman.Api --urls http://127.0.0.1:5188
+dotnet run --project backend/AIToHuman.Api --launch-profile http
 ```
 
-检查：
+确认后端：
 
 ```powershell
 Invoke-RestMethod http://127.0.0.1:5188/health
@@ -134,36 +330,32 @@ npm install
 npm run dev
 ```
 
-访问 <http://localhost:5173>。Vite 将 `/api`、`/health` 和支持 WebSocket 的 `/hubs` 代理到 `http://127.0.0.1:5188`。必须先启动后端，否则会看到 `ECONNREFUSED 127.0.0.1:5188`。
+访问 <http://localhost:5173>。Vite 将 `/api`、`/health` 和 `/hubs` 代理到 `http://127.0.0.1:5188`。必须先启动后端，否则会出现 `ECONNREFUSED 127.0.0.1:5188`，AI、登录、任务和 SignalR 都不可用。
 
-Docker 不是必需的；当前 MVP 直接使用本机 PostgreSQL。没有数据库时可执行：
+如果端口已占用：
 
 ```powershell
-docker compose up -d postgres
-$env:ConnectionStrings__Postgres = "Host=localhost;Port=5432;Database=aitohuman;Username=aitohuman;Password=local-development-only"
+netstat -ano | Select-String ':5188|:5173'
 ```
 
-Compose 创建的 `aitohuman` 用户/数据库与本机默认的 `postgres` 用户/数据库不同，必须设置上面的连接串。未配置 PostgreSQL 时 API 可回退到内存任务/订单仓储，但注册、登录和角色切换不可用，只能使用 Development 合成会话。
+不要直接结束不确定归属的进程；先确认是否为本项目旧实例。代码更新后必须重启后端，旧进程不会自动加载新程序集。
 
-## 6. SignalR 联调说明
+未配置 PostgreSQL 时，任务和订单可回退到内存仓储，但注册、登录和角色切换不可用，只能使用 Development 合成会话。仓库提供的 Docker Compose 数据库使用不同的用户和数据库，需要显式覆盖连接串。
 
-- Hub 地址：`/hubs/notifications`；前端封装在 `frontend/src/api/notifications.ts`。
-- 登录用户通过 JWT `NameIdentifier` 加入 `user:{userId:N}` 用户组。
-- Development 环境允许通过 `?userId=...` 连接合成会话；生产环境拒绝该回退身份。
-- JWT 通过 SignalR 的 `access_token` 查询参数传给 Hub，后端只在 `/hubs` 路径读取。
+## 8. SignalR 联调
 
-订单通知流程：
+- Hub：`/hubs/notifications`。
+- 登录用户通过 JWT `NameIdentifier` 加入 `user:{userId:N}` 组。
+- Development 可用 `?userId=...` 连接合成用户；生产环境拒绝该回退。
+- JWT 通过 SignalR `access_token` 查询参数传递，后端只在 `/hubs` 路径读取。
+- 当前通知是进程内 fire-and-forget 发布，没有 Outbox；服务重启或发送失败时可能丢失。
+- 多实例部署需要 Redis backplane 或共享消息总线。
 
-```text
-owner 选择报名者 → TaskService 创建 Order → 发布 OrderCreated
-→ 找到 worker 用户组 → worker 浏览器收到事件 → 更新“我接取的任务”
-```
+双浏览器验证：A 以 owner 发布任务，B 以 worker 报名，A 选择 B；B 无需刷新应立即收到通知并更新“我接取的任务”。Network 面板应看到 `/hubs/notifications` 的 WebSocket 或长轮询连接。
 
-两浏览器验证：浏览器 A 用 owner 发布任务；浏览器 B 用 worker 报名；A 查看并选择 B；B 无需刷新应立即看到通知和订单。Network 面板应看到 `/hubs/notifications` 的 WebSocket 或长轮询连接。
+## 9. API 与 Hub 清单
 
-## 7. API 与 Hub 清单
-
-所有业务 API 前缀为 `/api/v1`，JSON 使用 camelCase。
+所有业务 JSON 使用 camelCase。
 
 | 方法 | 路径 | 认证/说明 |
 | --- | --- | --- |
@@ -173,73 +365,198 @@ owner 选择报名者 → TaskService 创建 Order → 发布 OrderCreated
 | POST | `/api/v1/auth/login` | 匿名登录 |
 | POST | `/api/v1/auth/switch-role` | JWT，切换 owner/worker |
 | GET | `/api/v1/auth/me` | JWT，当前用户 |
-| POST | `/api/v1/reward-suggestions` | 规则/AI 悬赏建议 |
-| GET | `/api/v1/tasks` | 已发布任务列表 |
-| GET | `/api/v1/tasks/{id}` | 公开详情 |
-| POST | `/api/v1/tasks` | owner 创建任务 |
+| POST | `/api/v1/conversations` | 创建对话会话，写入开场白 |
+| GET | `/api/v1/conversations/{id}?userId=...` | 读取历史与当前草稿，用于刷新恢复；仅所有者可读 |
+| GET | `/api/v1/conversations?userId=...&limit=...` | 该用户的会话列表（含预览与是否有草稿） |
+| POST | `/api/v1/ai/plan/stream` | 多轮 AI 澄清，SSE；按 `conversationId` 读取服务端历史并落库完成的回合 |
+| POST | `/api/v1/reward-suggestions` | 本地规则悬赏建议 |
+| GET | `/api/v1/tasks?district=&minReward=&maxReward=&limit=&cursor=` | 大厅列表，游标分页与筛选 |
+| GET | `/api/v1/tasks/mine?ownerId=...` | 所有者查看自己的全部任务及状态（草稿、已发布、已分配、已结束） |
+| GET | `/api/v1/tasks/{id}` | 公开任务详情；草稿仅所有者可见，其他人 404 |
+| GET | `/api/v1/tasks/{id}/execution-address` | 精确执行地址；仅所有者与被选中的服务者 |
+| POST | `/api/v1/tasks` | owner 创建任务草稿 |
 | POST | `/api/v1/tasks/{id}/publish` | 所有者发布 |
 | POST | `/api/v1/tasks/{id}/increase-reward` | 分配前加价 |
 | POST | `/api/v1/tasks/{id}/applications` | worker 报名 |
 | GET | `/api/v1/tasks/{id}/applications?ownerId=...` | 所有者查看报名 |
-| POST | `/api/v1/tasks/{id}/applications/{applicationId}/select` | 选择服务者并创建订单 |
-| GET | `/api/v1/tasks/{id}/order` | 订单参与者查询 |
-| GET | `/api/v1/orders?userId=...` | 当前用户订单列表 |
-| GET/WS | `/hubs/notifications` | SignalR 主动通知 |
+| POST | `/api/v1/tasks/{id}/applications/{applicationId}/select` | 选人并创建订单 |
+| GET | `/api/v1/tasks/{id}/order` | 当前实现的订单查询入口，需参与者身份 |
+| GET | `/api/v1/orders?userId=...` | 当前用户订单列表，含各订单会话未读数 |
+| POST | `/api/v1/orders/{id}/start` | worker 开始履约 |
+| POST | `/api/v1/orders/{id}/submit` | worker 提交凭证或完成说明 |
+| POST | `/api/v1/orders/{id}/approve` | owner 验收通过 |
+| POST | `/api/v1/orders/{id}/reject` | owner 驳回并说明原因 |
+| POST | `/api/v1/orders/{id}/resume` | worker 按驳回原因返工，`Rejected → InProgress` |
+| GET | `/api/v1/orders/{id}/messages?userId=...&limit=...` | 订单会话消息与未读数；仅参与者 |
+| POST | `/api/v1/orders/{id}/messages` | 发送会话消息，同时通知对方 |
+| POST | `/api/v1/orders/{id}/messages/read?userId=...` | 标记会话已读，返回最新未读数 |
+| GET | `/api/v1/orders/{id}/evidence?userId=...` | 执行凭证列表；仅参与者 |
+| POST | `/api/v1/orders/{id}/evidence` | multipart 上传凭证；仅订单服务者 |
+| GET | `/api/v1/evidence/{id}/content?userId=...` | 鉴权后流式下载；仅参与者且扫描通过 |
+| GET | `/api/v1/orders/{id}/reviews` | 参与者读取双向评价 |
+| POST | `/api/v1/orders/{id}/reviews` | Approved 后提交评价 |
+| GET | `/api/v1/users/{id}/review-summary` | 用户公开评价摘要 |
+| GET | `/api/v1/notifications?userId=...&limit=...` | 收件箱列表与未读数 |
+| POST | `/api/v1/notifications/read` | 按 ID 或整体标记已读，返回最新未读数 |
+| GET/WS | `/hubs/notifications` | SignalR 主动通知；推送 `notification.created` 信封 |
 
-后端错误使用 Problem Details 风格，通常映射为 `401`、`403`、`404`、`409`、`422`。Development 仍保留部分 `ownerId` / `workerId` 显式 ID 回退以兼容演示，生产环境应移除。
+普通 API 错误使用 Problem Details，主要映射为 `400`、`401`、`403`、`404`、`409`、`422`、`502` 和 `504`。`409` 既用于资源冲突（例如邮箱已注册），也用于乐观并发冲突。AI SSE 在响应开始后的错误使用流内 `error` 事件。
 
-## 8. 数据库、权限与状态
+## 10. 数据库、权限与状态
 
-Development + PostgreSQL 启动时会调用 `EnsureCreated()` 并用幂等 SQL 补齐 `users`、`orders` 表；这是本地过渡逻辑，不应复制到生产。当前 Migration 为 `AddUsers`、`AddOrders`，后续应使用独立迁移作业和备份/恢复流程。
+Development + PostgreSQL 启动时改为应用 EF Core 迁移（`Database.Migrate()`），不再使用 `EnsureCreated()` 和幂等建表 SQL。生产环境由部署流程执行迁移，不在应用启动时自动迁移。
 
-权限原则：`owner` 才能创建、发布、加价、查看报名和选人；`worker` 才能报名；订单仅允许 owner 或被选 worker 查看。前端隐藏按钮不能替代后端授权。
+迁移历史：`AddUsers` → `AddOrders` → `AddOrderEvidence` → `AddReviews` → `AddOrderRework` → `AddConversations` → `AddTaskTables`。其中 `AddTaskTables` 补上了此前只由 `EnsureCreated()` 建出、从未纳入迁移的 `tasks` 与 `task_applications` 两张核心表。
+
+早期 `EnsureCreated()` 建出的本地库没有迁移历史记录。启动逻辑会检测这种情况：先用模型对比物理表的「表名.列名」，只有结构完全对得上时，才把当时已有的迁移整体标记为已应用并打警告日志；一旦缺表或缺列就直接报错说明缺了什么，提示删除重建，避免在错误的 schema 上继续运行。基线化之后新增的迁移会正常应用——例如 `AddConcurrencyTokens` 就是在基线化之后自动补上的 `Version` 列。目标库不存在时由 `Migrate()` 负责建库。
+
+对话数据：`conversations` 属于单个用户，`conversation_messages` 按 `(ConversationId, Sequence)` 唯一，序号在历史截断后仍保持单调递增。消息写入后不可变，仓储只做新增与删除。
+
+订单会话数据：`order_messages` 按 `(OrderId, CreatedAt)` 建索引，只有订单双方可读写；未读用“发送者不是查看者且 `ReadAt` 为空”判定，因此一条消息只有一个已读时间。
+
+任务隐私分层：`tasks.District` 是公开层（大厅展示）；`tasks.ExecutionAddress`（≤200 字，可空）属于参与者层，只在订单成立后按角色披露，且从不进入大厅列表与公开详情。精确地址的访问审计尚未实现。
+
+凭证存储：元数据在 `evidence` 表（`StorageKey` 唯一索引、`ScanStatus` 为字符串），文件内容在私有存储里。`IFileStorage` 是可插拔抽象：Development 用 `LocalFileStorage`（本机目录，路径解析限制在根目录内），生产应替换为私有 Bucket 并签发短时 URL；`IEvidenceScanner` 目前是 `NoOpEvidenceScanner`（放行 + 警告日志），生产必须替换为真实扫描。
+
+权限原则：
+
+- `owner`：创建、发布、加价、查看报名、选择服务者、验收或驳回。
+- `worker`：报名、开始订单、提交凭证。
+- 订单和订单评价：仅订单双方可查看或操作。
+- 对话：仅会话所有者可以读取或追加，越权返回 `403`。
+- 前端隐藏按钮不构成安全边界，后端必须继续校验 JWT 身份、角色和资源归属。
+- `ownerId`/`workerId`/`actorId` 这类请求字段只在 Development 合成会话下作为回退；携带 JWT 时以令牌身份为准，因此不强制要求查询参数。
+
+并发与事务：
+
+- `tasks` 与 `orders` 各有一个 `Version` 整数列作为乐观并发令牌（迁移 `AddConcurrencyTokens`），仓储每次 `Save` 自增。并发加价、并发选人、并发提交或验收时，后写入者拿到 `DbUpdateConcurrencyException`，API 返回 `409` 与“该任务或订单刚刚被其他人更新，请刷新后重试。”。
+- 令牌依赖仓储的 `Get` 保持 EF 跟踪状态：`Save` 用「业务判断时读到的版本」做 WHERE 条件。把 `Get` 改回 `AsNoTracking` 会让并发保护静默失效。
+- 选人（写任务 + 建订单）与验收（写订单 + 关任务）通过 `IUnitOfWork` 放进同一个数据库事务，失败整体回滚；内存仓储实现为空操作。
+- `orders.TaskId` 的唯一索引是最后一道防线，保证一个任务最多一个订单。
+
+通知与 Outbox：
+
+- `notifications` 一张表同时承担持久化通知与 Outbox：`DispatchedAt` 为空即待推送，`ReadAt` 为空即未读，`EventId` 上有唯一索引作为幂等兜底。
+- 写入发生在业务事务内（`IUnitOfWork`），所以不会出现“状态变了但通知没落库”；派发由 `NotificationDispatcher`（`BackgroundService`）完成，失败自动重试。后续如果引入 Hangfire，可以直接把派发换成作业而不是自建轮询。
+- 幂等判断用的是「先查 EventId 再插入」；并发下极小概率撞到唯一索引会让该业务事务失败，用户重试即可。
 
 ```text
 Task:  ReadyToPublish → Published → Assigned → Closed
-                         └→ Expired / Cancelled
+                         └→ Expired / Cancelled（领域枚举存在，流程未完整接入）
+
 Order: Accepted → InProgress → Submitted → Approved
-                                  └→ Rejected
-                         └→ Disputed / Cancelled
+                      ↑              │
+                      └── Rejected ←─┘   （POST /orders/{id}/resume 返工）
+                         └→ Disputed / Cancelled（枚举存在，接口未实现）
 ```
 
-不要提交数据库密码、JWT 签名密钥或真实用户数据。生产环境必须配置强随机 `Authentication__SigningKey`；公开任务不得返回精确地址、联系方式或报名备注。
+当前限制：返工期间任务保持 `Assigned`，不会重新出现在大厅；订单 `Approved` 后任务自动 `Closed`，但返工次数没有上限，也没有超时或期限约束；取消、争议和超时尚无完整用例。
 
-## 9. 验证、已知问题与后续顺序
+## 11. 验证结果与命令
 
-验证命令：
+2026-09-10 当前工作区已验证（对话持久化后重新执行）：
+
+- `dotnet build AIToHuman.sln --no-restore`：通过，0 警告、0 错误。
+- 领域测试：58/58 通过。覆盖任务加价与报名约束、执行地址校验与分阶段披露、订单履约与返工闭环、批准后关单、对话回合不变量与历史截断、通知字段校验与标记幂等、订单会话消息校验与未读语义、执行凭证的类型/大小/签名校验与扫描状态机、本地偏移量时间归一化和角色校验文案。
+- 集成测试：114/114 通过（`AIToHuman.IntegrationTests`）。覆盖 AI 多轮协议、输出严格校验与重试、SSE 线格式、会话用例、事务边界、通知骨干、订单会话、评价盲期、大厅分页筛选与地址披露，以及执行凭证（上传/下载/权限/扫描门禁/上限）。
+- 通知端到端（真实 PostgreSQL + 真实 WebSocket 客户端）：连上 `/hubs/notifications` 后选人 → 收到 `{"type":1,"target":"notification.created","arguments":[{eventId,type:"order.created",version:1,occurredAt,payload:{orderId,status,title}}]}`；`GET /api/v1/notifications` 返回 1 条未读，`POST /read` 返回 `{"unreadCount":0}` 且 `readAt` 已写入；无关用户收件箱为空；服务者开始执行并提交后，需求方收到 2 条 `order.statusChanged`，最新状态 `Submitted`。
+- 订单会话端到端（真实 PostgreSQL）：需求方连发两条 → 服务者视角消息 2 条、未读 2、订单列表徽标 `unreadMessageCount=2`、收到 2 条 `order.messageCreated` 且预览为最后一条内容；服务者回复后标记已读返回 `{"unreadCount":0}`，需求方此时未读 1（服务者那条）；无关用户读取与发送均 `403`。
+- 分页与披露端到端（真实 PostgreSQL）：5 个同截止时间任务 + 历史任务共 9 条，`limit=2` 逐页翻完 9 条且无重复；`district` 与 `minReward/maxReward` 筛选各命中 2/3 条；非法区间与非法游标返回 `400` 与中文原因；草稿详情所有者 `200`、他人与匿名 `404`；执行地址选人前仅所有者 `200`、报名者 `403`，选人后被选中 `200`、未被选中 `403`；大厅与公开详情序列化结果中不含地址文本。
+- 执行凭证端到端（真实 PostgreSQL + 本机存储目录，multipart 上传 67 字节 PNG）：上传 `200`（`scanStatus=Clean`、SHA-256 摘要、`isDownloadable=true`）→ 需求方列表 1 条 → 下载 `200`、字节完全一致、`Content-Type: image/png`、`X-Content-Type-Options: nosniff`、`Content-Disposition` 为系统生成的 `evidence-<id>.png`；无关用户列表与下载均 `403`；需求方上传 `403`；`text/plain` 与伪造 PNG 各返回 `422` 与对应原因；5 MB + 1 字节返回 `413`；落盘路径为 `<根目录>/<orderId>/<evidenceId>.png`，不含任何用户输入。
+- `npm run typecheck`：通过。
+- Vite 生产构建：通过；若默认 `frontend/dist` 被运行中的进程占用，先停止该进程或输出到临时目录。
+- EF Core 迁移：`20260910112753_AddOrderRework`（`orders` 两列）、`20260910122327_AddConversations`（会话两表）与 `20260910125745_AddTaskTables`（补上此前缺失的 `tasks`、`task_applications`）。
+- 全新数据库路径：用一个空库（`Database=aitohuman_migration_check`）启动 API，`Migrate()` 自动建库并应用全部 8 个迁移；随后在该库上跑通任务创建、发布、报名与会话创建，`dotnet ef migrations list` 显示全部已应用、无待执行。
+- 既有开发库路径：用原来的 `postgres` 库启动，日志出现“检测到由早期 EnsureCreated 建出的数据库，已把 N 个迁移记为已应用”，随后 `No migrations were applied. The database is already up to date.`；原有数据仍可正常读取。
+- 既有开发库自愈：基线化之后新增的 `AddConcurrencyTokens` 会自动应用（补上 `Version` 列），随后创建任务、发布、报名、选人、开始执行全部正常，8 条既有会话记录完好。
+- 并发端到端（真实 PostgreSQL + 12 个并行请求）：同一任务被 12 个请求同时选人 → `200×1、409×2、422×9`，该任务只有 1 个订单、只有 1 条报名被选中；同一服务者 12 个并发报名 → `200×1、409×3、422×8`，最终只有 1 条报名记录。修复前同样的用例会出现 500 且可能多写订单。
+- 并发验收：两个请求同时验收同一订单 → `200 + 422`，订单 `Approved`、任务 `Closed`，没有重复写入。
+- JWT 全链路（注册两个账号，不带 `ownerId` 查询参数）：创建任务 `201` → 发布 `200` → 服务者报名 `200` → 选人 `200` → `GET /tasks/{id}/order` 需求方 `200`、服务者 `200`、无关用户 `403`；订单列表无同任务重复。
+- 订单端到端联调（Development + 本机 PostgreSQL）：创建任务（`deadline` 带 `+08:00`）→ 发布 → 报名 → 选人 → 开始 → 提交 → 驳回 → 返工 → 再次提交 → 验收通过，全部符合预期；批准后任务为 `Closed` 且不再出现在大厅；越权返工返回 `422`。
+- 对话端到端联调（本机 SSE 替身作为上游 + 真实 PostgreSQL 落库）：创建会话 → 第一轮流式返回 `delta, delta, complete` → 重新读取得到 `assistant,user,assistant` 三条消息且草稿完整（标题、区域、悬赏、截止时间、验收标准）→ 第二轮后为 5 条，历史在服务端累积；上游不可用时返回流内 `event: error` 且消息数保持不变；其他用户读取会话返回 `403`，会话不存在返回 `404`，超长消息返回 `422`。
+- `POST /api/v1/ai/plan/stream`：响应为 `text/event-stream`；开始写流之后的模型或落库失败都以流内 `event: error` 返回。
+- 输出校验与重试端到端联调（替身上游第一次返回缺少标题的草稿、第二次返回完整草稿）：页面收到 `delta`（第一次的回复）→ `restart`（原因“AI 返回的草稿缺少任务标题，请重试。”）→ 第二次的 `delta` → `complete`（完整草稿）；重新读取会话得到 3 条消息，且只保留了重试后的那一轮回复与草稿。
+
+本轮修复：
+
+- 客户端或 AI 提交带本地偏移量（如 `+08:00`）的 `deadline` 时，PostgreSQL 写入抛出 `ArgumentException`，创建任务返回 `500`。现在领域层统一归一化为 UTC（`UtcTimestamp.Normalize`），并由单元测试固化。
+- 会话 EF 仓储最初把新消息记录加入已跟踪的导航集合，EF 因主键已有值而生成 `UPDATE` 并触发 `DbUpdateConcurrencyException`。改为显式按 Id 差集新增/删除，并把落库失败纳入流内错误文案。该缺陷由上面的对话端到端联调发现，纯单元测试无法覆盖。
+- 历史截断后回合序号会与保留消息重复（违反 `(ConversationId, Sequence)` 唯一索引），改为聚合内单调递增序号。
+- 迁移集并不完整：`tasks` 与 `task_applications` 一直只由 `EnsureCreated()` 建出，从未纳入迁移，因此用迁移建出的新库上创建任务会 500。已补 `AddTaskTables` 迁移（用临时从模型快照移除两个实体、再交给 `dotnet ef migrations add` 生成的方式，保证迁移与快照一致）。
+- 启动迁移的探测顺序有误：目标库还不存在时先探测表结构会直接抛“数据库不存在”，导致新库起不来。改为探测失败即视为“无历史包袱”，交给 `Migrate()` 建库。
+- 乐观并发令牌最初形同虚设：仓储 `Get` 用了 `AsNoTracking`，`Save` 又按当前库值重新读取并自增版本，于是并发请求读到新版本后照样能写成功（12 个并发选人出现过多写订单的中间态）。改为 `Get` 保持跟踪，`Save` 用业务判断时读到的版本做 WHERE。
+- `publish`、`increase-reward`、查看报名的 `ownerId` 原本是必填查询参数，带 JWT 调用时缺它会在模型绑定阶段直接失败（映射成 500）。改为可选，身份以 JWT 为准，并给 `BadHttpRequestException` 补了 `400` 映射。
+- `GET /api/v1/tasks/{id}/order` 一直用任务 ID 去查订单表，参与者也只能拿到 `404`。改为按 `TaskId` 查询。
+
+常用命令：
 
 ```powershell
 dotnet build AIToHuman.sln --no-restore
-dotnet test AIToHuman.sln --no-build
+dotnet test AIToHuman.sln --no-build --no-restore
+dotnet test backend/tests/AIToHuman.IntegrationTests/AIToHuman.IntegrationTests.csproj --no-build --no-restore
 Set-Location frontend
 npm run typecheck
 npm run build
 ```
 
-当前领域测试共 4 个，核心流程已验证：注册 owner/worker → 创建发布 → 报名 → 选人 → 创建订单 → 双方查询；SignalR 还需人工验证双浏览器即时通知、断线重连和重复事件。
+测试现状：领域测试覆盖任务加价、禁止自己报名、禁止重复报名、选择服务者、订单参与者权限、履约状态流、返工闭环、任务关单，以及对话回合不变量、历史窗口与截断。集成测试覆盖 AI 多轮协议、SSE 线格式和会话用例，全部走上游替身与内存仓储，不需要网络和数据库。尚缺：认证与授权、PostgreSQL 仓储的自动化测试（目前只有手工端到端联调覆盖）、评价盲期、SignalR 重连，以及主机级端到端测试——本机 NuGet 无法还原 `Microsoft.AspNetCore.Mvc.Testing`，所以当前没有 `WebApplicationFactory` 用例；网络可用后补该包即可增加。
 
-主要技术债：订单履约状态流转、双向评价和盲期、取消/超时/争议、分页筛选、开发 ID 回退、标准 Migration、SignalR Redis backplane、Outbox 可靠投递、消息历史/未读数、文件安全、真实支付和正式 AI 适配层。
+## 12. 已知问题与后续顺序
 
-推荐顺序：
+### P0
 
-1. P0：订单状态机、开始履约、提交凭证、验收/拒绝、审计和幂等。
-2. P1：SignalR 事件信封与持久化、Redis backplane、聊天/未读数、双向评价、集成测试。
-3. P2：清理开发回退、标准 Migration、对象存储与扫描、AI 供应商适配、支付与合规评审。
+当前没有未完成的 P0 项；三项已全部完成，见下方“已完成”。
 
-## 10. 交接检查清单
+### 已完成（原 P0）
 
+- 订单驳回后的返工/重新提交路径，以及批准后同步关闭任务；实现见第 3 节，状态机见第 10 节。
+- 顺带修复：带本地时区偏移量的 `deadline` 会导致创建任务返回 `500`，现在领域层统一归一化为 UTC。
+- AI 多轮协议的后端集成测试：新增 `AIToHuman.IntegrationTests`，用模拟火山 SSE 的上游替身覆盖分片、转义、缺少结束标记、截断、超时和上游错误；SSE 线格式由新增的 `AiPlanStreamWriter` 承载并单独测试。
+- 对话持久化：新增 `Conversation` 聚合并落库消息与草稿状态，AI 流端点改按服务端历史生成请求，前端支持刷新恢复、新建对话，并在 AI 失败时回滚本轮输入让用户重试；见第 3 节和第 6 节。
+- 模型输出严格校验与可控重试：新增 `AiTaskPlanValidator` 与 `AiPlanningFormatException`，校验失败最多重试一次并把失败原因作为修复指令追加到对话；重试前用新增的 `restart` 事件让页面清空半截回复，避免两段内容拼接；字段缺失不再抛 `KeyNotFoundException`。
+- 启动建表改为标准 EF Core Migration：删除 `EnsureCreated()` 与幂等 SQL，补上缺失的 `AddTaskTables` 迁移，并让既有 EnsureCreated 库自动 baseline；见第 10 节。
+- 并发令牌与事务：`tasks`/`orders` 增加 `Version` 乐观并发令牌，选人与验收放进同一个事务，冲突统一返回 `409`；见第 10 节。
+- 通知骨干：版本化事件信封、`notifications` 表兼做 Outbox、后台派发与重试、收件箱与未读数接口，前端顶栏加未读徽标；见第 3 节与第 10 节。原 `IOrderNotificationPublisher` 的 fire-and-forget 推送已删除。
+- 订单会话（聊天）：`OrderMessage` 实体与 `order_messages` 表、参与者权限、未读语义与订单列表徽标、新消息通知，前端会话弹窗与消息按钮徽标；见第 3 节。
+- 评价盲期与公开摘要补上集成测试（单方隐藏、双方公开、满 7 天公开、摘要样本量、重复评价与越权）；顺带把“每方每单只能评价一次”从数据库唯一索引提升为应用层判定，避免 EF 路径抛 500。
+- 大厅分页筛选与地址分阶段披露：`GET /tasks` 改为游标分页 + 区域/悬赏区间筛选；公开详情不再返回他人草稿；`tasks.ExecutionAddress` 只在订单成立后向所有者与被选中服务者披露；前端加筛选表单、加载更多与执行地址输入/查看。
+- 执行凭证：`OrderEvidence` 实体与 `evidence` 表、类型白名单 + 文件签名校验 + 大小与摘要校验、扫描状态机、按需上传与鉴权下载，前端加凭证面板（上传/列表/下载）；存储与扫描通过 `IFileStorage`/`IEvidenceScanner` 抽象，Development 用本机目录 + 占位扫描。
+
+### P1
+
+- 接入真实对象存储（S3/OSS 私有 Bucket + 短时签名 URL）与真实病毒/内容扫描，替换 `LocalFileStorage` 与 `NoOpEvidenceScanner`。
+- 通知的更多事件类型（报名、评价公开、任务过期）与推送渠道（短信、邮件）。
+- 会话消息的分页与历史截断、消息撤回与编辑。
+- 大厅排序选项（悬赏、距离）、任务分类筛选，以及精确地址的访问审计。
+- 上传限速、图片重新编码与 EXIF 去除、凭证与验收项关联。
+
+### P2
+
+- Redis backplane、多实例部署、审计与可观测性。
+- 实名认证、真实支付托管、退款、争议和合规评审。
+- 运营审核后台与高风险任务人工复核。
+
+## 13. 交接检查清单
+
+- [ ] 执行 `git status` / `git diff`，区分已提交基线与当前多轮 AI 未提交实现。
+- [ ] 确认 `VolcengineAI:Model` 是火山控制台真实启用的模型或接入点 ID。
+- [ ] API Key 仅存在于 User Secrets 或环境变量，没有进入 Git。
 - [ ] PostgreSQL 已启动，`/health` 返回 `healthy`。
-- [ ] 后端和前端均能启动并打开 `http://localhost:5173`。
-- [ ] 账号可在 owner / worker 间切换且用户 ID 不变。
-- [ ] 能完成创建、发布、报名、查看报名、选人和订单查询。
-- [ ] 两浏览器验证 SignalR：选人后服务者收到主动通知。
-- [ ] “我的订单”两个页签正确显示发布订单和接取任务。
-- [ ] 已阅读固定悬赏、双向选择和安全文档。
-- [ ] 新功能先补用户故事、API Contract、领域规则和测试。
+- [ ] 后端先于前端启动，`5173` 能代理到 `5188`。
+- [ ] 连续完成至少两轮 AI 对话，未完成前看不到草稿，完成后可预览但不会自动发布。
+- [ ] 对话进行到一半刷新页面，历史与草稿都能恢复；点击“新建对话”后回到只有开场白的空会话。
+- [ ] 断开 AI 上游后发送一句话：界面给出错误提示，输入内容仍在输入框中，且会话消息数没有增加。
+- [ ] owner/worker 切换后用户 ID 不变。
+- [ ] 完成发布、报名、选人、订单开始、提交、验收/驳回和双方评价。
+- [ ] 驳回一次后由服务者返工并再次提交，界面上能看到驳回原因和返工次数。
+- [ ] 验收通过后任务在大厅消失，公开详情状态为 `Closed`。
+- [ ] 两浏览器验证选人后服务者无需刷新即可收到订单。
+- [ ] 新功能先补 Contract、领域规则和测试，再扩展页面。
 
-## 11. 相关文档
+## 14. 相关文档
 
 - [项目 README](../../README.md)
+- [AI 多轮需求澄清配置](../ai-planning.md)
 - [开发指南](./development-guide.md)
 - [路线图](./roadmap.md)
 - [系统架构](../architecture/system-architecture.md)

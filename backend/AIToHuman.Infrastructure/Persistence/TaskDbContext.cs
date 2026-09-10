@@ -9,6 +9,11 @@ public sealed class TaskDbContext(DbContextOptions<TaskDbContext> options) : DbC
     public DbSet<UserRecord> Users => Set<UserRecord>();
     public DbSet<OrderRecord> Orders => Set<OrderRecord>();
     public DbSet<ReviewRecord> Reviews => Set<ReviewRecord>();
+    public DbSet<ConversationRecord> Conversations => Set<ConversationRecord>();
+    public DbSet<ConversationMessageRecord> ConversationMessages => Set<ConversationMessageRecord>();
+    public DbSet<NotificationRecord> Notifications => Set<NotificationRecord>();
+    public DbSet<OrderMessageRecord> OrderMessages => Set<OrderMessageRecord>();
+    public DbSet<EvidenceRecord> Evidence => Set<EvidenceRecord>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -16,7 +21,10 @@ public sealed class TaskDbContext(DbContextOptions<TaskDbContext> options) : DbC
         {
             entity.ToTable("tasks");
             entity.HasKey(item => item.Id);
+            // 乐观并发令牌：Save 时自增，EF 用原值做 WHERE；并发改价或并发选人时后写入者会拿到 DbUpdateConcurrencyException。
+            entity.Property(item => item.Version).IsConcurrencyToken();
             entity.Property(item => item.RewardAmount).HasPrecision(18, 2);
+            entity.Property(item => item.ExecutionAddress).HasMaxLength(200);
             entity.Property(item => item.RewardCurrency).HasMaxLength(3).IsRequired();
             entity.Property(item => item.Status).HasConversion<string>().HasMaxLength(32);
             entity.Property(item => item.AcceptanceCriteriaJson).IsRequired();
@@ -49,6 +57,7 @@ public sealed class TaskDbContext(DbContextOptions<TaskDbContext> options) : DbC
         {
             entity.ToTable("orders");
             entity.HasKey(item => item.Id);
+            entity.Property(item => item.Version).IsConcurrencyToken();
             entity.HasIndex(item => item.TaskId).IsUnique();
             entity.Property(item => item.Title).HasMaxLength(80).IsRequired();
             entity.Property(item => item.RewardAmount).HasPrecision(18, 2);
@@ -56,6 +65,7 @@ public sealed class TaskDbContext(DbContextOptions<TaskDbContext> options) : DbC
             entity.Property(item => item.Status).HasMaxLength(32).IsRequired();
             entity.Property(item => item.EvidenceNote).HasMaxLength(4000);
             entity.Property(item => item.ReviewNote).HasMaxLength(4000);
+            entity.Property(item => item.RejectionNote).HasMaxLength(4000);
         });
 
         modelBuilder.Entity<ReviewRecord>(entity =>
@@ -65,6 +75,59 @@ public sealed class TaskDbContext(DbContextOptions<TaskDbContext> options) : DbC
             entity.HasIndex(item => new { item.OrderId, item.ReviewerId }).IsUnique();
             entity.HasIndex(item => item.RevieweeId);
             entity.Property(item => item.Comment).HasMaxLength(1000).IsRequired();
+        });
+
+        modelBuilder.Entity<ConversationRecord>(entity =>
+        {
+            entity.ToTable("conversations");
+            entity.HasKey(item => item.Id);
+            entity.HasIndex(item => new { item.UserId, item.UpdatedAt });
+            entity.HasMany(item => item.Messages).WithOne().HasForeignKey(item => item.ConversationId).OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<ConversationMessageRecord>(entity =>
+        {
+            entity.ToTable("conversation_messages");
+            entity.HasKey(item => item.Id);
+            entity.HasIndex(item => new { item.ConversationId, item.Sequence }).IsUnique();
+            entity.Property(item => item.Role).HasMaxLength(16).IsRequired();
+            entity.Property(item => item.Content).HasMaxLength(4000).IsRequired();
+            entity.Property(item => item.PlanJson).HasMaxLength(8000);
+        });
+
+        modelBuilder.Entity<NotificationRecord>(entity =>
+        {
+            entity.ToTable("notifications");
+            entity.HasKey(item => item.Id);
+            // 幂等键：同一个业务事件只允许一条通知。
+            entity.HasIndex(item => item.EventId).IsUnique();
+            entity.HasIndex(item => new { item.UserId, item.ReadAt });
+            // Outbox：派发任务按未派发 + 创建时间扫描。
+            entity.HasIndex(item => item.DispatchedAt);
+            entity.Property(item => item.Type).HasMaxLength(80).IsRequired();
+            entity.Property(item => item.PayloadJson).HasMaxLength(8000).IsRequired();
+        });
+
+        modelBuilder.Entity<OrderMessageRecord>(entity =>
+        {
+            entity.ToTable("order_messages");
+            entity.HasKey(item => item.Id);
+            entity.HasIndex(item => new { item.OrderId, item.CreatedAt });
+            entity.Property(item => item.Content).HasMaxLength(2000).IsRequired();
+        });
+
+        modelBuilder.Entity<EvidenceRecord>(entity =>
+        {
+            entity.ToTable("evidence");
+            entity.HasKey(item => item.Id);
+            // 存储键由系统生成且全局唯一，作为对象存储里的定位键。
+            entity.HasIndex(item => item.StorageKey).IsUnique();
+            entity.HasIndex(item => new { item.OrderId, item.CreatedAt });
+            entity.Property(item => item.FileName).HasMaxLength(200).IsRequired();
+            entity.Property(item => item.ContentType).HasMaxLength(100).IsRequired();
+            entity.Property(item => item.StorageKey).HasMaxLength(120).IsRequired();
+            entity.Property(item => item.ContentHash).HasMaxLength(64).IsRequired();
+            entity.Property(item => item.ScanStatus).HasMaxLength(16).IsRequired();
         });
     }
 }
@@ -76,12 +139,16 @@ public sealed class TaskRecord
     public string Title { get; set; } = "";
     public string Description { get; set; } = "";
     public string District { get; set; } = "";
+
+    /// <summary>精确执行地址，只在订单成立后向参与者披露。</summary>
+    public string? ExecutionAddress { get; set; }
     public DateTimeOffset Deadline { get; set; }
     public decimal RewardAmount { get; set; }
     public string RewardCurrency { get; set; } = "CNY";
     public string Status { get; set; } = "ReadyToPublish";
     public string AcceptanceCriteriaJson { get; set; } = "[]";
     public DateTimeOffset CreatedAt { get; set; }
+    public int Version { get; set; }
     public List<ApplicationRecord> Applications { get; set; } = [];
 }
 
@@ -121,6 +188,9 @@ public sealed class OrderRecord
     public string? ReviewNote { get; set; }
     public DateTimeOffset? SubmittedAt { get; set; }
     public DateTimeOffset? ReviewedAt { get; set; }
+    public string? RejectionNote { get; set; }
+    public int ReworkCount { get; set; }
+    public int Version { get; set; }
 }
 
 public sealed class ReviewRecord
@@ -132,4 +202,66 @@ public sealed class ReviewRecord
     public int Rating { get; set; }
     public string Comment { get; set; } = "";
     public DateTimeOffset CreatedAt { get; set; }
+}
+
+public sealed class ConversationRecord
+{
+    public Guid Id { get; set; }
+    public Guid UserId { get; set; }
+    public DateTimeOffset CreatedAt { get; set; }
+    public DateTimeOffset UpdatedAt { get; set; }
+    public List<ConversationMessageRecord> Messages { get; set; } = [];
+}
+
+public sealed class ConversationMessageRecord
+{
+    public Guid Id { get; set; }
+    public Guid ConversationId { get; set; }
+    public string Role { get; set; } = "user";
+    public string Content { get; set; } = "";
+    public int Sequence { get; set; }
+    public DateTimeOffset CreatedAt { get; set; }
+    public bool ReadyToDraft { get; set; }
+    public string? PlanJson { get; set; }
+}
+
+/// <summary>持久化通知，同时充当 Outbox 记录。</summary>
+public sealed class NotificationRecord
+{
+    public Guid Id { get; set; }
+    public Guid UserId { get; set; }
+    public Guid EventId { get; set; }
+    public string Type { get; set; } = "";
+    public int Version { get; set; }
+    public string PayloadJson { get; set; } = "{}";
+    public DateTimeOffset CreatedAt { get; set; }
+    public DateTimeOffset? DispatchedAt { get; set; }
+    public DateTimeOffset? ReadAt { get; set; }
+}
+
+/// <summary>订单会话消息。</summary>
+public sealed class OrderMessageRecord
+{
+    public Guid Id { get; set; }
+    public Guid OrderId { get; set; }
+    public Guid SenderId { get; set; }
+    public string Content { get; set; } = "";
+    public DateTimeOffset CreatedAt { get; set; }
+    public DateTimeOffset? ReadAt { get; set; }
+}
+
+/// <summary>执行凭证元数据；文件内容在私有对象存储里，用 <see cref="StorageKey"/> 定位。</summary>
+public sealed class EvidenceRecord
+{
+    public Guid Id { get; set; }
+    public Guid OrderId { get; set; }
+    public Guid UploadedBy { get; set; }
+    public string FileName { get; set; } = "";
+    public string ContentType { get; set; } = "";
+    public string StorageKey { get; set; } = "";
+    public long SizeBytes { get; set; }
+    public string ContentHash { get; set; } = "";
+    public DateTimeOffset CreatedAt { get; set; }
+    public string ScanStatus { get; set; } = "Pending";
+    public DateTimeOffset? ScannedAt { get; set; }
 }
