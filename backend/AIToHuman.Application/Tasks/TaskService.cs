@@ -68,9 +68,9 @@ public sealed class TaskService(ITaskRepository repository, IOrderRepository ord
     }
     public IReadOnlyCollection<OrderResponse> ListOrders(Guid userId) => orderRepository.ListByUser(userId).Select(Map).ToArray();
     public OrderResponse StartOrder(Guid id, Guid actorId) => TransitionOrder(id, actorId, order => order.Start(actorId));
-    public OrderResponse SubmitOrder(Guid id, Guid actorId) => TransitionOrder(id, actorId, order => order.Submit(actorId));
-    public OrderResponse ApproveOrder(Guid id, Guid actorId) => TransitionOrder(id, actorId, order => order.Approve(actorId));
-    public OrderResponse RejectOrder(Guid id, Guid actorId) => TransitionOrder(id, actorId, order => order.Reject(actorId));
+    public OrderResponse SubmitOrder(Guid id, Guid actorId, string? note) => TransitionOrder(id, actorId, order => order.Submit(actorId, note, timeProvider.GetUtcNow()));
+    public OrderResponse ApproveOrder(Guid id, Guid actorId, string? note) => TransitionOrder(id, actorId, order => order.Approve(actorId, note, timeProvider.GetUtcNow()));
+    public OrderResponse RejectOrder(Guid id, Guid actorId, string? note) => TransitionOrder(id, actorId, order => order.Reject(actorId, note, timeProvider.GetUtcNow()));
 
     public RewardSuggestionResponse SuggestReward(RewardSuggestionRequest request)
     {
@@ -104,5 +104,5 @@ public sealed class TaskService(ITaskRepository repository, IOrderRepository ord
     private static TaskApplicationResponse MapApplication(TaskApplication application) => new(application.Id, application.WorkerId, application.Note, application.Status.ToString(), application.SubmittedAt);
 
     private static TaskSummaryResponse MapSummary(TaskItem task) => new(task.Id, task.OwnerId, task.Title, task.Description, task.District, task.Deadline, task.Reward.Amount, task.Reward.Currency, task.Status.ToString(), task.AcceptanceCriteria, task.Applications.Count);
-    private static OrderResponse Map(Order order) => new(order.Id, order.TaskId, order.OwnerId, order.WorkerId, order.Title, order.Reward.Amount, order.Reward.Currency, order.Status.ToString(), order.CreatedAt);
+    private static OrderResponse Map(Order order) => new(order.Id, order.TaskId, order.OwnerId, order.WorkerId, order.Title, order.Reward.Amount, order.Reward.Currency, order.Status.ToString(), order.CreatedAt, order.EvidenceNote, order.ReviewNote, order.SubmittedAt, order.ReviewedAt);
 }

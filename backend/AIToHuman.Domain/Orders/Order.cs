@@ -40,10 +40,15 @@ public sealed class Order
     public Money Reward { get; private set; }
     public OrderStatus Status { get; private set; } = OrderStatus.Accepted;
     public DateTimeOffset CreatedAt { get; private set; }
+    public string? EvidenceNote { get; private set; }
+    public string? ReviewNote { get; private set; }
+    public DateTimeOffset? SubmittedAt { get; private set; }
+    public DateTimeOffset? ReviewedAt { get; private set; }
 
-    public static Order Rehydrate(Guid id, Guid taskId, Guid ownerId, Guid workerId, string title, Money reward, OrderStatus status, DateTimeOffset createdAt) => new()
+    public static Order Rehydrate(Guid id, Guid taskId, Guid ownerId, Guid workerId, string title, Money reward, OrderStatus status, DateTimeOffset createdAt, string? evidenceNote = null, string? reviewNote = null, DateTimeOffset? submittedAt = null, DateTimeOffset? reviewedAt = null) => new()
     {
-        Id = id, TaskId = taskId, OwnerId = ownerId, WorkerId = workerId, Title = title, Reward = reward, Status = status, CreatedAt = createdAt
+        Id = id, TaskId = taskId, OwnerId = ownerId, WorkerId = workerId, Title = title, Reward = reward, Status = status, CreatedAt = createdAt,
+        EvidenceNote = evidenceNote, ReviewNote = reviewNote, SubmittedAt = submittedAt, ReviewedAt = reviewedAt
     };
 
     public void Start(Guid actorId)
@@ -53,24 +58,32 @@ public sealed class Order
         Status = OrderStatus.InProgress;
     }
 
-    public void Submit(Guid actorId)
+    public void Submit(Guid actorId, string? evidenceNote, DateTimeOffset now)
     {
         EnsureParticipant(actorId, WorkerId);
         EnsureStatus(OrderStatus.InProgress);
+        if (string.IsNullOrWhiteSpace(evidenceNote)) throw new DomainException("提交验收必须填写执行凭证或完成说明。");
+        EvidenceNote = evidenceNote.Trim();
+        SubmittedAt = now;
         Status = OrderStatus.Submitted;
     }
 
-    public void Approve(Guid actorId)
+    public void Approve(Guid actorId, string? reviewNote, DateTimeOffset now)
     {
         EnsureParticipant(actorId, OwnerId);
         EnsureStatus(OrderStatus.Submitted);
+        ReviewNote = string.IsNullOrWhiteSpace(reviewNote) ? "验收通过" : reviewNote.Trim();
+        ReviewedAt = now;
         Status = OrderStatus.Approved;
     }
 
-    public void Reject(Guid actorId)
+    public void Reject(Guid actorId, string? reviewNote, DateTimeOffset now)
     {
         EnsureParticipant(actorId, OwnerId);
         EnsureStatus(OrderStatus.Submitted);
+        if (string.IsNullOrWhiteSpace(reviewNote)) throw new DomainException("驳回验收必须填写补充说明。");
+        ReviewNote = reviewNote.Trim();
+        ReviewedAt = now;
         Status = OrderStatus.Rejected;
     }
 

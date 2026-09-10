@@ -16,8 +16,8 @@ public sealed class OrderTests
         var order = new Order(Guid.NewGuid(), owner, worker, "代取文件", new Money(50), _now);
 
         order.Start(worker);
-        order.Submit(worker);
-        order.Approve(owner);
+        order.Submit(worker, "已拍照并交付", _now.AddHours(1));
+        order.Approve(owner, "验收通过", _now.AddHours(2));
 
         Assert.Equal(OrderStatus.Approved, order.Status);
     }
@@ -31,8 +31,8 @@ public sealed class OrderTests
 
         Assert.Throws<DomainException>(() => order.Start(owner));
         order.Start(worker);
-        Assert.Throws<DomainException>(() => order.Approve(owner));
-        order.Submit(worker);
-        Assert.Throws<DomainException>(() => order.Submit(worker));
+        Assert.Throws<DomainException>(() => order.Approve(owner, "过早验收", _now.AddHours(1)));
+        order.Submit(worker, "已拍照并交付", _now.AddHours(1));
+        Assert.Throws<DomainException>(() => order.Submit(worker, "重复提交", _now.AddHours(2)));
     }
 }

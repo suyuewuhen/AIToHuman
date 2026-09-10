@@ -53,6 +53,8 @@ public sealed class TaskDbContext(DbContextOptions<TaskDbContext> options) : DbC
             entity.Property(item => item.RewardAmount).HasPrecision(18, 2);
             entity.Property(item => item.RewardCurrency).HasMaxLength(3).IsRequired();
             entity.Property(item => item.Status).HasMaxLength(32).IsRequired();
+            entity.Property(item => item.EvidenceNote).HasMaxLength(4000);
+            entity.Property(item => item.ReviewNote).HasMaxLength(4000);
         });
     }
 }
@@ -105,4 +107,8 @@ public sealed class OrderRecord
     public string RewardCurrency { get; set; } = "CNY";
     public string Status { get; set; } = "Accepted";
     public DateTimeOffset CreatedAt { get; set; }
+    public string? EvidenceNote { get; set; }
+    public string? ReviewNote { get; set; }
+    public DateTimeOffset? SubmittedAt { get; set; }
+    public DateTimeOffset? ReviewedAt { get; set; }
 }

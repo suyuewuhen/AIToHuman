@@ -164,10 +164,12 @@ async function transitionOrder(order: OrderItem, action: 'start' | 'submit' | 'a
   }
   try {
     const actorId = authUser.value.userId
+    const note: string = action === 'submit' ? window.prompt('请填写执行凭证或完成说明') ?? '' : action === 'reject' ? window.prompt('请说明需要补充的内容') ?? '' : ''
+    if ((action === 'submit' || action === 'reject') && !note.trim()) return
     const updated = action === 'start' ? await startOrder(order.id, actorId)
-      : action === 'submit' ? await submitOrder(order.id, actorId)
-      : action === 'approve' ? await approveOrder(order.id, actorId)
-      : await rejectOrder(order.id, actorId)
+      : action === 'submit' ? await submitOrder(order.id, actorId, note)
+      : action === 'approve' ? await approveOrder(order.id, actorId, note)
+      : await rejectOrder(order.id, actorId, note)
     orders.value = orders.value.map((item) => item.id === updated.id ? updated : item)
     applicationNotice.value = `订单「${order.title}」已更新为${orderStatusLabel(updated.status)}。`
   } catch (error) {
@@ -516,7 +518,7 @@ onMounted(async () => {
       <div v-else-if="ordersError" class="hall-state error"><strong>订单暂时离线</strong><span>{{ ordersError }}</span><button type="button" @click="loadOrders">重新连接</button></div>
       <div v-else-if="visibleOrders.length === 0" class="hall-state"><strong>{{ orderTab === 'published' ? '还没有发布订单' : '还没有接取任务' }}</strong><span>{{ orderTab === 'published' ? '确认发布并选择服务者后，订单会显示在这里。' : '在任务大厅报名并被需求方选中后，任务会显示在这里。' }}</span></div>
       <div v-else class="orders-list">
-        <article v-for="order in visibleOrders" :key="order.id" class="order-row"><div><small>{{ formatDeadline(order.createdAt) }} · {{ orderStatusLabel(order.status) }}</small><h3>{{ order.title }}</h3><span>订单号 {{ order.id.slice(0, 8) }} · {{ orderTab === 'published' ? '服务者待执行' : '需求方已确认' }}</span><div class="order-actions"><button v-if="orderTab === 'taken' && order.status === 'Accepted'" type="button" @click="transitionOrder(order, 'start')">开始执行</button><button v-if="orderTab === 'taken' && order.status === 'InProgress'" type="button" @click="transitionOrder(order, 'submit')">提交验收</button><button v-if="orderTab === 'published' && order.status === 'Submitted'" type="button" @click="transitionOrder(order, 'approve')">确认完成</button><button v-if="orderTab === 'published' && order.status === 'Submitted'" type="button" class="secondary-action" @click="transitionOrder(order, 'reject')">需要补充</button></div></div><strong>¥{{ order.reward }}</strong></article>
+        <article v-for="order in visibleOrders" :key="order.id" class="order-row"><div><small>{{ formatDeadline(order.createdAt) }} · {{ orderStatusLabel(order.status) }}</small><h3>{{ order.title }}</h3><span>订单号 {{ order.id.slice(0, 8) }} · {{ orderTab === 'published' ? '服务者待执行' : '需求方已确认' }}</span><p v-if="order.evidenceNote" class="order-note"><b>执行凭证：</b>{{ order.evidenceNote }}</p><p v-if="order.reviewNote" class="order-note"><b>验收意见：</b>{{ order.reviewNote }}</p><div class="order-actions"><button v-if="orderTab === 'taken' && order.status === 'Accepted'" type="button" @click="transitionOrder(order, 'start')">开始执行</button><button v-if="orderTab === 'taken' && order.status === 'InProgress'" type="button" @click="transitionOrder(order, 'submit')">提交验收</button><button v-if="orderTab === 'published' && order.status === 'Submitted'" type="button" @click="transitionOrder(order, 'approve')">确认完成</button><button v-if="orderTab === 'published' && order.status === 'Submitted'" type="button" class="secondary-action" @click="transitionOrder(order, 'reject')">需要补充</button></div></div><strong>¥{{ order.reward }}</strong></article>
       </div>
     </section>
 

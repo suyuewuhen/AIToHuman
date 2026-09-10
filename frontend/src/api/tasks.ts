@@ -30,6 +30,10 @@ export interface OrderItem {
   currency: string
   status: string
   createdAt: string
+  evidenceNote?: string | null
+  reviewNote?: string | null
+  submittedAt?: string | null
+  reviewedAt?: string | null
 }
 
 export interface SelectTaskResult {
@@ -81,16 +85,16 @@ export async function listMyOrders(userId: string): Promise<OrderItem[]> {
   return parseResponse<OrderItem[]>(await fetch(`/api/v1/orders?userId=${encodeURIComponent(userId)}`, { headers: authHeaders() }))
 }
 
-async function orderAction(orderId: string, action: 'start' | 'submit' | 'approve' | 'reject', actorId: string): Promise<OrderItem> {
+async function orderAction(orderId: string, action: 'start' | 'submit' | 'approve' | 'reject', actorId: string, note?: string): Promise<OrderItem> {
   return parseResponse<OrderItem>(await fetch(`/api/v1/orders/${orderId}/${action}`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ actorId }),
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ actorId, note }),
   }))
 }
 
 export const startOrder = (orderId: string, actorId: string) => orderAction(orderId, 'start', actorId)
-export const submitOrder = (orderId: string, actorId: string) => orderAction(orderId, 'submit', actorId)
-export const approveOrder = (orderId: string, actorId: string) => orderAction(orderId, 'approve', actorId)
-export const rejectOrder = (orderId: string, actorId: string) => orderAction(orderId, 'reject', actorId)
+export const submitOrder = (orderId: string, actorId: string, note: string) => orderAction(orderId, 'submit', actorId, note)
+export const approveOrder = (orderId: string, actorId: string, note?: string) => orderAction(orderId, 'approve', actorId, note)
+export const rejectOrder = (orderId: string, actorId: string, note: string) => orderAction(orderId, 'reject', actorId, note)
 
 export async function applyForTask(taskId: string, workerId: string, note: string): Promise<TaskItem> {
   return parseResponse<TaskItem>(await fetch(`/api/v1/tasks/${taskId}/applications`, {
