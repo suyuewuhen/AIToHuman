@@ -17,7 +17,7 @@ using System.Security.Claims;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.Configure<VolcengineAiOptions>(builder.Configuration.GetSection("VolcengineAI"));
-builder.Services.AddHttpClient<AiPlanningService>((serviceProvider, client) => { var options = serviceProvider.GetRequiredService<Microsoft.Extensions.Options.IOptions<VolcengineAiOptions>>().Value; client.Timeout = TimeSpan.FromSeconds(Math.Clamp(options.TimeoutSeconds, 5, 120)); });
+builder.Services.AddHttpClient<AiPlanningService>(client => client.Timeout = Timeout.InfiniteTimeSpan);
 
 var signingKey = builder.Configuration["Authentication:SigningKey"];
 if (string.IsNullOrWhiteSpace(signingKey) && !builder.Environment.IsDevelopment())
@@ -134,6 +134,8 @@ app.UseExceptionHandler(errorApp => errorApp.Run(async context =>
     var exception = context.Features.Get<IExceptionHandlerFeature>()?.Error;
     var (status, title) = exception switch
     {
+        AiPlanningTimeoutException => (StatusCodes.Status504GatewayTimeout, "AI 规划服务响应超时"),
+        AiPlanningUnavailableException => (StatusCodes.Status502BadGateway, "AI 规划服务暂时不可用"),
         DomainException => (StatusCodes.Status422UnprocessableEntity, "业务规则不允许该操作"),
         InvalidOperationException invalid when invalid.Message.Contains("已注册", StringComparison.Ordinal) => (StatusCodes.Status409Conflict, "资源冲突"),
         InvalidOperationException => (StatusCodes.Status422UnprocessableEntity, "请求参数不符合要求"),
@@ -147,7 +149,7 @@ app.UseExceptionHandler(errorApp => errorApp.Run(async context =>
     {
         Status = status,
         Title = title,
-        Detail = exception is DomainException or KeyNotFoundException or UnauthorizedAccessException ? exception.Message : "请求暂时无法处理。",
+        Detail = exception is DomainException or KeyNotFoundException or UnauthorizedAccessException or AiPlanningTimeoutException or AiPlanningUnavailableException ? exception.Message : "请求暂时无法处理。",
         Instance = context.Request.Path
     });
 }));

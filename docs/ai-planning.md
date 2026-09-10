@@ -22,6 +22,9 @@ dotnet user-secrets --project backend/AIToHuman.Api set "VolcengineAI:ApiKey" "�
 
 - BaseUrl：`https://ark.cn-beijing.volces.com/api/v3`
 - Model：`glm-4-7-251222`
+- TimeoutSeconds：`45`（允许范围 5 至 120 秒）
 - Endpoint：`POST /api/v1/ai/plan`
+
+超过配置时间时接口返回 `504 Gateway Timeout`，无法连接上游时返回 `502 Bad Gateway`。前端会自动回退到本地规则建议；如果模型经常超过 45 秒，应先检查网络、模型名称和火山引擎端点，再按需通过 `VolcengineAI__TimeoutSeconds` 调整上限。
 
 接口只返回结构化草稿，不会自动发布任务。用户仍需确认地点、时间、验收标准和固定悬赏后再发布。

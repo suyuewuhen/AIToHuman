@@ -12,7 +12,13 @@ public sealed class VolcengineAiOptions
     public int TimeoutSeconds { get; set; } = 45;
 }
 
-public sealed class AiPlanningService(HttpClient httpClient, IOptions<VolcengineAiOptions> options)
+public sealed class AiPlanningTimeoutException(int timeoutSeconds, Exception innerException)
+    : TimeoutException($"AI 规划服务在 {timeoutSeconds} 秒内未响应。", innerException);
+
+public sealed class AiPlanningUnavailableException(Exception innerException)
+    : Exception("无法连接 AI 规划服务。", innerException);
+
+public sealed class AiPlanningService(HttpClient httpClient, IOptions<VolcengineAiOptions> options, ILogger<AiPlanningService> logger)
 {
     private readonly VolcengineAiOptions settings = options.Value;
     public async Task<AiTaskPlanResponse> PlanAsync(AiTaskPlanRequest request, CancellationToken cancellationToken)
@@ -23,12 +29,28 @@ public sealed class AiPlanningService(HttpClient httpClient, IOptions<Volcengine
         using var payload = JsonDocument.Parse(JsonSerializer.Serialize(payloadObject));
         using var message = new HttpRequestMessage(HttpMethod.Post, $"{settings.BaseUrl.TrimEnd('/')}/chat/completions") { Content = new StringContent(payload.RootElement.GetRawText(), Encoding.UTF8, "application/json") };
         message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", settings.ApiKey);
-        using var response = await httpClient.SendAsync(message, cancellationToken);
-        var responseText = await response.Content.ReadAsStringAsync(cancellationToken);
-        if (!response.IsSuccessStatusCode) throw new InvalidOperationException($"AI 服务请求失败（{(int)response.StatusCode}）。");
-        using var document = JsonDocument.Parse(responseText);
-        var content = document.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString() ?? string.Empty;
-        return ParsePlan(content);
+        var timeoutSeconds = Math.Clamp(settings.TimeoutSeconds, 5, 120);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
+        try
+        {
+            using var response = await httpClient.SendAsync(message, timeout.Token);
+            var responseText = await response.Content.ReadAsStringAsync(timeout.Token);
+            if (!response.IsSuccessStatusCode) throw new InvalidOperationException($"AI 服务请求失败（{(int)response.StatusCode}）。");
+            using var document = JsonDocument.Parse(responseText);
+            var content = document.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString() ?? string.Empty;
+            return ParsePlan(content);
+        }
+        catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested && timeout.IsCancellationRequested)
+        {
+            logger.LogWarning(exception, "AI 规划请求在 {TimeoutSeconds} 秒后超时，模型为 {Model}。", timeoutSeconds, settings.Model);
+            throw new AiPlanningTimeoutException(timeoutSeconds, exception);
+        }
+        catch (HttpRequestException exception)
+        {
+            logger.LogWarning(exception, "无法连接 AI 规划服务，模型为 {Model}。", settings.Model);
+            throw new AiPlanningUnavailableException(exception);
+        }
     }
     private static AiTaskPlanResponse ParsePlan(string content)
     {
