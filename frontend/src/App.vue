@@ -5,6 +5,7 @@ import { getDevSession, type DevSession } from './api/session'
 import { clearAccessToken, getAccessToken, getCurrentUser, login, register, switchRole, type ActiveRole, type AuthResponse } from './api/auth'
 import { applyForTask, approveOrder, createOrderReview, createTask, getReviewSummary, listMyOrders, listOrderReviews, listPublishedTasks, listTaskApplications, publishTask, rejectOrder, selectTaskApplication, startOrder, submitOrder, type OrderItem, type ReviewItem, type TaskApplication, type TaskItem, type ReviewSummary } from './api/tasks'
 import { connectOrderNotifications, disconnectOrderNotifications } from './api/notifications'
+import { planTask, type AiTaskPlan } from './api/ai'
 
 type Step = { label: string; done: boolean }
 
@@ -12,6 +13,7 @@ const prompt = ref('明天下午帮我去徐汇区取一份文件，再送到静
 const reward = ref(65)
 const sent = ref(false)
 const planning = ref(false)
+const aiPlan = ref<AiTaskPlan | null>(null)
 const suggestionMin = ref(55)
 const suggestionMax = ref(75)
 const suggestionSource = ref('演示建议')
@@ -68,6 +70,22 @@ async function submitPrompt() {
   planning.value = true
   sent.value = true
   try {
+    const plan = await planTask(prompt.value)
+    aiPlan.value = plan
+    if (plan.title) sent.value = true
+    reward.value = plan.suggestedReward || reward.value
+    suggestionMin.value = Math.max(15, (plan.suggestedReward || reward.value) - 10)
+    suggestionMax.value = (plan.suggestedReward || reward.value) + 20
+    steps.value = plan.acceptanceCriteria.slice(0, 3).map(label => ({ label, done: true }))
+    while (steps.value.length < 3) steps.value.push({ label: '补充可验证的验收标准', done: false })
+    applicationNotice.value = plan.clarifications.length ? `AI 还需要确认：${plan.clarifications.join('；')}` : 'AI 已完成任务草稿，请检查并确认后发布。'
+    suggestionSource.value = '火山引擎 AI 规划'
+    planning.value = false
+    return
+  } catch {
+    applicationNotice.value = 'AI 暂时不可用，已切换为本地规则建议。'
+  }
+  try {
     const suggestion = await requestRewardSuggestion()
     suggestionMin.value = suggestion.minimumReward
     suggestionMax.value = suggestion.maximumReward
@@ -108,12 +126,12 @@ async function openPublishPreview() {
   try {
     const task = await createTask({
       ownerId: authUser.value?.userId ?? session.value!.userId,
-      title: '明日下午代取并递送文件',
-      description: prompt.value,
-      district: '徐汇区 → 静安区',
-      deadline: draftDeadline(),
+      title: aiPlan.value?.title || '明日下午代取并递送文件',
+      description: aiPlan.value?.description || prompt.value,
+      district: aiPlan.value?.district || '徐汇区 → 静安区',
+      deadline: aiPlan.value?.deadline || draftDeadline(),
       reward: reward.value,
-      acceptanceCriteria: steps.value.map((step) => step.label),
+      acceptanceCriteria: (aiPlan.value?.acceptanceCriteria?.length ? aiPlan.value.acceptanceCriteria : steps.value.map((step) => step.label)),
     })
     publishPreview.value = task
   } catch (error) {

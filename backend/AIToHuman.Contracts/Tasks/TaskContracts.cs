@@ -11,6 +11,8 @@ public sealed record OrderActionRequest(Guid ActorId, string? Note);
 public sealed record CreateReviewRequest(Guid ReviewerId, int Rating, string? Comment);
 public sealed record ReviewResponse(Guid Id, Guid OrderId, Guid ReviewerId, Guid RevieweeId, int Rating, string Comment, DateTimeOffset CreatedAt, bool IsVisible);
 public sealed record ReviewSummaryResponse(Guid UserId, decimal AverageRating, int ReviewCount, IReadOnlyCollection<ReviewResponse> RecentReviews);
+public sealed record AiTaskPlanRequest(string Prompt);
+public sealed record AiTaskPlanResponse(string Title, string Description, string District, DateTimeOffset Deadline, IReadOnlyList<string> AcceptanceCriteria, decimal SuggestedReward, IReadOnlyList<string> Clarifications, string Provider);
 public sealed record SelectTaskResult(TaskResponse Task, OrderResponse Order);
 public sealed record TaskSummaryResponse(Guid Id, Guid OwnerId, string Title, string Description, string District, DateTimeOffset Deadline, decimal Reward, string Currency, string Status, IReadOnlyList<string> AcceptanceCriteria, int ApplicationCount);
 public sealed record RewardSuggestionRequest(string Category, double DistanceKilometers, int EstimatedMinutes, bool IsPeakHours);
