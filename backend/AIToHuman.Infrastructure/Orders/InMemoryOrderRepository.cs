@@ -11,4 +11,5 @@ public sealed class InMemoryOrderRepository : IOrderRepository
     public Order? GetByTask(Guid taskId) => orders.Values.SingleOrDefault(item => item.TaskId == taskId);
     public IReadOnlyCollection<Order> ListByUser(Guid userId) => orders.Values.Where(item => item.OwnerId == userId || item.WorkerId == userId).OrderByDescending(item => item.CreatedAt).ToArray();
     public void Add(Order order) { if (!orders.TryAdd(order.Id, order)) throw new InvalidOperationException("订单标识冲突。"); }
+    public void Save(Order order) => orders[order.Id] = order;
 }

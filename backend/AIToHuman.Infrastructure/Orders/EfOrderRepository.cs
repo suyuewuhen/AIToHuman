@@ -16,5 +16,11 @@ public sealed class EfOrderRepository(TaskDbContext db) : IOrderRepository
         db.Orders.Add(new OrderRecord { Id = order.Id, TaskId = order.TaskId, OwnerId = order.OwnerId, WorkerId = order.WorkerId, Title = order.Title, RewardAmount = order.Reward.Amount, RewardCurrency = order.Reward.Currency, Status = order.Status.ToString(), CreatedAt = order.CreatedAt });
         db.SaveChanges();
     }
+    public void Save(Order order)
+    {
+        var record = db.Orders.Single(item => item.Id == order.Id);
+        record.Status = order.Status.ToString();
+        db.SaveChanges();
+    }
     private static Order Map(OrderRecord record) => Order.Rehydrate(record.Id, record.TaskId, record.OwnerId, record.WorkerId, record.Title, new Money(record.RewardAmount, record.RewardCurrency), Enum.Parse<OrderStatus>(record.Status), record.CreatedAt);
 }

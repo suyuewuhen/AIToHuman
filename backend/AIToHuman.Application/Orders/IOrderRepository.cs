@@ -8,4 +8,5 @@ public interface IOrderRepository
     Order? GetByTask(Guid taskId);
     IReadOnlyCollection<Order> ListByUser(Guid userId);
     void Add(Order order);
+    void Save(Order order);
 }

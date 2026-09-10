@@ -45,4 +45,42 @@ public sealed class Order
     {
         Id = id, TaskId = taskId, OwnerId = ownerId, WorkerId = workerId, Title = title, Reward = reward, Status = status, CreatedAt = createdAt
     };
+
+    public void Start(Guid actorId)
+    {
+        EnsureParticipant(actorId, WorkerId);
+        EnsureStatus(OrderStatus.Accepted);
+        Status = OrderStatus.InProgress;
+    }
+
+    public void Submit(Guid actorId)
+    {
+        EnsureParticipant(actorId, WorkerId);
+        EnsureStatus(OrderStatus.InProgress);
+        Status = OrderStatus.Submitted;
+    }
+
+    public void Approve(Guid actorId)
+    {
+        EnsureParticipant(actorId, OwnerId);
+        EnsureStatus(OrderStatus.Submitted);
+        Status = OrderStatus.Approved;
+    }
+
+    public void Reject(Guid actorId)
+    {
+        EnsureParticipant(actorId, OwnerId);
+        EnsureStatus(OrderStatus.Submitted);
+        Status = OrderStatus.Rejected;
+    }
+
+    private void EnsureParticipant(Guid actorId, Guid expectedActor)
+    {
+        if (actorId != expectedActor) throw new DomainException("当前用户不是该操作的订单参与者。");
+    }
+
+    private void EnsureStatus(OrderStatus expected)
+    {
+        if (Status != expected) throw new DomainException($"订单当前状态 {Status} 不允许该操作，期望状态为 {expected}。");
+    }
 }

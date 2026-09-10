@@ -214,6 +214,10 @@ tasks.MapGet("/{id:guid}/order", (Guid id, ClaimsPrincipal user, IHostEnvironmen
 
 app.MapPost("/api/v1/reward-suggestions", (RewardSuggestionRequest request, TaskService service) => Results.Ok(service.SuggestReward(request)));
 app.MapGet("/api/v1/orders", (Guid? userId, ClaimsPrincipal user, IHostEnvironment environment, TaskService service) => Results.Ok(service.ListOrders(ResolveUserId(user, userId ?? Guid.Empty, environment))));
+app.MapPost("/api/v1/orders/{id:guid}/start", (Guid id, OrderActionRequest request, ClaimsPrincipal user, IHostEnvironment environment, TaskService service) => Results.Ok(service.StartOrder(id, ResolveUserId(user, request.ActorId, environment))));
+app.MapPost("/api/v1/orders/{id:guid}/submit", (Guid id, OrderActionRequest request, ClaimsPrincipal user, IHostEnvironment environment, TaskService service) => Results.Ok(service.SubmitOrder(id, ResolveUserId(user, request.ActorId, environment))));
+app.MapPost("/api/v1/orders/{id:guid}/approve", (Guid id, OrderActionRequest request, ClaimsPrincipal user, IHostEnvironment environment, TaskService service) => Results.Ok(service.ApproveOrder(id, ResolveUserId(user, request.ActorId, environment))));
+app.MapPost("/api/v1/orders/{id:guid}/reject", (Guid id, OrderActionRequest request, ClaimsPrincipal user, IHostEnvironment environment, TaskService service) => Results.Ok(service.RejectOrder(id, ResolveUserId(user, request.ActorId, environment))));
 
 app.Run();
 

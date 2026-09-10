@@ -67,6 +67,10 @@ public sealed class TaskService(ITaskRepository repository, IOrderRepository ord
         return Map(order);
     }
     public IReadOnlyCollection<OrderResponse> ListOrders(Guid userId) => orderRepository.ListByUser(userId).Select(Map).ToArray();
+    public OrderResponse StartOrder(Guid id, Guid actorId) => TransitionOrder(id, actorId, order => order.Start(actorId));
+    public OrderResponse SubmitOrder(Guid id, Guid actorId) => TransitionOrder(id, actorId, order => order.Submit(actorId));
+    public OrderResponse ApproveOrder(Guid id, Guid actorId) => TransitionOrder(id, actorId, order => order.Approve(actorId));
+    public OrderResponse RejectOrder(Guid id, Guid actorId) => TransitionOrder(id, actorId, order => order.Reject(actorId));
 
     public RewardSuggestionResponse SuggestReward(RewardSuggestionRequest request)
     {
@@ -86,6 +90,14 @@ public sealed class TaskService(ITaskRepository repository, IOrderRepository ord
     }
 
     private TaskItem GetRequired(Guid id) => repository.Get(id) ?? throw new KeyNotFoundException("任务不存在。");
+
+    private OrderResponse TransitionOrder(Guid id, Guid actorId, Action<Order> transition)
+    {
+        var order = orderRepository.Get(id) ?? throw new KeyNotFoundException("订单不存在。");
+        transition(order);
+        orderRepository.Save(order);
+        return Map(order);
+    }
 
     private static TaskResponse Map(TaskItem task) => new(task.Id, task.OwnerId, task.Title, task.Description, task.District, task.Deadline, task.Reward.Amount, task.Reward.Currency, task.Status.ToString(), task.AcceptanceCriteria, task.Applications.Select(MapApplication).ToArray());
 
