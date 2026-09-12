@@ -18,13 +18,13 @@
 - ✅ 系统架构、领域状态机和 API 约定。
 - ✅ Vue 与 .NET 项目骨架。
 - ✅ PostgreSQL、Redis、MinIO 的本地开发环境定义（`compose.yaml`）。
-- ⚠️ CI、格式和测试基线：`.github/workflows/ci.yml` 已执行后端 `restore/build/test` 和前端 `npm ci/build`，并有 `.editorconfig` 与 74 个领域单元测试、167 个集成测试；尚无 Lint、Markdown 检查、OpenAPI 兼容性检查和技术文档生成。
+- ⚠️ CI、格式和测试基线：`.github/workflows/ci.yml` 已执行后端 `restore/build/test` 和前端 `npm ci/build`，并有 `.editorconfig` 与 91 个领域单元测试、178 个集成测试；尚无 Lint、Markdown 检查、OpenAPI 兼容性检查和技术文档生成。
 - ✅ 配置分层与运营可配置项：部署级配置（连接串、Redis、日志、密钥环路径）只走环境变量；三方集成参数（模型服务、对象存储、内容扫描）与凭证上传上限登记在设置目录里，可通过管理员接口与顶栏“运营配置”页面修改，机密加密落库并留审计，改完立即生效（见 [ADR-0003](../architecture/decisions/0003-operator-configurable-settings.md)）。运营后台的其余能力（任务/用户检索、风险复核、争议处理）仍未实现。
 - ⛔ 秘密扫描与依赖更新自动化。
 
 遗留项：
 
-- ✅ 数据库结构已收敛为 EF Core Migration 单一来源：13 个迁移覆盖 users、orders、order_evidence、reviews、tasks、task_applications、conversations、conversation_messages、notifications、order_messages、evidence、system_settings、system_setting_audits 等表，Development 启动执行 `Database.Migrate()`，早期 `EnsureCreated()` 建出的旧库会自动基线化（见 `handoff.md` 第 10 节）。
+- ✅ 数据库结构已收敛为 EF Core Migration 单一来源：14 个迁移覆盖 users、orders、order_evidence、reviews、tasks、task_applications、conversations、conversation_messages、notifications、order_messages、evidence（含扫描尝试记账）、system_settings、system_setting_audits 等表，Development 启动执行 `Database.Migrate()`，早期 `EnsureCreated()` 建出的旧库会自动基线化（见 `handoff.md` 第 10 节）。
 - ⚠️ Redis 和 MinIO 仍只在 `compose.yaml` 中定义：缓存、实时扩展（SignalR backplane）和 S3 兼容对象存储都没有接入；凭证文件当前写在本机私有目录，通过 `IFileStorage` 预留了替换点。
 
 退出条件：团队确认首发城市、任务分类、AI 建议价冷启动方式和身份/支付策略；开发环境可复现。开发环境可复现已基本达成，产品决策项仍未确认。

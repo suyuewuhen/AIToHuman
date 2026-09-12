@@ -22,8 +22,10 @@ dotnet user-secrets --project backend/AIToHuman.Api set "VolcengineAI:ApiKey" "�
 
 - BaseUrl：`https://ark.cn-beijing.volces.com/api/v3`
 - Model：`glm-4-7-251222`
-- TimeoutSeconds：`120`（允许范围 5 至 120 秒，按连续无数据时间计算）
+- TimeoutSeconds：`120`（允许范围 5 至 600 秒，按连续无数据时间计算）
 - Endpoint：`POST /api/v1/ai/plan/stream`
+
+以上四项都是**运营可配置**的：生效值按「运营后台里的 `ai.*` 覆盖 → 环境变量/User Secrets → 代码默认值」解析，页面入口是顶栏“运营配置”（需要管理员身份），改完下一轮对话立即生效，不需要重启服务。下面这些环境变量只是兜底写法，适合首次部署或没有后台入口时使用。
 
 请求体包含按顺序排列的 `messages`，每项只允许 `user` 或 `assistant` 角色，最后一项必须来自用户。接口使用 Server-Sent Events（SSE）转发流式响应：`delta` 只包含可展示给用户的自然语言回复，内部 JSON 不会发送到页面；`complete` 返回本轮状态，并在需求完整时附带结构化草稿；`error` 返回流内错误。
 

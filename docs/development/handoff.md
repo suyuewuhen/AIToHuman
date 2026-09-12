@@ -1,6 +1,6 @@
 # AIToHuman 项目交接文档
 
-最后更新：2026-09-10
+最后更新：2026-09-12
 
 仓库：[suyuewuhen/AIToHuman](https://github.com/suyuewuhen/AIToHuman)
 
@@ -29,7 +29,7 @@ AI 多轮澄清（每轮一个问题）
 → 双方评价，双方提交或 7 天后公开
 ```
 
-尚未实现：真实支付和托管、实名认证、禁止任务风险拦截、S3/OSS 对象存储实现与真实的病毒/内容扫描服务（配置与调用链路已就绪，只差选定服务商）、争议处理、取消与超时、精确地址访问审计、上传限速与 EXIF 去除、运营后台页面，以及多实例可靠投递（Redis backplane）。
+尚未实现：真实支付和托管、实名认证、禁止任务风险拦截、S3/OSS 对象存储实现与真实的病毒/内容扫描服务（配置与调用链路已就绪，只差选定服务商）、争议处理、取消与超时、精确地址访问审计、上传限速与 EXIF 去除；运营后台目前只有配置页面，任务/用户检索与风险复核等仍未实现；多实例可靠投递（Redis backplane）也未落地。
 
 ## 2. 当前工作区状态
 
@@ -56,7 +56,7 @@ backend/AIToHuman.Application/    Common/（IUnitOfWork）、Conversations/、No
                                   Orders/（OrderChatService、EvidenceService）、Tasks/TaskService
 backend/AIToHuman.Contracts/      Conversations/、Notifications/、Orders/（消息与凭证）、Tasks/
 backend/AIToHuman.Domain/         Common/UtcTimestamp、Conversations/、Notifications/、Orders/、Tasks/
-backend/AIToHuman.Infrastructure/ Persistence/（TaskDbContext、EfUnitOfWork、12 个迁移）、
+backend/AIToHuman.Infrastructure/ Persistence/（TaskDbContext、EfUnitOfWork、14 个迁移）、
                                   Conversations/、Notifications/、Orders/（消息与凭证仓储）、
                                   Storage/LocalFileStorage
 backend/tests/AIToHuman.Domain.Tests/      新增 ConversationTests、NotificationTests、
@@ -144,7 +144,7 @@ docs/                             ai-planning、api/api-guidelines、architectur
 
 ### 运营可配置的三方集成参数
 
-- 设置目录（白名单）在 `backend/AIToHuman.Application/Settings/SettingCatalog.cs`：目前 18 个键，分 AI 服务商、对象存储、内容扫描三组。只有登记在册的键才能被后台读写，`ConnectionStrings__Postgres`、日志、密钥环路径这类部署级配置永远不会出现在配置表里。
+- 设置目录（白名单）在 `backend/AIToHuman.Application/Settings/SettingCatalog.cs`：目前 20 个键，分 AI 服务商、对象存储、凭证上传、内容扫描四组。只有登记在册的键才能被后台读写，`ConnectionStrings__Postgres`、日志、密钥环路径这类部署级配置永远不会出现在配置表里。
 - 生效值的解析顺序固定为「数据库覆盖 → 环境变量/配置文件 → 代码默认值」。删除覆盖记录就等于恢复默认，不需要额外的启用/停用开关。
 - 运营接口（需管理员身份）：`GET /api/v1/admin/settings`、`GET /api/v1/admin/settings/{key}`、`PUT /api/v1/admin/settings/{key}`、`DELETE /api/v1/admin/settings/{key}`（恢复默认）、`POST /api/v1/admin/settings/{key}/test`（只读自检）、`GET /api/v1/admin/settings/audits`。
 - 机密（`ai.apiKey`、`storage.s3.secretAccessKey`、`evidence.scanner.apiKey`）用 Data Protection 加密后落库，密文带 `dp1:` 前缀；接口只返回 `****末四位` 与指纹，审计记录同样只留掩码与指纹，明文只在服务端内存里出现。
@@ -185,7 +185,7 @@ PostgreSQL（当前开发事实来源）
 ```
 
 ```text
-backend/AIToHuman.Api/                  # 路由、认证、AI SSE、SignalR Hub、通知后台派发、运营配置接口
+backend/AIToHuman.Api/                  # 路由、认证、AI SSE、SignalR Hub、通知派发、凭证重扫、运营配置接口
 backend/AIToHuman.Application/         # TaskService、会话、订单会话、凭证、通知用例、设置目录与配置用例
 backend/AIToHuman.Contracts/           # API record 与对话/通知/消息/凭证/设置 DTO
 backend/AIToHuman.Domain/              # TaskItem、Order、Review、Conversation、OrderMessage、Notification、SystemSetting
@@ -444,7 +444,7 @@ Order: Accepted → InProgress → Submitted → Approved
 
 ## 11. 验证结果与命令
 
-2026-09-10 已在提交 `e45da76` 上验证（工作区干净，没有未提交修改）：
+2026-09-12 整理的验证记录。第一批条目是在提交 `e45da76` 上做的（工作区干净），最近两轮（运营配置、凭证扫描闭环）的结果按“本轮（…）新增验证”分段列在后面；每条都写明了当时的环境与提交。
 
 - `dotnet build AIToHuman.sln --no-restore`：通过，0 警告、0 错误。
 - 领域测试：58/58 通过。覆盖任务加价与报名约束、执行地址校验与分阶段披露、订单履约与返工闭环、批准后关单、对话回合不变量与历史截断、通知字段校验与标记幂等、订单会话消息校验与未读语义、执行凭证的类型/大小/签名校验与扫描状态机、本地偏移量时间归一化和角色校验文案。
@@ -456,9 +456,10 @@ Order: Accepted → InProgress → Submitted → Approved
 - `npm run typecheck`：通过。
 - Vite 生产构建：通过；若默认 `frontend/dist` 被运行中的进程占用，先停止该进程或输出到临时目录。
 - EF Core 迁移：当前共 14 个（清单见第 10 节）；本轮新增 `AddOrderRework`（`orders` 两列）、`AddConversations`（会话两表）、`AddTaskTables`（补上此前缺失的 `tasks`、`task_applications`）、`AddConcurrencyTokens`（`Version` 列）、`AddNotifications`、`AddOrderMessages`、`AddTaskExecutionAddress`、`AddEvidence`、`AddSystemSettings`、`AddEvidenceScanAttempts`（扫描尝试次数与说明）。
-- 全新数据库路径（2026-09-12 复核）：用一个从未存在的空库（`Database=aitohuman_migration_check_v2`）启动 API，`Migrate()` 自动建库并**按顺序应用全部 12 个迁移**（日志 12 条 `Applying migration '...'`），`/health` 返回 `healthy`。
-- 全新数据库路径（2026-09-12，含 `AddSystemSettings`）：另起一个空库 `aitohuman_settings_check2` 启动 API，直接查 `__EFMigrationsHistory` 得到 `migrations_applied=13`，最后一条是 `20260912083117_AddSystemSettings`；随后在同一库上完成下面的运营配置端到端用例。
-- 全新数据库路径（更早一版，当时 8 个迁移）：在同一路径的空库 `aitohuman_migration_check` 上跑通任务创建、发布、报名与会话创建，`dotnet ef migrations list` 显示全部已应用、无待执行。
+- 全新数据库路径（**最新一次，含全部 14 个迁移**）：另起空库 `aitohuman_evidence_check` 启动 API，`Migrate()` 从零建库并应用全部 14 个迁移，随后在该库上完成下面的凭证扫描闭环用例。
+- 全新数据库路径（2026-09-12，含 `AddSystemSettings`）：空库 `aitohuman_settings_check2` 启动 API，直接查 `__EFMigrationsHistory` 得到 `migrations_applied=13`，最后一条是 `20260912083117_AddSystemSettings`；随后在同一库上完成运营配置端到端用例。
+- 全新数据库路径（2026-09-12 复核，当时 12 个迁移）：空库 `aitohuman_migration_check_v2` 启动 API，日志按顺序打印 12 条 `Applying migration '...'`，`/health` 返回 `healthy`。
+- 全新数据库路径（更早一版，当时 8 个迁移）：空库 `aitohuman_migration_check` 上跑通任务创建、发布、报名与会话创建，`dotnet ef migrations list` 显示全部已应用、无待执行。
 - 既有开发库路径：用原来的 `postgres` 库启动，日志出现“检测到由早期 EnsureCreated 建出的数据库，已把 N 个迁移记为已应用”，随后 `No migrations were applied. The database is already up to date.`；原有数据仍可正常读取。
 - 既有开发库自愈：基线化之后新增的 `AddConcurrencyTokens` 会自动应用（补上 `Version` 列），随后创建任务、发布、报名、选人、开始执行全部正常，8 条既有会话记录完好；之后的 `AddNotifications`、`AddOrderMessages`、`AddTaskExecutionAddress`、`AddEvidence` 也在同一开发库上自动应用（第 426 至 429 行的通知、会话、分页与凭证端到端用例都跑在该库上）。
 - 并发端到端（真实 PostgreSQL + 12 个并行请求）：同一任务被 12 个请求同时选人 → `200×1、409×2、422×9`，该任务只有 1 个订单、只有 1 条报名被选中；同一服务者 12 个并发报名 → `200×1、409×3、422×8`，最终只有 1 条报名记录。修复前同样的用例会出现 500 且可能多写订单。
@@ -471,7 +472,7 @@ Order: Accepted → InProgress → Submitted → Approved
 
 本轮（运营可配置三方参数）新增验证：
 
-- 运营配置端到端（真实 PostgreSQL + 真实 Data Protection 密钥环 + 真实 JWT）：匿名读配置 `401`、服务者读配置 `403`、管理员读配置 `200`（18 个键）；把 `ai.apiKey` 写成 `sk-e2e-abcdef123456` 后接口返回 `****3456`（`source=database`、`overrideVersion=1`、指纹 `7ab5f1bce26a`）；用过期版本提交返回 `409`，超范围整数与非法枚举返回 `422`，未注册键（`ConnectionStrings.Postgres`）返回 `400` 且不落库。
+- 运营配置端到端（真实 PostgreSQL + 真实 Data Protection 密钥环 + 真实 JWT）：匿名读配置 `401`、服务者读配置 `403`、管理员读配置 `200`（当时目录是 18 个键，现在是 20 个）；把 `ai.apiKey` 写成 `sk-e2e-abcdef123456` 后接口返回 `****3456`（`source=database`、`overrideVersion=1`、指纹 `7ab5f1bce26a`）；用过期版本提交返回 `409`，超范围整数与非法枚举返回 `422`，未注册键（`ConnectionStrings.Postgres`）返回 `400` 且不落库。
 - 机密落库形态（直查数据库）：`system_settings` 里 `storage.s3.secretAccessKey` 的原始值形如 `dp1:CfDJ8JO_Jf94B9pDvePGjLigiTsAd3QS9lmc…`，即 Data Protection 密文；`system_setting_audits` 里只有脱敏结果：`'(未设置)' -> '****3456(7ab5f1bce26a)'`，操作人就是发起修改的管理员 ID，明文不出现在任何响应与审计里。
 - 恢复默认：`DELETE /api/v1/admin/settings/ai.apiKey` 后接口回到 `****9999`（来自 `VolcengineAI__ApiKey`）、`source=configuration`、`hasOverride=false`，并追加一条 `Reset` 审计。
 - 自检接口：`storage.localRoot/test` 返回 `ok=true` 与实际目录；`evidence.scanner.provider/test` 在 `provider=none` 时明确提示“凭证会直接放行，生产建议切换为 http”。
@@ -520,7 +521,7 @@ npm run build
 
 - 领域单元测试 91 个（`AIToHuman.Domain.Tests`）：任务加价、禁止自己报名、禁止重复报名、选择服务者、订单参与者权限、履约状态流、返工闭环与批准后关单、执行地址校验；对话回合不变量、历史窗口与截断；通知字段校验与标记幂等；订单会话消息校验与未读语义；执行凭证的类型/大小/签名校验、扫描状态机与扫描尝试记账、上传限额边界；配置键形状、取值上限、版本自增与审计脱敏。
 - 集成测试 178 个（`AIToHuman.IntegrationTests`）：AI 多轮协议、输出严格校验与可控重试、SSE 线格式、会话用例、`IUnitOfWork` 事务边界、通知骨干、订单会话、评价盲期、大厅分页筛选与地址披露、执行凭证（上传/下载/权限/扫描门禁/上限/重扫闭环）、EF 模型快照，以及运营配置（设置目录校验、解析顺序、加密与脱敏、审计、并发冲突、自检、HTTP 扫描器、存储 provider 选择、管理员名单判定与优先级、AI 配置热更新）。全部走上游替身与内存仓储，不需要网络和数据库。
-- 尚缺：认证与授权、PostgreSQL 仓储的自动化测试（目前只有手工端到端验证）、SignalR 重连与派发失败重试、上传限速与并发上传、运营后台页面，以及主机级端到端测试——本机 NuGet 无法还原 `Microsoft.AspNetCore.Mvc.Testing`，所以没有 `WebApplicationFactory` 用例；网络可用后补该包，就能把本节的手工联调步骤逐步自动化。
+- 尚缺：认证与授权、PostgreSQL 仓储的自动化测试（目前只有手工端到端验证）、SignalR 重连与派发失败重试、上传限速与并发上传、运营后台的其余能力，以及主机级端到端测试——本机 NuGet 无法还原 `Microsoft.AspNetCore.Mvc.Testing`，所以没有 `WebApplicationFactory` 用例；网络可用后补该包，就能把本节的手工联调步骤逐步自动化。
 
 ## 12. 完成状态与后续顺序
 
@@ -550,15 +551,15 @@ npm run build
 
 本轮追加（运营可配置三方集成参数）：
 
-- 配置骨架：新增 `system_settings`（覆盖值 + `Version` 并发令牌）与 `system_setting_audits`（只追加、脱敏）两张表（迁移 `AddSystemSettings`）、18 个键的设置目录（白名单 + 类型校验 + 兼容的环境变量名）、固定的解析顺序（数据库 → 环境变量 → 默认值）、Data Protection 加密的机密、写入即刷新的内存快照与 15 秒后台轮询、运营接口与“测试连接”自检、管理员名单策略；决策见 [ADR-0003](../architecture/decisions/0003-operator-configurable-settings.md)。
-- 消费方接线：AI 服务商（地址、密钥、模型、无活动超时）、对象存储 provider、内容扫描 provider 都改为从配置读取；写死的 `NoOpEvidenceScanner` 换成按配置工作的 `HttpEvidenceScanner`，`LocalFileStorage` 的根目录也改为运行时解析。
+- 配置骨架：新增 `system_settings`（覆盖值 + `Version` 并发令牌）与 `system_setting_audits`（只追加、脱敏）两张表（迁移 `AddSystemSettings`）、设置目录（白名单 + 类型校验 + 兼容的环境变量名，现为 20 个键）、固定的解析顺序（数据库 → 环境变量 → 默认值）、Data Protection 加密的机密、写入即刷新的内存快照与 15 秒后台轮询、运营接口与“测试连接”自检、管理员名单策略；决策见 [ADR-0003](../architecture/decisions/0003-operator-configurable-settings.md)。
+- 消费方接线：AI 服务商（地址、密钥、模型、无活动超时）、对象存储 provider、内容扫描 provider 都改为从配置读取；写死的 `NoOpEvidenceScanner`（该类型已删除）换成按配置工作的 `HttpEvidenceScanner`，`LocalFileStorage` 的根目录也改为运行时解析。
 - 运营配置页面：顶栏入口（仅管理员）、按分组列出配置项与来源徽标、机密脱敏输入、保存（带版本冲突提示）、恢复默认、测试连接、变更记录；见第 3 节。
 - 凭证扫描闭环与可配置上传上限：`evidence` 表新增扫描尝试次数、最近说明与尝试时间（迁移 `AddEvidenceScanAttempts`）；`EvidenceRescanService` 每 60 秒按 30 秒退避重扫 `Pending` 凭证、最多 5 次，文件缺失直接判定 `Rejected`，用尽次数后保留说明交给人工；`evidence.maxSizeBytes` / `evidence.maxPerOrder` 纳入设置目录（硬上限 25 MB / 50 份），凭证接口与页面展示检查次数与说明；见第 3、10 节。
 
 ### 后续跟进（原 P1 的延伸项）
 
 - 补齐 S3/OSS 的 `IFileStorage` 实现（含短时签名 URL），把 `storage.provider` 从 `local` 切到 `s3`；选定病毒/内容扫描服务后把 `evidence.scanner.provider` 切成 `http` + `failMode=closed`（重扫闭环已经就绪，只差真实服务商）。
-- 运营后台的其余部分：任务/用户/订单检索、风险记录与高风险任务人工复核、争议处理看板；同时把上传大小/份数上限、凭证类型白名单等业务旋钮也纳入设置目录（目前目录里只有三方集成参数）。
+- 运营后台的其余部分：任务/用户/订单检索、风险记录与高风险任务人工复核、争议处理看板。上传大小与份数上限已经进了设置目录；凭证类型白名单**故意不进**（放开等于允许上传可执行内容）。
 - 通知的更多事件类型（报名、评价公开、任务过期）与推送渠道（短信、邮件）。
 - 会话消息的分页与历史截断、消息撤回与编辑。
 - 大厅排序选项（悬赏、距离）、任务分类筛选，以及精确地址的访问审计。
@@ -586,14 +587,14 @@ npm run build
 - [ ] 验收通过后任务在大厅消失，公开详情状态为 `Closed`。
 - [ ] 两浏览器验证选人后服务者无需刷新即可收到订单。
 - [ ] 订单会话里发一条消息：对方未刷新就能看到未读徽标，标记已读后归零；无关用户读写会话返回 `403`。
-- [ ] 以服务者上传一张小于 5 MB 的 PNG 凭证：列表出现、可下载；把文本文件改名成 `.png` 上传应被 `422` 拒绝，超过 5 MB 返回 `413`。
+- [ ] 以服务者上传一张小于当前上限（默认 5 MB）的 PNG 凭证：列表出现、可下载；把文本文件改名成 `.png` 上传应被 `422` 拒绝，超过当前上限返回 `413`。
 - [ ] 大厅能按区域与悬赏区间筛选，并能“加载更多”翻页；大厅与公开详情的响应里不含精确地址文本。
 - [ ] 用一个全新空库启动 API：`Database.Migrate()` 一次应用全部迁移；用早期 `EnsureCreated` 建出的旧库启动会打印基线化警告后正常工作。
-- [ ] 在部署配置里设置 `Admin__UserIds` 或 `Admin__Emails`，用它登录后访问 `/api/v1/admin/settings`：非管理员应拿到 `401/403`，管理员拿到 18 个配置项。
+- [ ] 在部署配置里设置 `Admin__UserIds` 或 `Admin__Emails`，用它登录后访问 `/api/v1/admin/settings`：非管理员应拿到 `401/403`，管理员拿到 20 个配置项。
 - [ ] 通过运营接口把 `ai.apiKey` 换成新密钥：响应只显示 `****末四位`；接着发起一轮 AI 对话应立刻用新密钥，不需要重启进程。
 - [ ] 把 `evidence.scanner.provider` 改成 `http` 但不填扫描地址，服务者上传凭证应返回“待扫描、不可下载”，文件不被删除也不放行。
 - [ ] 重启进程后重新读取运营配置：机密仍能解密（说明 `DataProtection__KeysPath` 指向了持久目录，而不是临时目录）。
-- [ ] 用管理员账户登录后打开顶栏“运营配置”：能看到 18 个配置项、分组与来源徽标；普通服务者账户看不到这个入口。
+- [ ] 用管理员账户登录后打开顶栏“运营配置”：能看到 20 个配置项、四个分组与来源徽标；普通服务者账户看不到这个入口。
 - [ ] 在页面上改一个机密项并保存：列表立刻显示新的掩码与“后台已改”，点“测试连接”能看到自检结果，切到“变更记录”能看到这次修改；把某条改坏（例如把超时填成 1）保存应看到可读的校验提示。
 - [ ] 把 `evidence.maxSizeBytes` 调成 1024 后上传一张 2 KB 的图片：应返回“凭证大小不能超过 1 KB”，恢复默认后能正常上传。
 - [ ] 把 `evidence.scanner.provider` 改成 `http` 并把扫描地址清空（或指向不可用地址），上传凭证：状态应是“检查中 / 不可下载”并写明原因；扫描服务恢复后，一分钟内后台重扫会把状态改成“已通过检查”。
