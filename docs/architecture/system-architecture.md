@@ -114,7 +114,7 @@ Domain 不引用 EF Core、HTTP、AI SDK 或对象存储 SDK。
 
 使用私有 Bucket。上传和下载采用短时效签名 URL，服务端核验订单权限后签发。禁止把永久公开 URL 保存为业务凭证。
 
-> 实现现状（⚠️）：已经抽出 `IFileStorage` 抽象，`storage.provider` 可在 `local`（本机私有目录）与 `s3` 之间切换，**尚未接入 S3/OSS 与签名 URL**（配成 `s3` 会直接报错，不会静默退回本机目录），下载走鉴权后的流式响应。`IEvidenceScanner` 由 `HttpEvidenceScanner` 实现：`provider=none` 时显式放行，`provider=http` 时调用配置的扫描服务，扫描没有结论的凭证保持不可下载并由后台退避重扫；真实扫描服务商仍待选定。
+> 实现现状（⚠️）：`IFileStorage` 有两个实现，由 `storage.provider` 选择：`local` 写本机私有目录，`s3` 走 S3 兼容对象存储（MinIO / OSS / AWS S3），后者用自研的 AWS SigV4 签名、路径风格请求、不依赖厂商 SDK，已用本机 MinIO 端到端验证（上传/下载/删除与独立客户端 `mc` 交叉核对）。**短时签名 URL 尚未实现**，下载仍走鉴权后的流式响应。`IEvidenceScanner` 由 `HttpEvidenceScanner` 实现：`provider=none` 时显式放行，`provider=http` 时调用配置的扫描服务，扫描没有结论的凭证保持不可下载并由后台退避重扫；真实扫描服务商仍待选定。
 
 ## 7. AI 子系统
 

@@ -81,7 +81,10 @@ public sealed class LocalFileStorage : IFileStorage
 /// 按运营配置 <c>storage.provider</c> 选择真正的存储实现。
 /// 每次调用都重新判断，因此运营后台在 local 与 s3 之间切换不需要重启进程。
 /// </summary>
-public sealed class SettingsFileStorage(ISettingsProvider settings, LocalFileStorage local) : IFileStorage
+public sealed class SettingsFileStorage(
+    ISettingsProvider settings,
+    LocalFileStorage local,
+    S3FileStorage s3) : IFileStorage
 {
     public Task SaveAsync(string key, Stream content, string contentType, CancellationToken cancellationToken = default) =>
         Active().SaveAsync(key, content, contentType, cancellationToken);
@@ -96,15 +99,13 @@ public sealed class SettingsFileStorage(ISettingsProvider settings, LocalFileSto
         Active().DeleteAsync(key, cancellationToken);
 
     /// <summary>
-    /// 当前生效的实现。配置成 s3 而代码里还没有对应实现时直接报错，
+    /// 当前生效的实现。配置成 s3 时如果关键参数没填全，会由 <see cref="S3FileStorage"/> 直接报错，
     /// 而不是悄悄退回本机目录——静默降级会把“以为存到对象存储”的文件留在容器磁盘上。
     /// </summary>
-    private IFileStorage Active()
+    private IFileStorage Active() => settings.GetChoice(SettingKeys.StorageProvider, "local") switch
     {
-        var provider = settings.GetChoice(SettingKeys.StorageProvider, "local");
-        if (provider == "local") return local;
-
-        throw new InvalidOperationException(
-            $"对象存储 {provider} 尚未接入：请把 storage.provider 改回 local，或先补上对应的 IFileStorage 实现（S3 兼容实现需要 S3 SDK，本仓库离线环境无法还原该依赖）。");
-    }
+        "local" => local,
+        "s3" => s3,
+        var other => throw new InvalidOperationException($"未知的对象存储类型 {other}：只支持 local 或 s3，请在运营后台修正 storage.provider。")
+    };
 }

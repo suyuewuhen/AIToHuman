@@ -91,9 +91,12 @@ builder.Services.AddSignalR();
 builder.Services.AddScoped<NotificationService>();
 builder.Services.AddScoped<OrderChatService>();
 // 凭证文件存储与内容扫描都由运营配置决定（storage.provider / evidence.scanner.provider）：
-// 本机目录实现用于开发与试点；接入对象存储时补一个 IFileStorage 实现并切换设置即可，不用改业务代码。
+// local 写本机目录，s3 走 S3 兼容对象存储（自研 SigV4，不依赖厂商 SDK）。
 builder.Services.AddSingleton<LocalFileStorage>();
-builder.Services.AddSingleton<IFileStorage, SettingsFileStorage>();
+builder.Services.AddHttpClient<S3FileStorage>(client => client.Timeout = Timeout.InfiniteTimeSpan);
+// IFileStorage 是 scoped：SettingsFileStorage 注入的是 typed client（transient），
+// 放进单例会把 HttpClient 的处理器永久钉死，scoped 则与 EvidenceService 的生命周期一致。
+builder.Services.AddScoped<IFileStorage, SettingsFileStorage>();
 builder.Services.AddHttpClient<HttpEvidenceScanner>(client => client.Timeout = Timeout.InfiniteTimeSpan);
 builder.Services.AddScoped<IEvidenceScanner>(provider => provider.GetRequiredService<HttpEvidenceScanner>());
 builder.Services.AddScoped<EvidenceService>();
