@@ -104,7 +104,9 @@ Domain 不引用 EF Core、HTTP、AI SDK 或对象存储 SDK。
 
 ### Redis
 
-用于短期缓存、分布式锁、频率限制和 SignalR 扩展。Redis 不能作为订单状态的唯一来源。
+用于通知的多实例扇出：派发方先用条件 UPDATE 原子认领待派发记录，再发布到固定频道 `aitohuman:notifications:fanout`，订阅方把消息推给自己进程内的在线客户端；没配 `ConnectionStrings__Redis` 或运营开关 `notifications.fanout.enabled` 关闭时降级为本实例推送。开关每 5 秒复查一次，改完不需要重启实例。Redis 不能作为订单状态的唯一来源。
+
+尚未接入：短期缓存、分布式锁与频率限制。
 
 ### Hangfire
 

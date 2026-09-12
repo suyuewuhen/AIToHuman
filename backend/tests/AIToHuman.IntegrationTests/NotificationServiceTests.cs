@@ -4,6 +4,7 @@ using AIToHuman.Application.Tasks;
 using AIToHuman.Api.Notifications;
 using AIToHuman.Contracts.Notifications;
 using AIToHuman.Contracts.Tasks;
+using AIToHuman.Domain.Notifications;
 using AIToHuman.Domain.Orders;
 using AIToHuman.Domain.Tasks;
 using AIToHuman.Infrastructure.Notifications;
@@ -153,7 +154,7 @@ public sealed class NotificationServiceTests
         using var provider = services.BuildServiceProvider();
 
         var hub = new RecordingHubContext();
-        var dispatcher = new NotificationDispatcher(provider.GetRequiredService<IServiceScopeFactory>(), hub, NullLogger<NotificationDispatcher>.Instance);
+        var dispatcher = new NotificationDispatcher(provider.GetRequiredService<IServiceScopeFactory>(), hub, new FakeFanout(), NullLogger<NotificationDispatcher>.Instance);
         var worker = Guid.NewGuid();
         var notificationService = provider.GetRequiredService<NotificationService>();
         notificationService.EnqueueOrderCreated(NewOrder(workerId: worker), Now);
@@ -170,6 +171,95 @@ public sealed class NotificationServiceTests
         Assert.Empty(notificationService.ListPendingDispatch(10));
         await dispatcher.DispatchPendingAsync(CancellationToken.None);
         Assert.Single(hub.Recorded);
+    }
+
+    [Fact]
+    public void Claiming_a_pending_notification_is_exclusive_across_instances()
+    {
+        var repository = new InMemoryNotificationRepository();
+        var notification = new Notification(Guid.NewGuid(), Guid.NewGuid(), NotificationTypes.OrderCreated, 1, "{}", Now);
+        repository.Add(notification);
+
+        // 只有第一个认领者拿到 true，第二个实例扫到同一条记录也不会重复推送。
+        Assert.True(repository.TryClaim(notification.Id, Now));
+        Assert.False(repository.TryClaim(notification.Id, Now.AddSeconds(1)));
+
+        // 推送失败撤回认领后，记录回到 Outbox，可以被重新认领。
+        repository.ReleaseDispatch(notification.Id);
+        Assert.True(repository.TryClaim(notification.Id, Now.AddSeconds(2)));
+    }
+
+    [Fact]
+    public async Task Fanout_enabled_dispatcher_broadcasts_instead_of_pushing_locally()
+    {
+        var harness = CreateDispatcherHarness();
+        using var harnessScope = harness;
+        harness.Fanout.Enabled = true;
+        var worker = Guid.NewGuid();
+        harness.Service().EnqueueOrderCreated(NewOrder(workerId: worker), Now);
+
+        await harness.Dispatcher().DispatchPendingAsync(CancellationToken.None);
+
+        // 启用扇出后本实例不直接推给客户端：由订阅方决定哪个实例真正持有连接。
+        Assert.Empty(harness.Hub.Recorded);
+        var broadcast = Assert.Single(harness.Fanout.Published);
+        Assert.Equal(worker, broadcast.UserId);
+        Assert.Empty(harness.Service().ListPendingDispatch(10));
+
+        // 广播消息还原出的信封必须与本地推送完全一致，否则客户端会看到两种格式的通知。
+        var envelope = NotificationService.ToEnvelope(broadcast);
+        Assert.Equal(broadcast.EventId, envelope.EventId);
+        Assert.Equal(NotificationTypes.OrderCreated, envelope.Type);
+        Assert.Equal(NotificationService.EnvelopeVersion, envelope.Version);
+        Assert.Equal(Now, envelope.OccurredAt);
+        Assert.Equal(broadcast.EventId, envelope.Payload.GetProperty("orderId").GetGuid());
+        Assert.Equal("代取文件", envelope.Payload.GetProperty("title").GetString());
+    }
+
+    [Fact]
+    public async Task Failed_broadcast_falls_back_to_pushing_the_local_clients()
+    {
+        var harness = CreateDispatcherHarness();
+        using var harnessScope = harness;
+        harness.Fanout.Enabled = true;
+        harness.Fanout.PublishFailure = new InvalidOperationException("redis 不可用");
+        var worker = Guid.NewGuid();
+        harness.Service().EnqueueOrderCreated(NewOrder(workerId: worker), Now);
+
+        await harness.Dispatcher().DispatchPendingAsync(CancellationToken.None);
+
+        // 广播不通时不能什么都不推：兜底推给连在本实例上的客户端，通知照常算已派发。
+        var sent = Assert.Single(harness.Hub.Recorded);
+        Assert.Equal($"user:{worker:N}", sent.Group);
+        Assert.Equal("notification.created", sent.Method);
+        Assert.Empty(harness.Fanout.Published);
+        Assert.Empty(harness.Service().ListPendingDispatch(10));
+    }
+
+    [Fact]
+    public async Task Notification_returns_to_the_outbox_when_both_broadcast_and_local_push_fail()
+    {
+        var harness = CreateDispatcherHarness();
+        using var harnessScope = harness;
+        harness.Fanout.Enabled = true;
+        harness.Fanout.PublishFailure = new InvalidOperationException("redis 不可用");
+        harness.Hub.Fail = true;
+        harness.Service().EnqueueOrderCreated(NewOrder(), Now);
+
+        var dispatcher = harness.Dispatcher();
+        await dispatcher.DispatchPendingAsync(CancellationToken.None);
+
+        // 两条路都不通：认领被撤回，通知回到 Outbox 等下一轮，不会被静默标成“已推送”。
+        Assert.Single(harness.Service().ListPendingDispatch(10));
+        Assert.Empty(harness.Hub.Recorded);
+
+        harness.Fanout.PublishFailure = null;
+        harness.Hub.Fail = false;
+        await dispatcher.DispatchPendingAsync(CancellationToken.None);
+
+        Assert.Empty(harness.Service().ListPendingDispatch(10));
+        Assert.Single(harness.Fanout.Published);
+        Assert.Empty(harness.Hub.Recorded);
     }
 
     [Fact]
@@ -214,9 +304,56 @@ public sealed class NotificationServiceTests
         return (new NotificationService(repository, clock), repository, clock);
     }
 
+    /// <summary>派发任务的最小宿主：内存仓储 + 固定时钟 + 记录型 Hub + 可切换行为的扇出实现。</summary>
+    private static DispatcherHarness CreateDispatcherHarness()
+    {
+        var repository = new InMemoryNotificationRepository();
+        var services = new ServiceCollection();
+        services.AddSingleton<INotificationRepository>(repository);
+        services.AddSingleton<TimeProvider>(new FixedTimeProvider(Now));
+        services.AddScoped<NotificationService>();
+        return new DispatcherHarness(services.BuildServiceProvider(), repository, new RecordingHubContext(), new FakeFanout());
+    }
+
+    private sealed record DispatcherHarness(
+        ServiceProvider Provider,
+        InMemoryNotificationRepository Repository,
+        RecordingHubContext Hub,
+        FakeFanout Fanout) : IDisposable
+    {
+        public NotificationService Service() => Provider.GetRequiredService<NotificationService>();
+
+        public NotificationDispatcher Dispatcher() =>
+            new(Provider.GetRequiredService<IServiceScopeFactory>(), Hub, Fanout, NullLogger<NotificationDispatcher>.Instance);
+
+        public void Dispose() => Provider.Dispose();
+    }
+
+    /// <summary>把扇出当成可插拔的开关：默认禁用（等价单实例部署），测试里可以打开或注入失败。</summary>
+    private sealed class FakeFanout : INotificationFanout
+    {
+        public bool Enabled { get; set; }
+
+        public List<NotificationFanoutMessage> Published { get; } = [];
+
+        public Exception? PublishFailure { get; set; }
+
+        public Task PublishAsync(NotificationFanoutMessage message, CancellationToken cancellationToken = default)
+        {
+            if (PublishFailure is { } failure) throw failure;
+            Published.Add(message);
+            return Task.CompletedTask;
+        }
+
+        public Task SubscribeAsync(Func<NotificationFanoutMessage, CancellationToken, Task> handler, CancellationToken cancellationToken) => Task.CompletedTask;
+    }
+
     private sealed class RecordingHubContext : IHubContext<NotificationsHub>
     {
         public List<(string Group, string Method, object? Payload)> Recorded { get; } = [];
+
+        /// <summary>置为 true 时所有推送都抛错，用来验证“推不出去就退回 Outbox”。</summary>
+        public bool Fail { get; set; }
 
         public IHubClients Clients { get; }
 
@@ -242,6 +379,7 @@ public sealed class NotificationServiceTests
     {
         public Task SendCoreAsync(string method, object?[] args, CancellationToken cancellationToken = default)
         {
+            if (owner.Fail) throw new InvalidOperationException("客户端推送失败");
             owner.Recorded.Add((group, method, args.FirstOrDefault()));
             return Task.CompletedTask;
         }

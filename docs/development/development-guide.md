@@ -15,7 +15,7 @@
 ## 2. 本地开发原则
 
 - 所有可共享配置提供 `.env.example` 或 `appsettings` 示例，不包含密钥。
-- 配置分两层：**部署级**（连接串、Redis、日志、`DataProtection__KeysPath`）只走环境变量或 User Secrets，永远不进配置表；**运营级**（三方集成参数与业务旋钮）优先从 `system_settings` 读取，环境变量与配置文件只是兜底，解析顺序固定为「数据库覆盖 → 环境变量/配置文件 → 代码默认值」。
+- 配置分两层：**部署级**（连接串、日志、`DataProtection__KeysPath`）只走环境变量或 User Secrets，永远不进配置表（Redis 连接串 `ConnectionStrings__Redis` 属于这一层，而“是否启用扇出”是运营级开关 `notifications.fanout.enabled`，可以在后台改）；**运营级**（三方集成参数与业务旋钮）优先从 `system_settings` 读取，环境变量与配置文件只是兜底，解析顺序固定为「数据库覆盖 → 环境变量/配置文件 → 代码默认值」。
 - 运营级配置必须登记在 `SettingCatalog` 才能被后台读写：新增一个可配置项 = 在目录里加一行（类型、是否机密、默认值、兼容的配置键），再让消费方通过 `ISettingsProvider` 读取；不要直接读 `IConfiguration`。
 - 机密（API Key、访问密钥）在配置表里是 Data Protection 密文，接口与审计只出现掩码与指纹。密钥环默认落在运行账户的配置目录里，容器或分布式部署请用 `DataProtection__KeysPath` 指到持久卷并让所有实例共享，否则重启或换实例后解不开已保存的密钥。
 - 本地秘密使用 .NET User Secrets 或环境变量。
@@ -47,7 +47,7 @@
 ## 4. 测试策略
 
 - 单元测试：领域状态机、风险规则、金额和权限决策（`backend/tests/AIToHuman.Domain.Tests`）。
-- 集成测试：应用用例、事务边界与 AI 协议（`backend/tests/AIToHuman.IntegrationTests`）。当前这批用例走上游替身与内存仓储，不需要数据库；**真实 PostgreSQL、Redis 与对象存储兼容服务下的 API/持久化自动化测试尚未建立**，真实数据库目前依靠 `handoff.md` 第 11 节列出的手工端到端验证。
+- 集成测试：应用用例、事务边界与 AI 协议（`backend/tests/AIToHuman.IntegrationTests`）。当前这批用例走上游替身与内存仓储，不需要数据库；**真实 PostgreSQL、Redis 与对象存储兼容服务下的 API/持久化自动化测试尚未建立**，真实数据库目前依靠 `handoff.md` 第 11 节列出的手工端到端验证；通知的 Redis 扇出已按同一方式手工端到端验证过（本机 Redis + 双 API 实例，用 `redis-cli monitor` 观察发布、由连在另一实例上的客户端确认收到），但仍未进入自动化测试。
 - AI 协议集成测试：`backend/tests/AIToHuman.IntegrationTests` 用替身上游覆盖 SSE 分片、转义、缺少结束标记、超时与上游错误，不联网也不依赖数据库。
 - 契约测试：OpenAPI、生成客户端和 Problem Details。
 - 端到端测试：AI 草稿到任务完成的关键路径。

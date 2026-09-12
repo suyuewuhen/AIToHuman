@@ -29,11 +29,11 @@ AI 多轮澄清（每轮一个问题）
 → 双方评价，双方提交或 7 天后公开
 ```
 
-尚未实现：真实支付和托管、实名认证、禁止任务风险拦截、真实的病毒/内容扫描服务商（协议已接好，只差选定/部署服务）、争议处理、取消与超时、精确地址访问审计、图片重新编码；运营后台目前只有配置页面，任务/用户检索与风险复核等仍未实现；多实例可靠投递（Redis backplane）也未落地。
+尚未实现：真实支付和托管、实名认证、禁止任务风险拦截、真实的病毒/内容扫描服务商（协议已接好，只差选定/部署服务）、争议处理、取消与超时、精确地址访问审计、图片重新编码；运营后台的任务/用户检索与人工下架已实现，风险复核与争议处理仍未实现。
 
 ## 2. 当前工作区状态
 
-工作区干净：HEAD 为 `e45da76`，`main` 与 `origin/main` 一致，没有未提交修改。上一版交接文档描述的“多轮 AI 未提交实现”已经全部提交，本文不再区分“基线 / 未提交”两种状态。
+工作区除本轮改动外干净：`main` 领先 `origin/main` 12 个提交，本机没有远端凭据因此推送需要你的凭据；本轮的多实例通知扇出作为第 13 个提交加入。上一版交接文档描述的“多轮 AI 未提交实现”已经全部提交，本文不再区分“基线 / 未提交”两种状态。
 
 从上一版基线 `f196850` 到当前 `e45da76` 的主要变化：
 
@@ -116,7 +116,9 @@ docs/                             ai-planning、api/api-guidelines、architectur
 - 订单批准后双方可以分别评价；双方都提交后立即公开，只有一方提交时在 7 天后公开。
 - 每方每个订单只能评价一次，重复提交由应用层判定并返回 `422`“你已经评价过该订单。”（数据库 `(OrderId, ReviewerId)` 唯一索引作为兜底，不再依赖它抛出 500）。
 - 任务大厅与公开详情读取公开评价摘要，因此服务者能看需求方信用、需求方能看服务者信用。
-- 通知走 Outbox：业务事务内写入 `notifications` 行，后台 `NotificationDispatcher` 每 2 秒扫描未派发记录并通过 SignalR 推 `notification.created`，成功后标记派发时间；推送失败不标记，下个周期重试，进程重启也不会丢。
+- 通知走 Outbox：业务事务内写入 `notifications` 行，后台 `NotificationDispatcher` 每 2 秒扫描未派发记录。派发顺序是**先原子认领、再推送**：认领用一条条件更新 `UPDATE notifications SET "DispatchedAt" = @p WHERE "Id" = @id AND "DispatchedAt" IS NULL`，只有影响 1 行的实例负责推送，因此多实例同时扫到同一条记录也不会重复推送；推送失败就撤回认领、退回 Outbox 等下个周期，绝不把没推出去的通知标成已派发。
+- 多实例扇出：`ConnectionStrings__Redis` 已配置且运营打开 `notifications.fanout.enabled` 时，认领方把通知广播到 Redis 频道 `aitohuman:notifications:fanout`（`RedisNotificationFanout`，StackExchange.Redis 发布/订阅），每个实例的 `NotificationFanoutSubscriber` 收到后推给连在自己身上的客户端——用户连在哪个实例都能收到。没配连接串或开关为 false 时，认领方直接推本实例客户端；广播不通（Redis 抖动/还没起来）时兜底推本实例在线客户端并打警告日志，其它实例的客户端靠 REST 补齐；只有广播和本地推送都失败才撤回认领，2 秒后重试。订阅方每 5 秒检查一次开关，运营开启后自动接入，不需要重启。
+- 扇出是 at-most-once 的实时提示：广播时若没有任何实例在订阅，日志会给出警告；事实状态始终以 `notifications` 表与 REST 收件箱为准，客户端重连后重新拉取补齐。
 - 推送使用版本化信封 `{ eventId, type, version, occurredAt, payload }`；`eventId` 是幂等键（订单创建用订单 ID，状态变化由订单 ID + 状态推导），同一业务事件重复入队只保留一条。
 - 收件箱与未读数来自 `GET /api/v1/notifications`；`POST /api/v1/notifications/read` 支持按 ID 或整体标记已读。
 - 事件只是刷新提示：客户端收到推送后重新拉取订单与通知列表，断线重连也能通过 REST 恢复事实状态。
@@ -150,7 +152,7 @@ docs/                             ai-planning、api/api-guidelines、architectur
 
 ### 运营可配置的三方集成参数
 
-- 设置目录（白名单）在 `backend/AIToHuman.Application/Settings/SettingCatalog.cs`：目前 25 个键，分 AI 服务商、对象存储、凭证上传、内容扫描四组。只有登记在册的键才能被后台读写，`ConnectionStrings__Postgres`、日志、密钥环路径这类部署级配置永远不会出现在配置表里。
+- 设置目录（白名单）在 `backend/AIToHuman.Application/Settings/SettingCatalog.cs`：目前 26 个键，分 AI 服务商、对象存储、凭证上传、内容扫描、通知推送五组。只有登记在册的键才能被后台读写，`ConnectionStrings__Postgres`、`ConnectionStrings__Redis`、日志、密钥环路径这类部署级配置永远不会出现在配置表里。
 - 生效值的解析顺序固定为「数据库覆盖 → 环境变量/配置文件 → 代码默认值」。删除覆盖记录就等于恢复默认，不需要额外的启用/停用开关。
 - 运营接口（需管理员身份）：`GET /api/v1/admin/settings`、`GET /api/v1/admin/settings/{key}`、`PUT /api/v1/admin/settings/{key}`、`DELETE /api/v1/admin/settings/{key}`（恢复默认）、`POST /api/v1/admin/settings/{key}/test`（只读自检）、`GET /api/v1/admin/settings/audits`。
 - 机密（`ai.apiKey`、`storage.s3.secretAccessKey`、`evidence.scanner.apiKey`）用 Data Protection 加密后落库，密文带 `dp1:` 前缀；接口只返回 `****末四位` 与指纹，审计记录同样只留掩码与指纹，明文只在服务端内存里出现。
@@ -191,11 +193,11 @@ PostgreSQL（当前开发事实来源）
 ```
 
 ```text
-backend/AIToHuman.Api/                  # 路由、认证、AI SSE、SignalR Hub、通知派发、凭证重扫、运营配置接口
-backend/AIToHuman.Application/         # TaskService、会话、订单会话、凭证、通知用例、设置目录与配置用例
+backend/AIToHuman.Api/                  # 路由、认证、AI SSE、SignalR Hub、通知派发与扇出订阅、凭证重扫、运营配置接口
+backend/AIToHuman.Application/         # TaskService、会话、订单会话、凭证、通知用例与扇出抽象、设置目录与配置用例
 backend/AIToHuman.Contracts/           # API record 与对话/通知/消息/凭证/设置 DTO
 backend/AIToHuman.Domain/              # TaskItem、Order、Review、Conversation、OrderMessage、Notification、SystemSetting
-backend/AIToHuman.Infrastructure/      # EF Core/PostgreSQL、内存仓储、本机文件存储、内容扫描适配
+backend/AIToHuman.Infrastructure/      # EF Core/PostgreSQL、内存仓储、本机文件存储、内容扫描适配、Redis 通知扇出
 backend/tests/AIToHuman.Domain.Tests/  # 领域单元测试
 backend/tests/AIToHuman.IntegrationTests/ # 用例与 AI 多轮协议/SSE 集成测试（上游替身 + 内存仓储）
 frontend/src/App.vue                   # 对话工作台、草稿、大厅、订单、会话弹窗、凭证面板、评价与运营配置
@@ -337,7 +339,7 @@ netstat -ano | Select-String ':5188|:5173'
 - JWT 通过 SignalR `access_token` 查询参数传递，后端只在 `/hubs` 路径读取。
 - 通知不再 fire-and-forget：业务事务内写入 `notifications` 行（该表兼作 Outbox），后台 `NotificationDispatcher` 每 2 秒扫描待派发记录，推送成功后写 `DispatchedAt`，失败留到下一轮，服务重启也不丢。
 - 推送的事件类型目前有 `order.created`（选人）、`order.statusChanged`（开始、提交、驳回、返工、验收）和 `order.messageCreated`（新消息）；收件箱与未读数走 REST，推送只是刷新提示。
-- 派发仍是单进程轮询：多实例部署需要 Redis backplane 或共享消息总线，否则每个实例只推自己派发出去的记录。
+- 多实例投递：派发前先用条件更新原子认领（只有影响 1 行的实例负责推送），启用扇出后认领方广播到 Redis 频道 `aitohuman:notifications:fanout`，各实例推给本机客户端；未配 `ConnectionStrings__Redis` 或开关 `notifications.fanout.enabled` 为 false 时退化为单实例直接推送，Redis 不可用时撤回认领并每 2 秒重试。与运营配置的接线见第 3 节。
 
 双浏览器验证：A 以 owner 发布任务，B 以 worker 报名，A 选择 B；B 无需刷新应立即收到通知并更新“我接取的任务”。Network 面板应看到 `/hubs/notifications` 的 WebSocket 或长轮询连接。
 
@@ -500,7 +502,7 @@ Order: Accepted → InProgress → Submitted → Approved
 
 - 扫描闭环端到端（真实 PostgreSQL + 真实 HTTP + 本地 TCP 扫描替身）：上传 67 字节 PNG 时替身返回 `pending` → 接口 `200`、`scanStatus=Pending`、`scanAttempts=1`、`isDownloadable=false`、下载 `403`；把替身改成 `clean` 后，后台重扫在 60 秒那一轮把它变为 `Clean`（`scanAttempts=2`、说明“重新扫描通过。”），需求方再下载拿到完全一致的 67 字节。替身日志显示两次调用依次是 `pending`、`clean`。
 - 可配置上传上限生效：把 `evidence.maxSizeBytes` 改成 1024 后上传 2048 字节返回 `413 凭证大小不能超过 1 KB。`，且磁盘上不留文件；`DELETE` 该配置后回到默认 5242880（`source=default`）。
-- 运营配置目录当时共 20 个键、四个分组：AI 服务商 / 对象存储 / 凭证上传 / 内容扫描（现在是 25 个：凭证上传组多了直连下载有效期、元数据开关、按人配额，内容扫描组多了 ClamAV 的地址与端口）。
+- 运营配置目录当时共 20 个键、四个分组：AI 服务商 / 对象存储 / 凭证上传 / 内容扫描（现在是 26 个、五个分组：凭证上传组多了直连下载有效期、元数据开关、按人配额，内容扫描组多了 ClamAV 的地址与端口，通知推送组是后加的多实例扇出开关）。
 - 全新数据库：同一轮启动时 `Migrate()` 从零建库并应用全部 14 个迁移，随后在该库上完成上面的用例。
 
 本轮（S3 兼容对象存储）新增验证：
@@ -548,8 +550,8 @@ npm run build
 
 测试现状：
 
-- 领域单元测试 101 个（`AIToHuman.Domain.Tests`）：任务加价、禁止自己报名、禁止重复报名、选择服务者、订单参与者权限、履约状态流、返工闭环与批准后关单、执行地址校验；对话回合不变量、历史窗口与截断；通知字段校验与标记幂等；订单会话消息校验与未读语义；执行凭证的类型/大小/签名校验、扫描状态机与扫描尝试记账、上传限额边界、元数据剥离（JPEG/PNG/WebP 的段结构、损坏文件不改写）；配置键形状、取值上限、版本自增与审计脱敏。
-- 集成测试 210 个（`AIToHuman.IntegrationTests`）：AI 多轮协议、输出严格校验与可控重试、SSE 线格式、会话用例、`IUnitOfWork` 事务边界、通知骨干、订单会话、评价盲期、大厅分页筛选与地址披露、执行凭证（上传/下载/权限/扫描门禁/上限/重扫闭环/直连地址签发/元数据剥离/按人配额），ClamAV 的 INSTREAM 协议与扫描实现分派，S3 兼容存储（请求形态、签名确定性、预签名参数与有效期、403/404 映射、缺配置不发请求）、EF 模型快照，以及运营配置（设置目录校验、解析顺序、加密与脱敏、审计、并发冲突、自检、管理员名单判定与优先级、AI 配置热更新）。全部走上游替身与内存仓储，不需要网络和数据库。
+- 领域单元测试 109 个（`AIToHuman.Domain.Tests`）：任务加价、禁止自己报名、禁止重复报名、选择服务者、订单参与者权限、履约状态流、返工闭环与批准后关单、执行地址校验；对话回合不变量、历史窗口与截断；通知字段校验与标记幂等；订单会话消息校验与未读语义；执行凭证的类型/大小/签名校验、扫描状态机与扫描尝试记账、上传限额边界、元数据剥离（JPEG/PNG/WebP 的段结构、损坏文件不改写）；配置键形状、取值上限、版本自增与审计脱敏。
+- 集成测试 214 个（`AIToHuman.IntegrationTests`）：本轮新增 4 个覆盖多实例派发语义（认领互斥且撤回后可重新认领、启用扇出时改为广播且信封与本地推送一致、广播不通时兜底推本实例客户端、广播与本地推送都不通才退回 Outbox 重试）；其余覆盖 AI 多轮协议、输出严格校验与可控重试、SSE 线格式、会话用例、`IUnitOfWork` 事务边界、通知骨干、订单会话、评价盲期、大厅分页筛选与地址披露、执行凭证（上传/下载/权限/扫描门禁/上限/重扫闭环/直连地址签发/元数据剥离/按人配额），ClamAV 的 INSTREAM 协议与扫描实现分派，S3 兼容存储（请求形态、签名确定性、预签名参数与有效期、403/404 映射、缺配置不发请求）、EF 模型快照，以及运营配置（设置目录校验、解析顺序、加密与脱敏、审计、并发冲突、自检、管理员名单判定与优先级、AI 配置热更新）。全部走上游替身与内存仓储，不需要网络和数据库。
 - 尚缺：认证与授权、PostgreSQL 仓储的自动化测试（目前只有手工端到端验证）、SignalR 重连与派发失败重试、运营后台的其余能力，以及主机级端到端测试——本机 NuGet 无法还原 `Microsoft.AspNetCore.Mvc.Testing`，所以没有 `WebApplicationFactory` 用例；网络可用后补该包，就能把本节的手工联调步骤逐步自动化。
 
 本轮（运营后台检索与人工下架）新增验证：
@@ -558,6 +560,17 @@ npm run build
 - 人工下架：`POST /admin/tasks/{id}/cancel` 返回 `200`、状态变 `Cancelled`，该任务随即从大厅（匿名 `GET /api/v1/tasks`）消失；`GET /admin/audits` 出现 1 条 `action=task.cancel`、`targetType=task`、原因与提交内容一致、`actorId` 等于管理员用户 id 的记录。
 - 失败的操作不留痕迹：审计行数在下架后为 1；同一轮联调里紧接着的另外两步（报名、选人）中的选人步骤失败了（见第 12 节的已知线索），因此“已分配任务拒绝下架”这条规则在这一轮没有通过真实链路复现，它目前由领域单元测试覆盖（8 条：草稿/已发布可下架、已分配与已关闭被拒、原因必填与长度上限、审计字段与 UTC 归一化）。
 - 脚本侧两次自摆乌龙（与产品无关，记录以免重复踩）：E2E 脚本首次混入中文导致 PowerShell 5.1 按 ANSI 读而语法错误；随后又用了不存在的字段名 `rewardAmount`（契约里是 `reward`）却未检查创建任务的返回状态，导致后续步骤全部 404。
+
+本轮（多实例通知扇出）新增验证：
+
+- 编译与测试：`dotnet build AIToHuman.sln -c Debug` 0 警告 0 错误；领域 109 + 集成 214 = 323 个用例全通过（`dotnet test AIToHuman.sln -c Debug --no-build`）。
+- 环境：本机 Redis 5.0.14 standalone（127.0.0.1:6379）+ PostgreSQL + 同一份代码的两个 API 实例（5080 / 5081），两个实例都配了 `ConnectionStrings__Redis`。
+- 开关关闭（默认值，`GET /api/v1/admin/settings/notifications.fanout.enabled` → `value=false`、`source=default`）：跑通“创建任务 → 发布 → 报名 → 选人”，服务者收到 `order.created` 通知，`notifications` 表 `DispatchedAt` 全部写满（22/22），`redis-cli monitor` 在整个过程中**没有任何 PUBLISH**；实例 B 的启动日志打印“通知扇出当前未启用……开启后 5 秒内自动接入”，并且没有建立 Redis 连接。
+- 运营后台打开开关（`PUT /api/v1/admin/settings/notifications.fanout.enabled`，`value=true`）：返回 `source=database`、`version=1`、`updatedBy` 为管理员 id；`GET /api/v1/admin/settings/audits` 新增 1 条 `Update`（后来恢复默认时再记一条 `Reset`）。
+- 跨实例投递：SignalR 客户端（Node 内置 WebSocket，握手帧 `{"protocol":"json","version":1}`）以 owner 身份连到实例 **B**，而业务请求 `POST /api/v1/orders/{id}/start` 打到实例 **A**；实例 B 收到 `{"type":1,"target":"notification.created","arguments":[...]}`，`eventId` 与 `occurredAt` 和库里那条通知一致，`redis-cli monitor` 抓到完整的 `PUBLISH "aitohuman:notifications:fanout"` 载荷（含 `userId`/`notificationId`/`eventId`/`type`/`payloadJson`）。再以 worker 身份连 B、由 A 触发 `approve`，同样收到 `order.statusChanged`（`Approved`），`notifications` 表 22/22 全部已派发。
+- 运行时开关生效：实例 B 是在开关**关闭**状态下启动的，运营打开开关后 5 秒内日志出现“通知扇出已连接 Redis（127.0.0.1:6379）”“已订阅 Redis 频道 aitohuman:notifications:fanout”，没有重启进程；验证结束后用 `DELETE` 把覆盖值恢复默认（`source=default`），避免开发库残留覆盖。
+- 数据库侧可见的原子认领：实例日志里出现条件更新 `UPDATE notifications AS n SET "DispatchedAt" = @p WHERE n."Id" = @id AND n."DispatchedAt" IS NULL`——“推送成功后才标记”的旧写法已从代码里删除。
+- 降级路径：把 `ConnectionStrings__Redis` 指向不可达端口（127.0.0.1:6399）并打开开关后启动，日志出现“通知扇出订阅失败，5 秒后重试”与“通知扇出广播失败，改为只推本实例在线客户端。”；连在该实例上的客户端仍然实时收到 `order.messageCreated`（`preview` 与发送内容一致），收件箱从 2 条变 3 条——即 Redis 不通只影响跨实例实时性，不影响本实例投递与落库。
 
 ## 12. 完成状态与后续顺序
 
@@ -587,7 +600,7 @@ npm run build
 
 本轮追加（运营可配置三方集成参数）：
 
-- 配置骨架：新增 `system_settings`（覆盖值 + `Version` 并发令牌）与 `system_setting_audits`（只追加、脱敏）两张表（迁移 `AddSystemSettings`）、设置目录（白名单 + 类型校验 + 兼容的环境变量名，现为 21 个键）、固定的解析顺序（数据库 → 环境变量 → 默认值）、Data Protection 加密的机密、写入即刷新的内存快照与 15 秒后台轮询、运营接口与“测试连接”自检、管理员名单策略；决策见 [ADR-0003](../architecture/decisions/0003-operator-configurable-settings.md)。
+- 配置骨架：新增 `system_settings`（覆盖值 + `Version` 并发令牌）与 `system_setting_audits`（只追加、脱敏）两张表（迁移 `AddSystemSettings`）、设置目录（白名单 + 类型校验 + 兼容的环境变量名，当时为 21 个键，后续轮次增至 26 个）、固定的解析顺序（数据库 → 环境变量 → 默认值）、Data Protection 加密的机密、写入即刷新的内存快照与 15 秒后台轮询、运营接口与“测试连接”自检、管理员名单策略；决策见 [ADR-0003](../architecture/decisions/0003-operator-configurable-settings.md)。
 - 消费方接线：AI 服务商（地址、密钥、模型、无活动超时）、对象存储 provider、内容扫描 provider 都改为从配置读取；写死的 `NoOpEvidenceScanner`（该类型已删除）换成按配置工作的 `HttpEvidenceScanner`，`LocalFileStorage` 的根目录也改为运行时解析。
 - 运营配置页面：顶栏入口（仅管理员）、按分组列出配置项与来源徽标、机密脱敏输入、保存（带版本冲突提示）、恢复默认、测试连接、变更记录；见第 3 节。
 - 凭证扫描闭环与可配置上传上限：`evidence` 表新增扫描尝试次数、最近说明与尝试时间（迁移 `AddEvidenceScanAttempts`）；`EvidenceRescanService` 每 60 秒按 30 秒退避重扫 `Pending` 凭证、最多 5 次，文件缺失直接判定 `Rejected`，用尽次数后保留说明交给人工；`evidence.maxSizeBytes` / `evidence.maxPerOrder` 纳入设置目录（硬上限 25 MB / 50 份），凭证接口与页面展示检查次数与说明；见第 3、10 节。
@@ -595,7 +608,13 @@ npm run build
 - 短时直连下载地址：`S3FileStorage` 实现可选的 `IPresignedFileStorage`（SigV4 查询串签名，含对象路径、有效期与附件名），新增 `GET /api/v1/evidence/{id}/download-url` 与 `evidence.downloadUrlLifetimeSeconds`（5 至 900 秒，默认 120），前端在支持时直接跳转签名地址、否则回退流式下载；篡改与过期都由对象存储自己拒绝（403），已用真实 MinIO 验证。
 - 元数据剥离与按人限速：`EvidenceContentSanitizer`（领域层，纯字节解析）处理 JPEG/PNG/WebP 的元数据段，`evidence.stripMetadata` 控制开关、剥离结果落库到 `evidence.MetadataRemoved`（迁移 `AddEvidenceMetadataRemoved`）并在接口与页面展示；`evidence.uploadsPerUserPerHour`（默认 60）按上传者限速，计数走数据库并配了 `(UploadedBy, CreatedAt)` 索引，多实例一致。
 - 运营后台（人工兜底，后端与页面都已完成）：跨所有者检索任务与用户、查看任务详情、把**尚未分配**的任务下架并强制填写原因（原因写进 `admin_audit_entries`，`GET /api/v1/admin/audits` 可查）；已产生订单的任务会被领域规则拦住（`422`，提示先处理订单）。顶栏“运营配置”弹窗现在有四个页签：配置项 / 变更记录（配置审计 + 运营审计）/ 任务检索（含下架）/ 用户检索。风险规则引擎仍未实现，所以这里**没有任何自动判定**，纯粹是人工介入入口。
-- 已知线索（下轮排查）：运营联调时“服务者报名 → 需求方选人”这一步返回 `422 报名不存在。`，而报名接口当时返回了 `200` 与报名 id。任务/报名链路的其余环节（创建、发布、检索、下架、审计）在同一次联调里全部正常，领域层关于“已分配任务不能下架”的规则也由单元测试覆盖；因此怀疑是报名行在同一请求作用域内的 EF 导航集合未刷新（`Get` 返回已跟踪实体、导航不重载），需要写一个针对性的仓储测试来定位。
+- 已知线索（下轮排查）：运营联调时“服务者报名 → 需求方选人”这一步返回 `422 报名不存在。`，而报名接口当时返回了 `200` 与报名 id。**2026-09-12 复核**：同样的“创建 → 发布 → 报名 → 选人”流程在真实 PostgreSQL 上跑通（`task.status=Assigned`、`order.status=Accepted`、报名列表 1 条），因此这条线索更可能是当轮联调里任务/报名的状态问题或脚本取错 ID，而不是持久化缺陷；若再次出现，按“写一个针对性的仓储测试定位 EF 导航集合是否刷新”的方向排查。
+
+本轮追加（多实例通知扇出）：
+
+- 原子认领：`INotificationRepository.TryClaim`/`ReleaseDispatch` 与 `NotificationService.TryClaimDispatch`/`ReleaseDispatch` 替换原先“推送成功后才标记”的写法，EF 侧用条件 `ExecuteUpdate`、内存侧加锁；领域层新增 `Notification.ReleaseDispatch()` 作为失败补偿。
+- 扇出：新增 `INotificationFanout` 与 `NotificationFanoutMessage`（Application）、`RedisNotificationFanout`（Infrastructure，StackExchange.Redis 3.1.3，频道 `aitohuman:notifications:fanout`）、`NotificationFanoutSubscriber`（Api，订阅断开每 5 秒重连、未启用时同样按 5 秒轮询等开关）；`NotificationDispatcher` 改为「认领 → 广播或本地推送 → 失败回滚」。官方 `Microsoft.AspNetCore.SignalR.StackExchangeRedis` backplane 包在本机离线取不到，因此直接基于 Redis 发布/订阅实现同一机制（客户端推送仍走 SignalR）；决策见 [ADR-0004](../architecture/decisions/0004-notification-fanout.md)。
+- 配置：`notifications.fanout.enabled`（分组“通知推送”，默认 false）进设置目录；`ConnectionStrings__Redis` 保持部署级，不进配置表。
 
 ### 后续跟进（原 P1 的延伸项）
 
@@ -609,7 +628,7 @@ npm run build
 
 ### P2
 
-- Redis backplane、多实例部署、审计与可观测性。
+- Redis backplane 已用自研发布/订阅落地（见第 3、11 节，ADR-0004）；剩余的是缓存、分布式锁与限流，以及多实例部署本身的编排与可观测性。
 - 实名认证、真实支付托管、退款、争议和合规评审。
 - 运营审核后台与高风险任务人工复核。
 
@@ -632,11 +651,11 @@ npm run build
 - [ ] 以服务者上传一张小于当前上限（默认 5 MB）的 PNG 凭证：列表出现、可下载；把文本文件改名成 `.png` 上传应被 `422` 拒绝，超过当前上限返回 `413`。
 - [ ] 大厅能按区域与悬赏区间筛选，并能“加载更多”翻页；大厅与公开详情的响应里不含精确地址文本。
 - [ ] 用一个全新空库启动 API：`Database.Migrate()` 一次应用全部迁移；用早期 `EnsureCreated` 建出的旧库启动会打印基线化警告后正常工作。
-- [ ] 在部署配置里设置 `Admin__UserIds` 或 `Admin__Emails`，用它登录后访问 `/api/v1/admin/settings`：非管理员应拿到 `401/403`，管理员拿到 25 个配置项。
+- [ ] 在部署配置里设置 `Admin__UserIds` 或 `Admin__Emails`，用它登录后访问 `/api/v1/admin/settings`：非管理员应拿到 `401/403`，管理员拿到 26 个配置项。
 - [ ] 通过运营接口把 `ai.apiKey` 换成新密钥：响应只显示 `****末四位`；接着发起一轮 AI 对话应立刻用新密钥，不需要重启进程。
 - [ ] 把 `evidence.scanner.provider` 改成 `http` 但不填扫描地址，服务者上传凭证应返回“待扫描、不可下载”，文件不被删除也不放行。
 - [ ] 重启进程后重新读取运营配置：机密仍能解密（说明 `DataProtection__KeysPath` 指向了持久目录，而不是临时目录）。
-- [ ] 用管理员账户登录后打开顶栏“运营配置”：能看到 25 个配置项、四个分组与来源徽标；普通服务者账户看不到这个入口。
+- [ ] 用管理员账户登录后打开顶栏“运营配置”：能看到 26 个配置项、五个分组与来源徽标；普通服务者账户看不到这个入口。
 - [ ] 切到“任务检索”页签：按标题关键字能搜到任务并看到需求方邮箱与报名数；对一条大厅中的任务点“下架”并填写原因后，任务从大厅消失、审计里出现对应记录；对一条已分配的尝试下架应看到可读的拒绝提示。
 - [ ] 在页面上改一个机密项并保存：列表立刻显示新的掩码与“后台已改”，点“测试连接”能看到自检结果，切到“变更记录”能看到这次修改；把某条改坏（例如把超时填成 1）保存应看到可读的校验提示。
 - [ ] 把 `evidence.maxSizeBytes` 调成 1024 后上传一张 2 KB 的图片：应返回“凭证大小不能超过 1 KB”，恢复默认后能正常上传。
@@ -647,6 +666,7 @@ npm run build
 - [ ] 上传一张带 GPS 的截图（手机原图即可）：凭证面板应显示“已在上传时移除元数据：PNG tEXt（或 EXIF/XMP）”，下载下来的文件里搜不到拍摄地点。
 - [ ] 部署一个 clamd（或用替身）并把 `evidence.scanner.provider` 改成 `clamav`：上传正常图片应 `200`；上传含 EICAR 测试串的文件应被 `422` 拒绝，且存储里不留文件。
 - [ ] 把 `evidence.uploadsPerUserPerHour` 调成 2，连续上传三次：第三次应返回可读的限流提示。
+- [ ] 多实例投递：给两个实例都配 `ConnectionStrings__Redis`，一个浏览器连实例 A、另一个连实例 B；在 A 上触发一次状态变更，B 的页面应不刷新就收到通知。再在运营后台把 `notifications.fanout.enabled` 关掉重试：通知仍然落库、收件箱照常，只是不再跨实例实时推送（实例 B 的日志会写“当前未启用”）。
 - [ ] 新功能先补 Contract、领域规则和测试，再扩展页面。
 
 ## 14. 相关文档
@@ -665,3 +685,4 @@ npm run build
 - [模块化单体决策](../architecture/decisions/0001-modular-monolith.md)
 - [固定悬赏与双向选择决策](../architecture/decisions/0002-fixed-reward-and-mutual-selection.md)
 - [三方集成参数可配置决策](../architecture/decisions/0003-operator-configurable-settings.md)
+- [多实例通知投递决策](../architecture/decisions/0004-notification-fanout.md)

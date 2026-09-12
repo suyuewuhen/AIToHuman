@@ -32,6 +32,19 @@ public sealed class EfNotificationRepository(TaskDbContext db) : INotificationRe
         .Select(Map)
         .ToArray();
 
+    /// <summary>
+    /// 条件更新即认领：只有把 DispatchedAt 从 NULL 改成时间的那个实例影响 1 行，其它实例影响 0 行。
+    /// 用 ExecuteUpdate 而不是查出来再 SaveChanges，避免「读—改—写」之间被别的实例插进来。
+    /// </summary>
+    public bool TryClaim(Guid id, DateTimeOffset now) => db.Notifications
+        .Where(item => item.Id == id && item.DispatchedAt == null)
+        .ExecuteUpdate(setters => setters.SetProperty(item => item.DispatchedAt, now)) == 1;
+
+    /// <summary>撤回认领：把已认领但仍未真正推出的记录放回 Outbox。</summary>
+    public void ReleaseDispatch(Guid id) => db.Notifications
+        .Where(item => item.Id == id && item.DispatchedAt != null)
+        .ExecuteUpdate(setters => setters.SetProperty(item => item.DispatchedAt, (DateTimeOffset?)null));
+
     public void Add(Notification notification)
     {
         db.Notifications.Add(ToRecord(notification));
@@ -92,6 +105,21 @@ public sealed class InMemoryNotificationRepository : INotificationRepository
         {
             return notifications.Where(item => item.DispatchedAt is null).OrderBy(item => item.CreatedAt).Take(limit).ToArray();
         }
+    }
+
+    public bool TryClaim(Guid id, DateTimeOffset now)
+    {
+        lock (gate)
+        {
+            if (notifications.SingleOrDefault(item => item.Id == id) is not { } notification || notification.DispatchedAt is not null) return false;
+            notification.MarkDispatched(now);
+            return true;
+        }
+    }
+
+    public void ReleaseDispatch(Guid id)
+    {
+        lock (gate) { notifications.SingleOrDefault(item => item.Id == id)?.ReleaseDispatch(); }
     }
 
     public void Add(Notification notification) { lock (gate) { notifications.Add(notification); } }

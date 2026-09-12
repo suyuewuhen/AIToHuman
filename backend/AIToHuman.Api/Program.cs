@@ -117,6 +117,15 @@ builder.Services.AddScoped<TaskService>();
 builder.Services.AddScoped<ConversationService>();
 // Outbox 派发：把已落库但还没推送的通知发给在线客户端。
 builder.Services.AddHostedService<NotificationDispatcher>();
+// 通知扇出：多实例部署时用 Redis 发布/订阅把通知广播到所有实例，用户连在哪个实例上都能实时收到。
+// 开关走运营配置 notifications.fanout.enabled；连接串是部署级配置（ConnectionStrings__Redis），
+// 没配连接串就等于没有扇出，派发任务退回单实例直接推送。
+var redisConnection = builder.Configuration.GetConnectionString("Redis");
+builder.Services.AddSingleton<INotificationFanout>(provider => new RedisNotificationFanout(
+    provider.GetRequiredService<ISettingsProvider>(),
+    redisConnection,
+    provider.GetRequiredService<ILogger<RedisNotificationFanout>>()));
+builder.Services.AddHostedService<NotificationFanoutSubscriber>();
 // 待扫描凭证的自动重扫：扫描服务不可用时不让凭证永远卡在“不可下载”。
 builder.Services.AddHostedService<EvidenceRescanService>();
 builder.Services.AddProblemDetails();

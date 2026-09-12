@@ -83,13 +83,18 @@ public sealed class NotificationService(INotificationRepository repository, Time
     public NotificationEnvelope ToEnvelope(Notification notification) =>
         new(notification.EventId, notification.Type, notification.Version, notification.CreatedAt, ParsePayload(notification.PayloadJson));
 
-    /// <summary>派发成功后记录时间；失败时不调用，下个周期会重试。</summary>
-    public void MarkDispatched(Guid notificationId)
-    {
-        if (repository.Get(notificationId) is not { } notification) return;
-        notification.MarkDispatched(timeProvider.GetUtcNow());
-        repository.Save(notification);
-    }
+    /// <summary>收到别的实例广播的扇出消息时，用同一套规则还原信封，保证两条路径推给客户端的内容一致。</summary>
+    public static NotificationEnvelope ToEnvelope(NotificationFanoutMessage message) =>
+        new(message.EventId, message.Type, message.Version, message.CreatedAt, ParsePayload(message.PayloadJson));
+
+    /// <summary>
+    /// 认领一条待派发通知。多实例部署时只有拿到 true 的那个实例负责推送，
+    /// 因此同一周期里其它实例扫到同一条记录也不会重复推送。
+    /// </summary>
+    public bool TryClaimDispatch(Guid notificationId) => repository.TryClaim(notificationId, timeProvider.GetUtcNow());
+
+    /// <summary>推送失败时撤回认领，让下个周期重试；绝不把没推出去的通知标记成已推送。</summary>
+    public void ReleaseDispatch(Guid notificationId) => repository.ReleaseDispatch(notificationId);
 
     private void EnqueueOrderEvent(Guid recipientId, string type, Guid eventId, Order order, DateTimeOffset now)
     {

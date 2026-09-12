@@ -204,7 +204,7 @@ Disputed
 
 事件用于通知、审计和异步工作，不应把关键不变量推迟到异步消费者处理。
 
-> 实现现状（⚠️）：领域层仍然没有事件类型，也没有事件存储；但通知已经具备可靠投递链路：`Notification` 实体 + `notifications` 表（`EventId` 唯一索引做幂等），应用层在业务事务内写入通知（兼作 Outbox），`NotificationDispatcher` 后台任务扫描未派发记录并通过 SignalR 推送 `notification.created` 信封（`eventId`/`type`/`version`/`occurredAt`/`payload`），成功后标记派发时间，失败自动重试。
+> 实现现状（⚠️）：领域层仍然没有事件类型，也没有事件存储；但通知已经具备可靠投递链路：`Notification` 实体 + `notifications` 表（`EventId` 唯一索引做幂等），应用层在业务事务内写入通知（兼作 Outbox），`NotificationDispatcher` 后台任务扫描未派发记录并通过 SignalR 推送 `notification.created` 信封（`eventId`/`type`/`version`/`occurredAt`/`payload`）。派发前先用条件 UPDATE 原子认领（`WHERE DispatchedAt IS NULL`），失败则撤回认领退回 Outbox 等下一轮，因此多实例不会重复推送；多实例经 Redis 扇出转发到各实例的在线客户端，未启用扇出时只推本实例。
 >
 > 已接入的事件类型：`order.created`（选人后通知服务者）、`order.statusChanged`（开始、提交、验收、驳回、返工时通知对方参与者）。`TaskPublished`、`TaskRewardIncreased`、`ReviewPublished` 等仍未实现；`EvidenceUploaded`、`DisputeOpened`、`RiskReviewRequested` 依赖尚未实现的功能。
 

@@ -195,6 +195,7 @@ GET /api/v1/tasks?category=pickup&district=chaoyang&limit=20&cursor=...
 - `version` 是信封版本，客户端应忽略高于自身支持版本的推送，并改用 REST 刷新。
 - 推送前通知已经落库，`GET /api/v1/notifications` 能拿到同一批数据；`POST /api/v1/notifications/read` 标记已读并返回最新未读数。
 - 服务端不等待推送结果：写库成功即视为该业务事件成立，派发失败由后台任务重试。
+- 投递保证是 at-most-once：实时推送只是提示，可能丢失，客户端必须以 `notifications` 表与 `GET /api/v1/notifications` 的事实为准，重连后重新拉取补齐。派发方先用条件 UPDATE 原子认领待派发记录（`WHERE DispatchedAt IS NULL`），因此多实例不会重复推送；运营开关 `notifications.fanout.enabled` 打开时，认领方把消息发布到 Redis 扇出频道，各实例推给连在自己身上的在线客户端（未启用或 Redis 不可用时只推本实例）。若发布成功但没有任何实例在订阅，服务端打警告日志。
 
 已实现的订单会话接口：`GET /api/v1/orders/{orderId}/messages`（参与者读取消息与未读数）、`POST /api/v1/orders/{orderId}/messages`（发送消息，同时在事务内写入通知）、`POST /api/v1/orders/{orderId}/messages/read`（标记已读并返回最新未读数）。非参与者一律 `403`，与订单相关的其它端点保持同一套参与者校验。订单列表的 `GET /api/v1/orders` 会附带每个订单的 `unreadMessageCount`，便于前端直接渲染未读徽标。
 

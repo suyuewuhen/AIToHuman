@@ -24,7 +24,7 @@ AIToHuman 是一个“AI 任务管家 + 真人服务任务大厅”平台。用�
 - 后端：ASP.NET Core 10 Minimal API、C#、Entity Framework Core
 - 架构：前后端分离的模块化单体，依赖方向 `Api → Application → Domain`
 - 数据：PostgreSQL（当前开发事实来源；未配置连接串时回退内存仓储）
-- 实时通信：SignalR（订单创建、状态变化与新消息通知；持久化 Outbox + 后台派发 + 未读数收件箱，推送只是刷新提示）
+- 实时通信：SignalR（订单创建、状态变化与新消息通知；持久化 Outbox + 后台派发 + 未读数收件箱，推送只是刷新提示；多实例通过 Redis 扇出投递，运营可开关，见 [ADR-0004](docs/architecture/decisions/0004-notification-fanout.md)）
 - AI：火山引擎 Ark OpenAI 兼容接口，SSE 流式多轮澄清
 - 凭证存储：本机私有目录或 S3 兼容对象存储（MinIO / 阿里云 OSS / AWS S3）可切换，签名是自研的 AWS SigV4（不依赖厂商 SDK），下载支持短时直连签名地址，已用本机 MinIO 端到端验证
 - 运营配置：设置目录（白名单）+ 加密机密 + 变更审计 + 写入即生效；管理员在顶栏“运营配置”页面即可调整模型、对象存储、内容扫描参数与凭证上传上限（见 [ADR-0003](docs/architecture/decisions/0003-operator-configurable-settings.md)）
@@ -125,7 +125,7 @@ npm run dev
 
 必须先启动后端，再启动 Vite；否则浏览器会看到 `vite http proxy error: ECONNREFUSED 127.0.0.1:5188`。可以先访问 `http://127.0.0.1:5188/health`，确认返回 `healthy` 后再打开前端。
 
-前端地址为 `http://localhost:5173`，API 健康检查为 `http://localhost:5188/health`。任务与报名使用 PostgreSQL 持久化；Redis 和 MinIO 已提供本地依赖，后续里程碑接入缓存、实时通信和凭证存储。
+前端地址为 `http://localhost:5173`，API 健康检查为 `http://localhost:5188/health`。任务与报名使用 PostgreSQL 持久化；Redis 已用于通知的多实例扇出（由运营开关 `notifications.fanout.enabled` 控制，未启用时按单实例推送），MinIO 作为本地依赖供 S3 兼容对象存储使用（凭证默认仍写本机私有目录）。
 
 打开前端后，点击右上角“开发会话”可登录或注册真实账户。一个账户同时支持需求方和服务者身份，登录后点击右上角身份菜单即可切换，不需要重复注册。切换只改变当前 JWT 的操作角色，不会改变账户 ID、历史任务或订单归属。任务创建、报名、查看报名和选择服务者会使用 JWT 身份；未登录时仅保留 Development 环境的合成会话用于联调。
 

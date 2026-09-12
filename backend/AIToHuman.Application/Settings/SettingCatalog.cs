@@ -33,6 +33,8 @@ public static class SettingKeys
     public const string EvidenceDownloadUrlLifetimeSeconds = "evidence.downloadUrlLifetimeSeconds";
     public const string EvidenceStripMetadata = "evidence.stripMetadata";
     public const string EvidenceUploadsPerUserPerHour = "evidence.uploadsPerUserPerHour";
+
+    public const string NotificationFanoutEnabled = "notifications.fanout.enabled";
 }
 
 /// <summary>
@@ -73,7 +75,9 @@ public static class SettingCatalog
         new(SettingKeys.EvidenceScannerEndpoint, "内容扫描", "扫描服务地址", "接收凭证内容并返回判定结果的服务地址；留空等于停用。", SettingValueKind.Url, SettingCatalog.Empty, "Settings:evidence:scanner:endpoint"),
         new(SettingKeys.EvidenceScannerApiKey, "内容扫描", "扫描服务 API Key", "调用扫描服务时放在 X-Api-Key 请求头里的密钥。", SettingValueKind.String, SettingCatalog.Empty, "Settings:evidence:scanner:apiKey", IsSecret: true, MaxLength: 400),
         new(SettingKeys.EvidenceScannerTimeoutSeconds, "内容扫描", "扫描超时（秒）", "单次扫描的等待上限，超时按失败模式处理。", SettingValueKind.Int, "15", "Settings:evidence:scanner:timeoutSeconds", MinInt: 1, MaxInt: 120),
-        new(SettingKeys.EvidenceScannerFailMode, "内容扫描", "扫描失败模式", "closed：扫描不可用时凭证保持“待扫描、不可下载”，不丢文件；open：扫描不可用时直接放行，只建议在开发环境使用。", SettingValueKind.Choice, "closed", "Settings:evidence:scanner:failMode", Choices: ["closed", "open"])
+        new(SettingKeys.EvidenceScannerFailMode, "内容扫描", "扫描失败模式", "closed：扫描不可用时凭证保持“待扫描、不可下载”，不丢文件；open：扫描不可用时直接放行，只建议在开发环境使用。", SettingValueKind.Choice, "closed", "Settings:evidence:scanner:failMode", Choices: ["closed", "open"]),
+
+        new(SettingKeys.NotificationFanoutEnabled, "通知推送", "多实例扇出", "多实例部署时用 Redis 发布/订阅广播通知，用户连在哪个实例上都能实时收到。启用前部署配置里必须有 ConnectionStrings__Redis；没配连接串时这个开关不生效，应用按单实例推送运行。远端实例重启或 Redis 抖动时通知仍会落库，客户端重连后从收件箱补齐。", SettingValueKind.Bool, "false", "Settings:notifications:fanout:enabled")
     ];
 
     private static readonly Dictionary<string, SettingDefinition> ByKey = All.ToDictionary(item => item.Key, StringComparer.Ordinal);

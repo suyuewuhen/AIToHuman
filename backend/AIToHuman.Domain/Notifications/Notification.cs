@@ -57,6 +57,12 @@ public sealed class Notification
         DispatchedAt = UtcTimestamp.Normalize(now);
     }
 
+    /// <summary>
+    /// 撤销派发标记：推送失败（例如扇出通道不可用）时回滚认领。
+    /// 不这样做的话，认领成功但没推出去的通知会被永久当成已推送，客户端再也等不到它。
+    /// </summary>
+    public void ReleaseDispatch() => DispatchedAt = null;
+
     /// <summary>标记已读。重复调用是空操作。</summary>
     public void MarkRead(DateTimeOffset now)
     {
