@@ -15,6 +15,9 @@
 ## 2. 本地开发原则
 
 - 所有可共享配置提供 `.env.example` 或 `appsettings` 示例，不包含密钥。
+- 配置分两层：**部署级**（连接串、Redis、日志、`DataProtection__KeysPath`）只走环境变量或 User Secrets，永远不进配置表；**运营级**（三方集成参数与业务旋钮）优先从 `system_settings` 读取，环境变量与配置文件只是兜底，解析顺序固定为「数据库覆盖 → 环境变量/配置文件 → 代码默认值」。
+- 运营级配置必须登记在 `SettingCatalog` 才能被后台读写：新增一个可配置项 = 在目录里加一行（类型、是否机密、默认值、兼容的配置键），再让消费方通过 `ISettingsProvider` 读取；不要直接读 `IConfiguration`。
+- 机密（API Key、访问密钥）在配置表里是 Data Protection 密文，接口与审计只出现掩码与指纹。密钥环默认落在运行账户的配置目录里，容器或分布式部署请用 `DataProtection__KeysPath` 指到持久卷并让所有实例共享，否则重启或换实例后解不开已保存的密钥。
 - 本地秘密使用 .NET User Secrets 或环境变量。
 - 本地联调可使用 `GET /api/v1/session/dev` 获取合成开发会话；该接口仅在 Development 环境开放，不能替代正式登录或授权。
 - 数据库结构只通过 EF Core Migration 演进。
@@ -74,17 +77,27 @@
 ```text
 ConnectionStrings__Postgres
 ConnectionStrings__Redis
-ObjectStorage__Endpoint
-ObjectStorage__Bucket
-ObjectStorage__AccessKey
-ObjectStorage__SecretKey
 ObjectStorage__LocalRoot
-AI__Provider
-AI__ApiKey
-AI__Model
+VolcengineAI__BaseUrl
+VolcengineAI__ApiKey
+VolcengineAI__Model
+VolcengineAI__TimeoutSeconds
+Settings__storage__provider
+Settings__storage__s3__endpoint
+Settings__storage__s3__region
+Settings__storage__s3__bucket
+Settings__storage__s3__accessKeyId
+Settings__storage__s3__secretAccessKey
+Settings__evidence__scanner__provider
+Settings__evidence__scanner__endpoint
+Settings__evidence__scanner__apiKey
+Settings__evidence__scanner__failMode
+Admin__UserIds
+Admin__Emails
+DataProtection__KeysPath
 ```
 
-`ObjectStorage__LocalRoot` 只在 Development 有效（凭证默认写到应用目录下的 `evidence`）；接入真实 Bucket 前，`ObjectStorage__Endpoint/Bucket/AccessKey/SecretKey` 都不会被读取。
+命名规则：`Settings__<设置键里点号换成双下划线>` 与设置目录里的键一一对应（例如 `Settings__evidence__scanner__provider` ↔ `evidence.scanner.provider`），作用是兜底；日常调整在运营后台完成，改完立即生效。`ObjectStorage__LocalRoot` 只在 `storage.provider=local` 时生效（留空则用应用目录下的 `evidence`）。`Admin__UserIds` / `Admin__Emails` 决定谁能访问运营接口，留空等于关闭运营接口。`DataProtection__KeysPath` 指向密钥环目录，生产必须持久化并在实例间共享。
 
 生产密钥由部署平台注入。仓库只保留非敏感默认值和变量说明。
 

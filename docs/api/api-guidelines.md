@@ -192,3 +192,43 @@ GET /api/v1/tasks?category=pickup&district=chaoyang&limit=20&cursor=...
 - 服务端不等待推送结果：写库成功即视为该业务事件成立，派发失败由后台任务重试。
 
 已实现的订单会话接口：`GET /api/v1/orders/{orderId}/messages`（参与者读取消息与未读数）、`POST /api/v1/orders/{orderId}/messages`（发送消息，同时在事务内写入通知）、`POST /api/v1/orders/{orderId}/messages/read`（标记已读并返回最新未读数）。非参与者一律 `403`，与订单相关的其它端点保持同一套参与者校验。订单列表的 `GET /api/v1/orders` 会附带每个订单的 `unreadMessageCount`，便于前端直接渲染未读徽标。
+
+## 10. 运营配置接口
+
+运营接口都挂在 `/api/v1/admin/settings` 下，并要求管理员身份（部署配置里的 `Admin__UserIds` / `Admin__Emails`，或 `admin` 角色声明）；未配置管理员时一律 `403`。
+
+```text
+GET    /api/v1/admin/settings                  列出全部可配置项（含生效值、来源、默认值、可选值）
+GET    /api/v1/admin/settings/{key}            单条配置
+PUT    /api/v1/admin/settings/{key}            写入覆盖值
+DELETE /api/v1/admin/settings/{key}            删除覆盖，恢复环境变量或默认值
+POST   /api/v1/admin/settings/{key}/test       只读自检（目录可写、服务可达）
+GET    /api/v1/admin/settings/audits?limit=50  变更审计，按时间倒序
+```
+
+约定：
+
+- **白名单**：只有登记在 `SettingCatalog` 里的键能被读写；未注册的键返回 `400`，不是静默忽略，也不允许用它改写部署级配置。
+- **错误码**：非法取值（类型、范围、枚举、URL 格式）返回 `422`；带 `expectedVersion` 且版本不一致返回 `409`；未注册键返回 `400`；非管理员 `403`。
+- **机密**：`isSecret` 为真的键，响应里只有 `****末四位` 与 `fingerprint`，明文永不出服务端；审计里同样只写掩码与指纹。
+- **来源**：每条配置的 `source` 取值是 `database`（后台覆盖过）、`configuration`（来自环境变量/配置文件）或 `default`（代码默认值），便于判断“改了到底有没有生效”。
+- **写入请求**：`{ "value": "...", "expectedVersion": 1 }`；`expectedVersion` 省略表示不检查版本，新增覆盖时传 `0`。
+- **立即生效**：写入成功后服务端刷新内存快照，消费方下一次调用就用新值，不需要重启进程；绕过 API 直接改库的改动会在 15 秒内被后台轮询同步。
+
+示例响应（机密已脱敏）：
+
+```json
+{
+  "key": "ai.apiKey",
+  "category": "AI 服务商",
+  "displayName": "API Key",
+  "kind": "String",
+  "isSecret": true,
+  "value": "****3456",
+  "source": "database",
+  "hasOverride": true,
+  "overrideVersion": 1,
+  "updatedBy": "264fa867-bd3e-464b-966e-50b8d3b982f8",
+  "fingerprint": "7ab5f1bce26a"
+}
+```

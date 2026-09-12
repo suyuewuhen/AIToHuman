@@ -26,6 +26,7 @@ AIToHuman 是一个“AI 任务管家 + 真人服务任务大厅”平台。用�
 - 数据：PostgreSQL（当前开发事实来源；未配置连接串时回退内存仓储）
 - 实时通信：SignalR（订单创建、状态变化与新消息通知；持久化 Outbox + 后台派发 + 未读数收件箱，推送只是刷新提示）
 - AI：火山引擎 Ark OpenAI 兼容接口，SSE 流式多轮澄清
+- 运营配置：设置目录（白名单）+ 加密机密 + 变更审计 + 写入即生效，管理员可通过 `/api/v1/admin/settings` 调整模型、对象存储与内容扫描参数（管理页面待补，见 [ADR-0003](docs/architecture/decisions/0003-operator-configurable-settings.md)）
 - 本地依赖：`compose.yaml` 定义 PostgreSQL、Redis 和 MinIO
 
 规划中、代码尚未接入：
@@ -44,10 +45,10 @@ AIToHuman/
 │       ├── App.vue                 # 对话工作台、草稿、大厅、订单、会话弹窗与凭证面板
 │       └── styles.css
 ├── backend/
-│   ├── AIToHuman.Api/              # HTTP、JWT、AI SSE、SignalR Hub、通知后台派发
-│   ├── AIToHuman.Application/      # 用例、仓储与通知接口
+│   ├── AIToHuman.Api/              # HTTP、JWT、AI SSE、SignalR Hub、通知后台派发、运营配置接口
+│   ├── AIToHuman.Application/      # 用例、仓储、通知接口与设置目录
 │   ├── AIToHuman.Domain/           # 实体、值对象与状态机
-│   ├── AIToHuman.Infrastructure/   # EF Core、PostgreSQL、内存仓储与本机文件存储
+│   ├── AIToHuman.Infrastructure/   # EF Core、PostgreSQL、内存仓储、本机文件存储与内容扫描适配
 │   ├── AIToHuman.Contracts/        # 请求与响应 DTO
 │   └── tests/
 │       ├── AIToHuman.Domain.Tests/          # 领域单元测试

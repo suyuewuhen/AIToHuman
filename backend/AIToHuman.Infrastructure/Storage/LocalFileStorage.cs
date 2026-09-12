@@ -1,28 +1,36 @@
 using AIToHuman.Application.Orders;
+using AIToHuman.Application.Settings;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 
 namespace AIToHuman.Infrastructure.Storage;
 
-public sealed class ObjectStorageOptions
-{
-    /// <summary>本机存储根目录；为空时使用应用目录下的 <c>evidence</c>。生产应改用私有对象存储。</summary>
-    public string LocalRoot { get; set; } = string.Empty;
-}
-
 /// <summary>
-/// 本机目录实现，用于开发与测试：写入、读取、删除都限制在根目录内，避免存储键越界访问其他文件。
+/// 本机目录实现，用于开发与试点：写入、读取、删除都限制在根目录内，避免存储键越界访问其他文件。
+/// 根目录来自运营配置 <c>storage.localRoot</c>，留空时用应用目录下的 <c>evidence</c>；
+/// 每次操作都重新解析根目录，因此运营后台改完目录立即生效，不需要重启进程。
 /// </summary>
 public sealed class LocalFileStorage : IFileStorage
 {
-    private readonly string root;
+    private readonly ISettingsProvider settings;
+    private readonly ILogger<LocalFileStorage> logger;
+    private bool loggedRoot;
 
-    public LocalFileStorage(IOptions<ObjectStorageOptions> options, ILogger<LocalFileStorage> logger)
+    public LocalFileStorage(ISettingsProvider settings, ILogger<LocalFileStorage> logger)
     {
-        var configured = options.Value.LocalRoot;
-        root = Path.GetFullPath(string.IsNullOrWhiteSpace(configured) ? Path.Combine(AppContext.BaseDirectory, "evidence") : configured);
-        Directory.CreateDirectory(root);
-        logger.LogInformation("凭证文件存储根目录：{Root}", root);
+        this.settings = settings;
+        this.logger = logger;
+    }
+
+    /// <summary>当前生效的根目录；暴露出来便于自检与排查“文件到底写哪了”。</summary>
+    public string Root
+    {
+        get
+        {
+            var configured = settings.GetValue(SettingKeys.StorageLocalRoot);
+            return Path.GetFullPath(string.IsNullOrWhiteSpace(configured)
+                ? Path.Combine(AppContext.BaseDirectory, "evidence")
+                : configured);
+        }
     }
 
     public async Task SaveAsync(string key, Stream content, string contentType, CancellationToken cancellationToken = default)
@@ -51,23 +59,52 @@ public sealed class LocalFileStorage : IFileStorage
     private string ResolvePath(string key)
     {
         if (string.IsNullOrWhiteSpace(key)) throw new InvalidOperationException("存储键不能为空。");
+
+        var root = Root;
+        LogRootOnce(root);
         var full = Path.GetFullPath(Path.Combine(root, key));
         var prefix = root.EndsWith(Path.DirectorySeparatorChar) ? root : root + Path.DirectorySeparatorChar;
         if (!full.StartsWith(prefix, StringComparison.Ordinal))
             throw new InvalidOperationException("存储键越出存储根目录，已拒绝访问。");
         return full;
     }
+
+    private void LogRootOnce(string root)
+    {
+        if (loggedRoot) return;
+        loggedRoot = true;
+        logger.LogInformation("凭证文件本机存储根目录：{Root}", root);
+    }
 }
 
 /// <summary>
-/// 占位扫描实现：没有接入真实病毒/内容检查，一律放行并打警告日志，
-/// 避免让调用方误以为文件已经被检查过。生产环境必须替换。
+/// 按运营配置 <c>storage.provider</c> 选择真正的存储实现。
+/// 每次调用都重新判断，因此运营后台在 local 与 s3 之间切换不需要重启进程。
 /// </summary>
-public sealed class NoOpEvidenceScanner(ILogger<NoOpEvidenceScanner> logger) : IEvidenceScanner
+public sealed class SettingsFileStorage(ISettingsProvider settings, LocalFileStorage local) : IFileStorage
 {
-    public Task<Domain.Orders.EvidenceScanStatus> ScanAsync(string storageKey, string contentType, CancellationToken cancellationToken = default)
+    public Task SaveAsync(string key, Stream content, string contentType, CancellationToken cancellationToken = default) =>
+        Active().SaveAsync(key, content, contentType, cancellationToken);
+
+    public Task<Stream?> OpenReadAsync(string key, CancellationToken cancellationToken = default) =>
+        Active().OpenReadAsync(key, cancellationToken);
+
+    public Task<bool> ExistsAsync(string key, CancellationToken cancellationToken = default) =>
+        Active().ExistsAsync(key, cancellationToken);
+
+    public Task DeleteAsync(string key, CancellationToken cancellationToken = default) =>
+        Active().DeleteAsync(key, cancellationToken);
+
+    /// <summary>
+    /// 当前生效的实现。配置成 s3 而代码里还没有对应实现时直接报错，
+    /// 而不是悄悄退回本机目录——静默降级会把“以为存到对象存储”的文件留在容器磁盘上。
+    /// </summary>
+    private IFileStorage Active()
     {
-        logger.LogWarning("尚未接入凭证安全检查，已直接放行 {StorageKey}（类型 {ContentType}）。生产环境必须替换 IEvidenceScanner 实现。", storageKey, contentType);
-        return Task.FromResult(Domain.Orders.EvidenceScanStatus.Clean);
+        var provider = settings.GetChoice(SettingKeys.StorageProvider, "local");
+        if (provider == "local") return local;
+
+        throw new InvalidOperationException(
+            $"对象存储 {provider} 尚未接入：请把 storage.provider 改回 local，或先补上对应的 IFileStorage 实现（S3 兼容实现需要 S3 SDK，本仓库离线环境无法还原该依赖）。");
     }
 }

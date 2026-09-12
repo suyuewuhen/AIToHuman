@@ -1,3 +1,4 @@
+using AIToHuman.Domain.Settings;
 using Microsoft.EntityFrameworkCore;
 
 namespace AIToHuman.Infrastructure.Persistence;
@@ -14,6 +15,8 @@ public sealed class TaskDbContext(DbContextOptions<TaskDbContext> options) : DbC
     public DbSet<NotificationRecord> Notifications => Set<NotificationRecord>();
     public DbSet<OrderMessageRecord> OrderMessages => Set<OrderMessageRecord>();
     public DbSet<EvidenceRecord> Evidence => Set<EvidenceRecord>();
+    public DbSet<SystemSettingRecord> SystemSettings => Set<SystemSettingRecord>();
+    public DbSet<SettingsAuditRecord> SettingsAudits => Set<SettingsAuditRecord>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -128,6 +131,27 @@ public sealed class TaskDbContext(DbContextOptions<TaskDbContext> options) : DbC
             entity.Property(item => item.StorageKey).HasMaxLength(120).IsRequired();
             entity.Property(item => item.ContentHash).HasMaxLength(64).IsRequired();
             entity.Property(item => item.ScanStatus).HasMaxLength(16).IsRequired();
+        });
+
+        modelBuilder.Entity<SystemSettingRecord>(entity =>
+        {
+            entity.ToTable("system_settings");
+            entity.HasKey(item => item.Key);
+            entity.Property(item => item.Key).HasMaxLength(SystemSetting.MaxKeyLength).IsRequired();
+            entity.Property(item => item.Value).HasMaxLength(SystemSetting.MaxValueLength).IsRequired();
+            // 乐观并发令牌：两个管理员同时保存同一条配置时，后写入者拿到 DbUpdateConcurrencyException（409）。
+            entity.Property(item => item.Version).IsConcurrencyToken();
+        });
+
+        modelBuilder.Entity<SettingsAuditRecord>(entity =>
+        {
+            entity.ToTable("system_setting_audits");
+            entity.HasKey(item => item.Id);
+            entity.HasIndex(item => new { item.Key, item.OccurredAt });
+            entity.Property(item => item.Key).HasMaxLength(SystemSetting.MaxKeyLength).IsRequired();
+            entity.Property(item => item.Action).HasMaxLength(16).IsRequired();
+            entity.Property(item => item.OldValue).HasMaxLength(SettingsAuditEntry.MaxValueLength).IsRequired();
+            entity.Property(item => item.NewValue).HasMaxLength(SettingsAuditEntry.MaxValueLength).IsRequired();
         });
     }
 }
@@ -264,4 +288,27 @@ public sealed class EvidenceRecord
     public DateTimeOffset CreatedAt { get; set; }
     public string ScanStatus { get; set; } = "Pending";
     public DateTimeOffset? ScannedAt { get; set; }
+}
+
+/// <summary>运营可配置项的覆盖值：等于“这条键被后台显式改过”，删除即恢复默认。机密在 <see cref="Value"/> 里是密文。</summary>
+public sealed class SystemSettingRecord
+{
+    public string Key { get; set; } = "";
+    public string Value { get; set; } = "";
+    public bool IsSecret { get; set; }
+    public int Version { get; set; }
+    public Guid UpdatedBy { get; set; }
+    public DateTimeOffset UpdatedAt { get; set; }
+}
+
+/// <summary>配置变更审计，只追加；取值已由应用层脱敏。</summary>
+public sealed class SettingsAuditRecord
+{
+    public Guid Id { get; set; }
+    public string Key { get; set; } = "";
+    public string Action { get; set; } = "Update";
+    public string OldValue { get; set; } = "";
+    public string NewValue { get; set; } = "";
+    public Guid ActorId { get; set; }
+    public DateTimeOffset OccurredAt { get; set; }
 }

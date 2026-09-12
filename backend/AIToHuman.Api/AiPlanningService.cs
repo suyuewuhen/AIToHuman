@@ -4,16 +4,24 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using AIToHuman.Api;
+using AIToHuman.Application.Settings;
 using AIToHuman.Contracts.Tasks;
 using AIToHuman.Domain.Conversations;
-using Microsoft.Extensions.Options;
 
+/// <summary>
+/// AI 集成的默认值。真正生效的值来自设置提供者（数据库覆盖 → 环境变量/配置文件 → 这里的默认值），
+/// 因此运营后台改完密钥或模型后，下一轮对话就会用新值，不需要重启进程。
+/// </summary>
 public sealed class VolcengineAiOptions
 {
-    public string BaseUrl { get; set; } = "https://ark.cn-beijing.volces.com/api/v3";
+    public const string DefaultBaseUrl = "https://ark.cn-beijing.volces.com/api/v3";
+    public const string DefaultModel = "glm-4-7-251222";
+    public const int DefaultTimeoutSeconds = 120;
+
+    public string BaseUrl { get; set; } = DefaultBaseUrl;
     public string ApiKey { get; set; } = string.Empty;
-    public string Model { get; set; } = "glm-4-7-251222";
-    public int TimeoutSeconds { get; set; } = 120;
+    public string Model { get; set; } = DefaultModel;
+    public int TimeoutSeconds { get; set; } = DefaultTimeoutSeconds;
 }
 
 public sealed class AiPlanningTimeoutException(int timeoutSeconds, Exception innerException)
@@ -42,9 +50,18 @@ public sealed record AiPlanningCompletedEvent(AiConversationTurnResponse Turn) :
 /// <summary>重试前通知页面丢弃已经显示的这一轮回复，避免两段内容拼接。</summary>
 public sealed record AiPlanningRestartEvent(string Reason) : AiPlanningStreamEvent;
 
-public sealed class AiPlanningService(HttpClient httpClient, IOptions<VolcengineAiOptions> options, TimeProvider timeProvider, ILogger<AiPlanningService> logger)
+public sealed class AiPlanningService(HttpClient httpClient, ISettingsProvider settingsProvider, TimeProvider timeProvider, ILogger<AiPlanningService> logger)
 {
-    private readonly VolcengineAiOptions settings = options.Value;
+    /// <summary>把运营配置解析成这一轮要用的值；每次都重新读，热更新立即生效。</summary>
+    private VolcengineAiOptions ResolveSettings() => new()
+    {
+        BaseUrl = settingsProvider.GetValue(SettingKeys.AiBaseUrl) ?? VolcengineAiOptions.DefaultBaseUrl,
+        ApiKey = settingsProvider.GetValue(SettingKeys.AiApiKey) ?? string.Empty,
+        Model = settingsProvider.GetValue(SettingKeys.AiModel) ?? VolcengineAiOptions.DefaultModel,
+        TimeoutSeconds = settingsProvider.GetInt(SettingKeys.AiInactivityTimeoutSeconds) ?? VolcengineAiOptions.DefaultTimeoutSeconds
+    };
+
+    private string CurrentModel => settingsProvider.GetValue(SettingKeys.AiModel) ?? VolcengineAiOptions.DefaultModel;
 
     /// <summary>产品面向国内用户，模型未带时区偏移时按北京时间解释，避免服务器时区影响截止时间。</summary>
     private static readonly TimeSpan ChinaStandardOffset = TimeSpan.FromHours(8);
@@ -104,8 +121,9 @@ public sealed class AiPlanningService(HttpClient httpClient, IOptions<Volcengine
         IReadOnlyList<AiConversationMessage> messages,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
+        var settings = ResolveSettings();
         if (string.IsNullOrWhiteSpace(settings.ApiKey))
-            throw new InvalidOperationException("AI 服务尚未配置 API Key，请设置 VolcengineAI__ApiKey。");
+            throw new InvalidOperationException("AI 服务尚未配置 API Key：请在运营后台设置 ai.apiKey，或配置环境变量 VolcengineAI__ApiKey。");
 
         var conversation = ValidateConversation(messages);
         var now = timeProvider.GetUtcNow();
@@ -275,10 +293,10 @@ public sealed class AiPlanningService(HttpClient httpClient, IOptions<Volcengine
     }
 
     private void LogTimeout(int timeoutSeconds, Exception exception) =>
-        logger.LogWarning(exception, "AI 对话流连续 {TimeoutSeconds} 秒未返回数据，模型为 {Model}。", timeoutSeconds, settings.Model);
+        logger.LogWarning(exception, "AI 对话流连续 {TimeoutSeconds} 秒未返回数据，模型为 {Model}。", timeoutSeconds, CurrentModel);
 
     private void LogUnavailable(Exception exception) =>
-        logger.LogWarning(exception, "无法连接 AI 对话服务，模型为 {Model}。", settings.Model);
+        logger.LogWarning(exception, "无法连接 AI 对话服务，模型为 {Model}。", CurrentModel);
 
     private void LogRetry(int attempt, AiPlanningFormatException failure) =>
         logger.LogWarning("AI 输出未通过校验，准备第 {Attempt} 次尝试：{Reason}", attempt, failure.Message);

@@ -18,7 +18,12 @@ using AIToHuman.Application.Orders;
 using AIToHuman.Application.Notifications;
 using AIToHuman.Api;
 using AIToHuman.Api.Notifications;
+using AIToHuman.Api.Settings;
+using AIToHuman.Application.Settings;
+using AIToHuman.Contracts.Settings;
 using AIToHuman.Infrastructure.Persistence;
+using AIToHuman.Infrastructure.Settings;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Mvc;
@@ -28,7 +33,24 @@ using System.Security.Claims;
 using System.Text.Json;
 
 var builder = WebApplication.CreateBuilder(args);
-builder.Services.Configure<VolcengineAiOptions>(builder.Configuration.GetSection("VolcengineAI"));
+// 运营可配置项：生效值 = 数据库覆盖 → 环境变量/配置文件 → 代码默认值（设置目录见 SettingCatalog）。
+// 机密用 Data Protection 加密落库，密钥环来自部署环境（DataProtection__KeysPath 可指到持久卷）。
+var dataProtection = builder.Services.AddDataProtection().SetApplicationName("AIToHuman");
+var dataProtectionKeysPath = builder.Configuration["DataProtection:KeysPath"];
+if (!string.IsNullOrWhiteSpace(dataProtectionKeysPath))
+    dataProtection.PersistKeysToFileSystem(new DirectoryInfo(dataProtectionKeysPath));
+
+builder.Services.AddSingleton<SettingsCache>();
+builder.Services.AddSingleton<ISettingsProvider, DatabaseSettingsProvider>();
+builder.Services.AddSingleton<SettingsSnapshotReloader>();
+builder.Services.AddSingleton<ISettingsReloader>(provider => provider.GetRequiredService<SettingsSnapshotReloader>());
+builder.Services.AddSingleton<ISecretProtector, DataProtectionSecretProtector>();
+builder.Services.AddScoped<SettingsSnapshotBuilder>();
+builder.Services.AddScoped<ISettingProbe, SettingProbe>();
+builder.Services.AddScoped<SettingsService>();
+builder.Services.AddHostedService<SettingsRefreshService>();
+builder.Services.AddHttpClient("settings-probe", client => client.Timeout = Timeout.InfiniteTimeSpan);
+
 builder.Services.AddHttpClient<AiPlanningService>(client => client.Timeout = Timeout.InfiniteTimeSpan);
 
 var signingKey = builder.Configuration["Authentication:SigningKey"];
@@ -47,6 +69,7 @@ if (usePostgres)
     builder.Services.AddScoped<INotificationRepository, EfNotificationRepository>();
     builder.Services.AddScoped<IOrderMessageRepository, EfOrderMessageRepository>();
     builder.Services.AddScoped<IEvidenceRepository, EfEvidenceRepository>();
+    builder.Services.AddScoped<ISystemSettingsRepository, EfSystemSettingRepository>();
     builder.Services.AddScoped<IUnitOfWork, EfUnitOfWork>();
     builder.Services.AddScoped<AuthService>();
 }
@@ -59,16 +82,19 @@ else
     builder.Services.AddSingleton<INotificationRepository, InMemoryNotificationRepository>();
     builder.Services.AddSingleton<IOrderMessageRepository, InMemoryOrderMessageRepository>();
     builder.Services.AddSingleton<IEvidenceRepository, InMemoryEvidenceRepository>();
+    builder.Services.AddSingleton<ISystemSettingsRepository, InMemorySystemSettingRepository>();
     builder.Services.AddSingleton<IUnitOfWork, InMemoryUnitOfWork>();
 }
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSignalR();
 builder.Services.AddScoped<NotificationService>();
 builder.Services.AddScoped<OrderChatService>();
-// 凭证文件存储：Development 用本机目录；生产替换为私有对象存储，并接入真实安全扫描。
-builder.Services.Configure<ObjectStorageOptions>(builder.Configuration.GetSection("ObjectStorage"));
-builder.Services.AddSingleton<IFileStorage, LocalFileStorage>();
-builder.Services.AddSingleton<IEvidenceScanner, NoOpEvidenceScanner>();
+// 凭证文件存储与内容扫描都由运营配置决定（storage.provider / evidence.scanner.provider）：
+// 本机目录实现用于开发与试点；接入对象存储时补一个 IFileStorage 实现并切换设置即可，不用改业务代码。
+builder.Services.AddSingleton<LocalFileStorage>();
+builder.Services.AddSingleton<IFileStorage, SettingsFileStorage>();
+builder.Services.AddHttpClient<HttpEvidenceScanner>(client => client.Timeout = Timeout.InfiniteTimeSpan);
+builder.Services.AddScoped<IEvidenceScanner>(provider => provider.GetRequiredService<HttpEvidenceScanner>());
 builder.Services.AddScoped<EvidenceService>();
 builder.Services.AddScoped<TaskService>();
 builder.Services.AddScoped<ConversationService>();
@@ -97,7 +123,12 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJw
         ClockSkew = TimeSpan.FromSeconds(30)
     };
 });
-builder.Services.AddAuthorization();
+// 运营后台：管理员名单来自部署配置（Admin__UserIds / Admin__Emails），刻意不放配置表，避免权限自举。
+var adminAccess = new AdminAccess(builder.Configuration);
+builder.Services.AddSingleton(adminAccess);
+builder.Services.AddAuthorization(options => options.AddPolicy(
+    AdminAccess.PolicyName,
+    policy => policy.RequireAssertion(context => adminAccess.IsAdmin(context.User))));
 builder.Services.AddCors(options => options.AddPolicy("development", policy => policy
     .WithOrigins("http://localhost:5173")
     .AllowAnyHeader()
@@ -119,6 +150,12 @@ if (app.Environment.IsDevelopment() && usePostgres)
     }
 }
 
+if (adminAccess.IsEmpty)
+    app.Logger.LogWarning("未配置运营管理员（Admin__UserIds 或 Admin__Emails），/api/v1/admin/settings 会对所有请求返回 403。");
+
+// 配置快照必须在开始处理请求前就绪；数据库暂时不可用时先退回环境变量与默认值，后台任务会继续重试。
+SettingsStartup.Initialize(app.Services, app.Logger);
+
 app.UseExceptionHandler(errorApp => errorApp.Run(async context =>
 {
     var exception = context.Features.Get<IExceptionHandlerFeature>()?.Error;
@@ -128,6 +165,7 @@ app.UseExceptionHandler(errorApp => errorApp.Run(async context =>
         AiPlanningUnavailableException => (StatusCodes.Status502BadGateway, "AI 规划服务暂时不可用"),
         AiPlanningUpstreamException => (StatusCodes.Status502BadGateway, "AI 规划服务请求失败"),
         DbUpdateConcurrencyException => (StatusCodes.Status409Conflict, "资源已被其他操作更新"),
+        ConcurrencyConflictException => (StatusCodes.Status409Conflict, "配置已被其他操作更新"),
         ArgumentException => (StatusCodes.Status400BadRequest, "请求参数不正确"),
         DomainException => (StatusCodes.Status422UnprocessableEntity, "业务规则不允许该操作"),
         BadHttpRequestException => (StatusCodes.Status400BadRequest, "请求格式不正确"),
@@ -147,7 +185,7 @@ app.UseExceptionHandler(errorApp => errorApp.Run(async context =>
         {
             // EF 的并发异常文案是技术细节，这里换成用户能理解并据以重试的说明。
             DbUpdateConcurrencyException => "该任务或订单刚刚被其他人更新，请刷新后重试。",
-            ArgumentException or DomainException or KeyNotFoundException or UnauthorizedAccessException or AiPlanningTimeoutException or AiPlanningUnavailableException or AiPlanningUpstreamException => exception.Message,
+            ArgumentException or DomainException or KeyNotFoundException or UnauthorizedAccessException or AiPlanningTimeoutException or AiPlanningUnavailableException or AiPlanningUpstreamException or ConcurrencyConflictException => exception.Message,
             _ => "请求暂时无法处理。"
         },
         Instance = context.Request.Path
@@ -355,7 +393,35 @@ app.MapGet("/api/v1/orders/{id:guid}/reviews", (Guid id, ClaimsPrincipal user, I
 app.MapPost("/api/v1/orders/{id:guid}/reviews", (Guid id, CreateReviewRequest request, ClaimsPrincipal user, IHostEnvironment environment, TaskService service) => Results.Ok(service.CreateReview(id, request with { ReviewerId = ResolveUserId(user, request.ReviewerId, environment) }, ResolveUserId(user, request.ReviewerId, environment))));
 app.MapGet("/api/v1/users/{id:guid}/review-summary", (Guid id, TaskService service) => Results.Ok(service.GetReviewSummary(id)));
 
+// 运营配置：只有管理员名单里的人可以读写。机密值只返回掩码与指纹，明文永远不出服务端。
+var adminSettings = app.MapGroup("/api/v1/admin/settings").RequireAuthorization(AdminAccess.PolicyName);
+adminSettings.MapGet("/", (SettingsService service) => Results.Ok(service.List()));
+adminSettings.MapGet("/audits", (int? limit, SettingsService service) => Results.Ok(service.Audits(limit ?? 50)));
+adminSettings.MapGet("/{key}", (string key, SettingsService service) => Results.Ok(service.Get(key)));
+adminSettings.MapPut("/{key}", async (string key, UpdateSettingRequest request, ClaimsPrincipal user, SettingsService service, CancellationToken cancellationToken) =>
+{
+    var actorId = ResolveAdminId(user);
+    var updated = await service.UpdateAsync(key, request, actorId, cancellationToken);
+    app.Logger.LogInformation("运营配置 {Key} 已由 {ActorId} 更新，当前来源 {Source}。", updated.Key, actorId, updated.Source);
+    return Results.Ok(updated);
+});
+adminSettings.MapDelete("/{key}", async (string key, ClaimsPrincipal user, SettingsService service, CancellationToken cancellationToken) =>
+{
+    var actorId = ResolveAdminId(user);
+    var reset = await service.ResetAsync(key, actorId, cancellationToken);
+    app.Logger.LogInformation("运营配置 {Key} 已由 {ActorId} 恢复默认，当前来源 {Source}。", reset.Key, actorId, reset.Source);
+    return Results.Ok(reset);
+});
+adminSettings.MapPost("/{key}/test", async (string key, SettingsService service, CancellationToken cancellationToken) =>
+    Results.Ok(await service.TestAsync(key, cancellationToken)));
+
 app.Run();
+
+/// <summary>运营接口的操作人：管理员策略已经放行，这里取出用于审计的用户标识。</summary>
+static Guid ResolveAdminId(ClaimsPrincipal user) =>
+    Guid.TryParse(user.FindFirstValue(ClaimTypes.NameIdentifier), out var userId)
+        ? userId
+        : throw new UnauthorizedAccessException("运营接口必须携带可识别的管理员身份。");
 
 static Guid ResolveUserId(ClaimsPrincipal user, Guid developmentFallback, IHostEnvironment environment)
 {

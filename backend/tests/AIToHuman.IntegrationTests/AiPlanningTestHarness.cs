@@ -1,9 +1,10 @@
+using System.Globalization;
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using AIToHuman.Application.Settings;
 using AIToHuman.Contracts.Tasks;
 using Microsoft.Extensions.Logging.Abstractions;
-using Microsoft.Extensions.Options;
 
 namespace AIToHuman.IntegrationTests;
 
@@ -160,6 +161,27 @@ internal sealed class FakeEvidenceScanner(AIToHuman.Domain.Orders.EvidenceScanSt
     }
 }
 
+/// <summary>配置提供者的替身：只认给定的键值，来源统一算作配置文件。</summary>
+internal sealed class StubSettingsProvider(Dictionary<string, string> values) : ISettingsProvider
+{
+    public string? GetValue(string key) => values.TryGetValue(key, out var value) ? value : null;
+
+    public SettingSource GetSource(string key) => values.ContainsKey(key) ? SettingSource.Configuration : SettingSource.Default;
+
+    /// <summary>AI 相关配置的常用组合。</summary>
+    public static StubSettingsProvider Ai(string apiKey = "test-key", string model = "test-model", int timeoutSeconds = 120, string baseUrl = "https://ark.invalid/api/v3") =>
+        new(new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            [SettingKeys.AiBaseUrl] = baseUrl,
+            [SettingKeys.AiApiKey] = apiKey,
+            [SettingKeys.AiModel] = model,
+            [SettingKeys.AiInactivityTimeoutSeconds] = timeoutSeconds.ToString(CultureInfo.InvariantCulture)
+        });
+
+    public static StubSettingsProvider Of(params (string Key, string Value)[] entries) =>
+        new(entries.ToDictionary(item => item.Key, item => item.Value, StringComparer.Ordinal));
+}
+
 internal static class Harness
 {
     public static readonly DateTimeOffset Now = new(2026, 9, 10, 8, 0, 0, TimeSpan.Zero);
@@ -167,13 +189,7 @@ internal static class Harness
     public static AiPlanningService CreateService(StubUpstreamHandler handler, int timeoutSeconds = 120, string apiKey = "test-key") =>
         new(
             new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan },
-            Options.Create(new VolcengineAiOptions
-            {
-                BaseUrl = "https://ark.invalid/api/v3",
-                ApiKey = apiKey,
-                Model = "test-model",
-                TimeoutSeconds = timeoutSeconds
-            }),
+            StubSettingsProvider.Ai(apiKey: apiKey, timeoutSeconds: timeoutSeconds),
             new FixedTimeProvider(Now),
             NullLogger<AiPlanningService>.Instance);
 
