@@ -316,5 +316,11 @@ h1 em { color: var(--acid); font-style: normal; }
 .setting-audit p { margin: 0; color: #626b66; font-size: 11px; }
 .setting-audit b { color: var(--ink); }
 
+/* 运营后台的任务/用户检索行 */
+.admin-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.admin-row strong { font-size: 12px; }
+.admin-row small { display: block; margin-top: 4px; color: #747b77; font-size: 10px; }
+.admin-row input { flex: 1 1 200px; min-width: 160px; padding: 8px 10px; border: 1px solid var(--line); background: #fffdf7; color: var(--ink); }
+
 /* 凭证面板里的扫描说明 */
 .evidence-note { display: block; margin-top: 3px; color: #8a6100; font-size: 10px; line-height: 1.5; }

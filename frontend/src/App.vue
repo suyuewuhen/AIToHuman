@@ -8,6 +8,7 @@ import { listOrderMessages, markOrderMessagesRead, sendOrderMessage, type OrderM
 import { absoluteMaxEvidenceBytes, allowedEvidenceTypes, downloadEvidence, listOrderEvidence, uploadOrderEvidence, type EvidenceItem } from './api/evidence'
 import { continueTaskConversation, type AiTaskPlan } from './api/ai'
 import { createConversation, getConversation, type Conversation } from './api/conversations'
+import { adminTaskStatusLabel, cancelAdminTask, listAdminAudits, searchAdminTasks, searchAdminUsers, type AdminAuditItem, type AdminTaskItem, type AdminUserItem } from './api/admin'
 import { listSettingAudits, listSettings, resetSetting, settingChoiceLabel, settingSourceLabel, testSetting, updateSetting, type AdminSetting, type SettingAudit, type SettingTestResult } from './api/settings'
 
 type Step = { label: string; done: boolean }
@@ -155,7 +156,7 @@ function evidenceStatusLabel(status: string) {
 
 // 运营配置：入口只对管理员展示，真正的授权在服务端（/api/v1/admin/settings 需要管理员身份）。
 const settingsOpen = ref(false)
-const settingsTab = ref<'values' | 'audits'>('values')
+const settingsTab = ref<'values' | 'audits' | 'tasks' | 'users'>('values')
 const settingsLoading = ref(false)
 const settingsError = ref('')
 const settingsNotice = ref('')
@@ -164,6 +165,19 @@ const settingsDrafts = ref<Record<string, string>>({})
 const settingsBusyKey = ref('')
 const settingsTests = ref<Record<string, SettingTestResult>>({})
 const settingsAudits = ref<SettingAudit[]>([])
+
+// 运营后台的人工兜底：风险规则引擎还没实现，所以这里是纯人工检索与下架。
+const adminTaskKeyword = ref('')
+const adminTaskStatus = ref('')
+const adminTasks = ref<AdminTaskItem[]>([])
+const adminTaskBusy = ref(false)
+const adminTaskError = ref('')
+const adminTaskNotice = ref('')
+const adminCancelTaskId = ref('')
+const adminCancelReason = ref('')
+const adminUserKeyword = ref('')
+const adminUsers = ref<AdminUserItem[]>([])
+const adminAudits = ref<AdminAuditItem[]>([])
 
 const isAdmin = computed(() => authUser.value?.isAdmin === true)
 const settingsGroups = computed(() => {
@@ -278,6 +292,74 @@ async function runSettingTest(item: AdminSetting) {
     settingsError.value = error instanceof Error ? error.message : '自检失败'
   } finally {
     settingsBusyKey.value = ''
+  }
+}
+
+async function loadAdminTasks() {
+  adminTaskBusy.value = true
+  adminTaskError.value = ''
+  adminTaskNotice.value = ''
+  try {
+    const result = await searchAdminTasks(adminTaskKeyword.value, adminTaskStatus.value)
+    adminTasks.value = result.items
+    if (result.items.length === 0) adminTaskNotice.value = '没有匹配的任务。'
+  } catch (error) {
+    adminTaskError.value = error instanceof Error ? error.message : '检索任务失败'
+  } finally {
+    adminTaskBusy.value = false
+  }
+}
+
+function startAdminCancel(task: AdminTaskItem) {
+  adminCancelTaskId.value = task.id
+  adminCancelReason.value = ''
+  adminTaskError.value = ''
+  adminTaskNotice.value = ''
+}
+
+async function confirmAdminCancel(task: AdminTaskItem) {
+  if (!adminCancelReason.value.trim()) {
+    adminTaskError.value = '下架任务必须填写原因，原因会记进运营审计。'
+    return
+  }
+
+  adminTaskBusy.value = true
+  adminTaskError.value = ''
+  try {
+    const updated = await cancelAdminTask(task.id, adminCancelReason.value.trim())
+    adminTaskNotice.value = `任务「${updated.title}」已下架，原因已写入运营审计。`
+    adminCancelTaskId.value = ''
+    await loadAdminTasks()
+  } catch (error) {
+    adminTaskError.value = error instanceof Error ? error.message : '下架失败'
+  } finally {
+    adminTaskBusy.value = false
+  }
+}
+
+async function loadAdminUsers() {
+  adminTaskBusy.value = true
+  adminTaskError.value = ''
+  try {
+    adminUsers.value = (await searchAdminUsers(adminUserKeyword.value)).items
+  } catch (error) {
+    adminTaskError.value = error instanceof Error ? error.message : '检索用户失败'
+  } finally {
+    adminTaskBusy.value = false
+  }
+}
+
+async function loadAdminAudits() {
+  settingsTab.value = 'audits'
+  settingsLoading.value = true
+  settingsError.value = ''
+  try {
+    adminAudits.value = await listAdminAudits(20)
+    settingsAudits.value = await listSettingAudits(20)
+  } catch (error) {
+    settingsError.value = error instanceof Error ? error.message : '读取审计失败'
+  } finally {
+    settingsLoading.value = false
   }
 }
 
@@ -1208,15 +1290,70 @@ onMounted(async () => {
         <p class="settings-hint">生效顺序：后台覆盖 → 部署配置 → 代码默认值。机密只以掩码展示、审计也只留掩码；保存后立即生效，不需要重启服务。</p>
         <div class="settings-tabs">
           <button type="button" :class="{ selected: settingsTab === 'values' }" @click="settingsTab = 'values'">配置项 <b>{{ settingsItems.length }}</b></button>
-          <button type="button" :class="{ selected: settingsTab === 'audits' }" @click="loadSettingAudits()">变更记录</button>
-          <button type="button" class="settings-refresh" :disabled="settingsLoading" @click="settingsTab === 'audits' ? loadSettingAudits() : loadSettings()">{{ settingsLoading ? '读取中…' : '刷新 ↻' }}</button>
+          <button type="button" :class="{ selected: settingsTab === 'audits' }" @click="loadAdminAudits()">变更记录</button>
+          <button type="button" :class="{ selected: settingsTab === 'tasks' }" @click="settingsTab = 'tasks'; loadAdminTasks()">任务检索</button>
+          <button type="button" :class="{ selected: settingsTab === 'users' }" @click="settingsTab = 'users'; loadAdminUsers()">用户检索</button>
+          <button type="button" class="settings-refresh" :disabled="settingsLoading || adminTaskBusy" @click="settingsTab === 'audits' ? loadAdminAudits() : (settingsTab === 'tasks' ? loadAdminTasks() : (settingsTab === 'users' ? loadAdminUsers() : loadSettings()))">{{ settingsLoading || adminTaskBusy ? '读取中…' : '刷新 ↻' }}</button>
         </div>
         <p v-if="settingsError" class="auth-error">{{ settingsError }}</p>
         <p v-if="settingsNotice" class="settings-notice">{{ settingsNotice }}</p>
 
-        <div v-if="settingsTab === 'audits'" class="settings-body">
-          <span v-if="settingsAudits.length === 0" class="settings-empty">还没有变更记录。</span>
-          <div v-for="audit in settingsAudits" v-else :key="audit.id" class="setting-audit">
+        <div v-if="settingsTab === 'tasks'" class="settings-body">
+          <p class="settings-hint">跨所有者检索任务，并对尚未分配的任务做人工下架（原因会写进运营审计）。风险规则引擎还没实现，这里没有任何自动判定，只是人工兜底。</p>
+          <div class="setting-control">
+            <input v-model.trim="adminTaskKeyword" type="text" placeholder="按标题 / 描述 / 区域搜索" @keyup.enter="loadAdminTasks()" />
+            <select v-model="adminTaskStatus">
+              <option value="">全部状态</option>
+              <option value="ReadyToPublish">草稿</option>
+              <option value="Published">大厅中</option>
+              <option value="Assigned">已分配</option>
+              <option value="Closed">已结束</option>
+              <option value="Cancelled">已下架</option>
+            </select>
+            <button type="button" class="settings-primary" :disabled="adminTaskBusy" @click="loadAdminTasks()">检索</button>
+          </div>
+          <p v-if="adminTaskError" class="auth-error">{{ adminTaskError }}</p>
+          <p v-if="adminTaskNotice" class="settings-notice">{{ adminTaskNotice }}</p>
+          <span v-if="adminTasks.length === 0" class="settings-empty">还没有检索结果。</span>
+          <div v-for="task in adminTasks" v-else :key="task.id" class="admin-row">
+            <div>
+              <strong>{{ task.title }}</strong>
+              <small>{{ adminTaskStatusLabel(task.status) }} · {{ task.district }} · ¥{{ task.rewardAmount }} · 报名 {{ task.applicationCount }}<template v-if="task.orderStatus"> · 订单 {{ task.orderStatus }}</template> · {{ task.ownerDisplayName ?? '未知需求方' }}{{ task.ownerEmail ? `（${task.ownerEmail}）` : '' }}</small>
+              <small class="evidence-note">任务号 {{ task.id.slice(0, 8) }}</small>
+            </div>
+            <div class="setting-actions">
+              <button v-if="adminCancelTaskId !== task.id" type="button" class="settings-secondary danger" :disabled="adminTaskBusy || task.status === 'Cancelled'" @click="startAdminCancel(task)">下架</button>
+              <template v-else>
+                <input v-model.trim="adminCancelReason" type="text" placeholder="填写下架原因（必填）" />
+                <button type="button" class="settings-secondary danger" :disabled="adminTaskBusy" @click="confirmAdminCancel(task)">确认下架</button>
+                <button type="button" class="settings-secondary" :disabled="adminTaskBusy" @click="adminCancelTaskId = ''">取消</button>
+              </template>
+            </div>
+          </div>
+        </div>
+
+        <div v-else-if="settingsTab === 'users'" class="settings-body">
+          <p class="settings-hint">按邮箱或昵称检索用户；没有配置 PostgreSQL 时返回空列表。</p>
+          <div class="setting-control">
+            <input v-model.trim="adminUserKeyword" type="text" placeholder="按邮箱 / 昵称搜索" @keyup.enter="loadAdminUsers()" />
+            <button type="button" class="settings-primary" :disabled="adminTaskBusy" @click="loadAdminUsers()">检索</button>
+          </div>
+          <span v-if="adminUsers.length === 0" class="settings-empty">还没有检索结果。</span>
+          <div v-for="user in adminUsers" v-else :key="user.id" class="admin-row">
+            <div>
+              <strong>{{ user.displayName }}</strong>
+              <small>{{ user.email }} · {{ user.role === 'worker' ? '服务者' : '需求方' }} · {{ formatDeadline(user.createdAt) }}</small>
+            </div>
+          </div>
+        </div>
+
+        <div v-else-if="settingsTab === 'audits'" class="settings-body">
+          <span v-if="adminAudits.length === 0 && settingsAudits.length === 0" class="settings-empty">还没有变更记录。</span>
+          <div v-for="audit in adminAudits" :key="audit.id" class="setting-audit">
+            <div><strong>{{ audit.action }} · {{ audit.targetType }}</strong><small>{{ formatDeadline(audit.occurredAt) }} · {{ audit.actorId.slice(0, 8) }}</small></div>
+            <p><span>{{ audit.targetId.slice(0, 8) }}</span> → <b>{{ audit.reason }}</b></p>
+          </div>
+          <div v-for="audit in settingsAudits" :key="audit.id" class="setting-audit">
             <div><strong>{{ settingLabel(audit.key) }}</strong><small>{{ audit.action === 'Reset' ? '恢复默认' : '更新' }} · {{ formatDeadline(audit.occurredAt) }}</small></div>
             <p><span>{{ audit.oldValue }}</span> → <b>{{ audit.newValue }}</b></p>
           </div>

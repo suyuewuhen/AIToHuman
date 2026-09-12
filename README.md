@@ -42,7 +42,7 @@ AIToHuman 是一个“AI 任务管家 + 真人服务任务大厅”平台。用�
 AIToHuman/
 ├── frontend/                       # Vue 用户端与服务者端（单页工作台）
 │   └── src/
-│       ├── api/                    # AI SSE、认证、会话、任务、订单消息、凭证、评价、运营配置、SignalR 客户端
+│       ├── api/                    # AI SSE、认证、会话、任务、订单消息、凭证、评价、运营配置，SignalR 客户端
 │       ├── App.vue                 # 对话工作台、草稿、大厅、订单、会话弹窗、凭证面板与运营配置
 │       └── styles.css
 ├── backend/
