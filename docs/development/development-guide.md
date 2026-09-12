@@ -43,8 +43,8 @@
 
 ## 4. 测试策略
 
-- 单元测试：领域状态机、风险规则、金额和权限决策。
-- 集成测试：真实 PostgreSQL/Redis/对象存储兼容服务下的 API 与持久化。
+- 单元测试：领域状态机、风险规则、金额和权限决策（`backend/tests/AIToHuman.Domain.Tests`）。
+- 集成测试：应用用例、事务边界与 AI 协议（`backend/tests/AIToHuman.IntegrationTests`）。当前这批用例走上游替身与内存仓储，不需要数据库；**真实 PostgreSQL、Redis 与对象存储兼容服务下的 API/持久化自动化测试尚未建立**，真实数据库目前依靠 `handoff.md` 第 11 节列出的手工端到端验证。
 - AI 协议集成测试：`backend/tests/AIToHuman.IntegrationTests` 用替身上游覆盖 SSE 分片、转义、缺少结束标记、超时与上游错误，不联网也不依赖数据库。
 - 契约测试：OpenAPI、生成客户端和 Problem Details。
 - 端到端测试：AI 草稿到任务完成的关键路径。
@@ -78,10 +78,13 @@ ObjectStorage__Endpoint
 ObjectStorage__Bucket
 ObjectStorage__AccessKey
 ObjectStorage__SecretKey
+ObjectStorage__LocalRoot
 AI__Provider
 AI__ApiKey
 AI__Model
 ```
+
+`ObjectStorage__LocalRoot` 只在 Development 有效（凭证默认写到应用目录下的 `evidence`）；接入真实 Bucket 前，`ObjectStorage__Endpoint/Bucket/AccessKey/SecretKey` 都不会被读取。
 
 生产密钥由部署平台注入。仓库只保留非敏感默认值和变量说明。
 

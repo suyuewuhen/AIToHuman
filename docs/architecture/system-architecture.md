@@ -114,6 +114,8 @@ Domain 不引用 EF Core、HTTP、AI SDK 或对象存储 SDK。
 
 使用私有 Bucket。上传和下载采用短时效签名 URL，服务端核验订单权限后签发。禁止把永久公开 URL 保存为业务凭证。
 
+> 实现现状（⚠️）：已经抽出 `IFileStorage` 抽象，Development 用 `LocalFileStorage` 写入本机私有目录，**尚未接入 S3/OSS 与签名 URL**，下载走鉴权后的流式响应；`IEvidenceScanner` 目前是显式放行的占位实现（只打警告日志）。
+
 ## 7. AI 子系统
 
 AI 采用供应商无关适配层：
@@ -143,6 +145,8 @@ Conversation Orchestrator
 - 外部通知采用 Outbox Pattern，事务提交后异步发送。
 - 写操作接受 `Idempotency-Key`，服务端缓存或持久化处理结果。
 - 支付接入后，以支付方回调和内部账本为准，不相信前端结果。
+
+> 实现现状：`tasks`/`orders` 的 `Version` 乐观并发令牌、`IUnitOfWork` 显式事务（选人建单、验收关单）与 Outbox 通知都已落地，冲突返回 `409`；`Idempotency-Key` 尚未实现（见 `docs/development/handoff.md` 第 10 节）。
 
 ## 9. 可观测性
 

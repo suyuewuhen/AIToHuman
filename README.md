@@ -24,14 +24,14 @@ AIToHuman 是一个“AI 任务管家 + 真人服务任务大厅”平台。用�
 - 后端：ASP.NET Core 10 Minimal API、C#、Entity Framework Core
 - 架构：前后端分离的模块化单体，依赖方向 `Api → Application → Domain`
 - 数据：PostgreSQL（当前开发事实来源；未配置连接串时回退内存仓储）
-- 实时通信：SignalR（当前仅选人后的 `OrderCreated` 通知）
+- 实时通信：SignalR（订单创建、状态变化与新消息通知；持久化 Outbox + 后台派发 + 未读数收件箱，推送只是刷新提示）
 - AI：火山引擎 Ark OpenAI 兼容接口，SSE 流式多轮澄清
 - 本地依赖：`compose.yaml` 定义 PostgreSQL、Redis 和 MinIO
 
 规划中、代码尚未接入：
 
 - 前端 Pinia、Vue Router、Element Plus（当前是单页 `App.vue`，未引入路由和状态库）
-- Redis 缓存与分布式锁、Hangfire 后台作业、S3 兼容对象存储凭证
+- Redis 缓存与分布式锁、Hangfire 后台作业、S3 兼容对象存储（凭证目前写入本机私有目录，`IFileStorage` 已预留替换点）
 - Nginx 与生产环境部署编排
 
 ## 仓库结构
@@ -40,18 +40,18 @@ AIToHuman 是一个“AI 任务管家 + 真人服务任务大厅”平台。用�
 AIToHuman/
 ├── frontend/                       # Vue 用户端与服务者端（单页工作台）
 │   └── src/
-│       ├── api/                    # AI SSE、认证、任务、订单、评价、SignalR 客户端
-│       ├── App.vue                 # 对话工作台、草稿、大厅、订单与评价
+│       ├── api/                    # AI SSE、认证、会话、任务、订单消息、凭证、评价、SignalR 客户端
+│       ├── App.vue                 # 对话工作台、草稿、大厅、订单、会话弹窗与凭证面板
 │       └── styles.css
 ├── backend/
-│   ├── AIToHuman.Api/              # HTTP、JWT、AI SSE、SignalR Hub
+│   ├── AIToHuman.Api/              # HTTP、JWT、AI SSE、SignalR Hub、通知后台派发
 │   ├── AIToHuman.Application/      # 用例、仓储与通知接口
 │   ├── AIToHuman.Domain/           # 实体、值对象与状态机
-│   ├── AIToHuman.Infrastructure/   # EF Core、PostgreSQL 与内存仓储
+│   ├── AIToHuman.Infrastructure/   # EF Core、PostgreSQL、内存仓储与本机文件存储
 │   ├── AIToHuman.Contracts/        # 请求与响应 DTO
 │   └── tests/
 │       ├── AIToHuman.Domain.Tests/          # 领域单元测试
-│       └── AIToHuman.IntegrationTests/      # AI 多轮协议与 SSE 集成测试
+│       └── AIToHuman.IntegrationTests/      # 用例与 AI 多轮协议/SSE 集成测试
 ├── docs/
 │   ├── product/                    # 产品定位、MVP 与用户故事
 │   ├── architecture/               # 系统设计、领域模型与 ADR
@@ -87,13 +87,13 @@ AIToHuman/
 
 ## MVP 成功标准
 
-以下为 MVP 目标，不代表当前已具备的能力。截至 2026-09-10，AI 建单、固定悬赏报名、双向选择、订单状态流转和双向评价已可端到端演示；订单内沟通、文件凭证上传、禁止任务拦截和审计记录尚未实现（凭证目前只能提交文本说明）。
+以下为 MVP 目标，不代表当前已具备的能力。截至 2026-09-10，AI 建单、固定悬赏报名、双向选择、订单状态流转、订单内沟通（消息与未读）、执行凭证文件上传和双向评价已可端到端演示；禁止任务拦截、真实病毒/内容扫描和审计记录尚未实现（凭证扫描目前是显式放行的占位实现）。
 
 - ⚠️ 用户能在 AI 引导下生成一份字段完整、可编辑的任务草稿（草稿已生成，但只有悬赏可按 +5 调整，标题、描述、截止时间和验收标准不可在页面编辑）。
 - ✅ 用户能明确确认后发布任务，AI 不能绕过确认直接发布。
 - ✅ 服务者能查看任务悬赏和用户历史评价，并按固定悬赏报名。
 - ⚠️ 用户能查看报名服务者的历史评价并选择合适人选（选择报名者已实现，但报名列表不返回服务者评价，需求方目前看不到服务者信用）。
-- ⚠️ 双方能围绕订单沟通、更新进度并上传执行凭证（状态更新已实现，订单内消息和文件上传未实现）。
+- ✅ 双方能围绕订单沟通、更新进度并上传执行凭证（订单内消息与未读数、凭证上传与鉴权下载已实现；凭证内容扫描仍是占位实现，未接入真实杀毒或内容检测）。
 - ⚠️ 用户能验收、拒绝并说明原因，系统完整保留审计记录（验收与驳回原因已实现，审计记录未实现）。
 - ⛔ 禁止任务会被拦截，高风险任务不会自动进入大厅。
 
