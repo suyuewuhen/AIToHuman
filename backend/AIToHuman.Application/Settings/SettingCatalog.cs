@@ -25,6 +25,8 @@ public static class SettingKeys
     public const string EvidenceScannerApiKey = "evidence.scanner.apiKey";
     public const string EvidenceScannerTimeoutSeconds = "evidence.scanner.timeoutSeconds";
     public const string EvidenceScannerFailMode = "evidence.scanner.failMode";
+    public const string EvidenceScannerClamAvHost = "evidence.scanner.clamavHost";
+    public const string EvidenceScannerClamAvPort = "evidence.scanner.clamavPort";
 
     public const string EvidenceMaxSizeBytes = "evidence.maxSizeBytes";
     public const string EvidenceMaxPerOrder = "evidence.maxPerOrder";
@@ -65,7 +67,9 @@ public static class SettingCatalog
         new(SettingKeys.EvidenceStripMetadata, "凭证上传", "上传时去除元数据", "开启后，JPEG 的 EXIF/XMP 与注释、PNG 的文本/时间/EXIF 块、WebP 的 EXIF/XMP 块会被剥离（像素数据不动），避免顺手上传就把拍摄地点与设备信息暴露出去。关闭会保留原始文件，适合需要完整取证链的场景。", SettingValueKind.Bool, "true", "Settings:evidence:stripMetadata"),
         new(SettingKeys.EvidenceUploadsPerUserPerHour, "凭证上传", "每用户每小时上传上限", "同一个上传者一小时内最多提交几份凭证；按数据库计数，多实例部署同样生效。", SettingValueKind.Int, EvidenceUploadQuota.DefaultPerUserPerHour.ToString(CultureInfo.InvariantCulture), "Settings:evidence:uploadsPerUserPerHour", MinInt: EvidenceUploadQuota.MinPerUserPerHour, MaxInt: EvidenceUploadQuota.MaxPerUserPerHour),
 
-        new(SettingKeys.EvidenceScannerProvider, "内容扫描", "扫描方式", "none 表示未接入扫描（显式放行并打警告日志），http 表示调用下面配置的扫描服务。", SettingValueKind.Choice, "none", "Settings:evidence:scanner:provider", Choices: ["none", "http"]),
+        new(SettingKeys.EvidenceScannerProvider, "内容扫描", "扫描方式", "none 表示未接入扫描（显式放行并打警告日志）；http 调用下面配置的扫描服务；clamav 直连 clamd 的 INSTREAM 端口。", SettingValueKind.Choice, "none", "Settings:evidence:scanner:provider", Choices: ["none", "http", "clamav"]),
+        new(SettingKeys.EvidenceScannerClamAvHost, "内容扫描", "clamd 地址", "provider=clamav 时连接的 clamd 主机名或 IP。", SettingValueKind.String, "127.0.0.1", "Settings:evidence:scanner:clamavHost", MaxLength: 200),
+        new(SettingKeys.EvidenceScannerClamAvPort, "内容扫描", "clamd 端口", "clamd 的 INSTREAM 端口，默认 3310。", SettingValueKind.Int, "3310", "Settings:evidence:scanner:clamavPort", MinInt: 1, MaxInt: 65535),
         new(SettingKeys.EvidenceScannerEndpoint, "内容扫描", "扫描服务地址", "接收凭证内容并返回判定结果的服务地址；留空等于停用。", SettingValueKind.Url, SettingCatalog.Empty, "Settings:evidence:scanner:endpoint"),
         new(SettingKeys.EvidenceScannerApiKey, "内容扫描", "扫描服务 API Key", "调用扫描服务时放在 X-Api-Key 请求头里的密钥。", SettingValueKind.String, SettingCatalog.Empty, "Settings:evidence:scanner:apiKey", IsSecret: true, MaxLength: 400),
         new(SettingKeys.EvidenceScannerTimeoutSeconds, "内容扫描", "扫描超时（秒）", "单次扫描的等待上限，超时按失败模式处理。", SettingValueKind.Int, "15", "Settings:evidence:scanner:timeoutSeconds", MinInt: 1, MaxInt: 120),

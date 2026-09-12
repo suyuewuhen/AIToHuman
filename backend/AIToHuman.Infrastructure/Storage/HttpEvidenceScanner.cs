@@ -28,16 +28,6 @@ public sealed class HttpEvidenceScanner(
 
     public async Task<EvidenceScanStatus> ScanAsync(string storageKey, string contentType, CancellationToken cancellationToken = default)
     {
-        var provider = settings.GetChoice(SettingKeys.EvidenceScannerProvider, "none");
-        if (provider != "http")
-        {
-            logger.LogWarning(
-                "尚未接入凭证安全检查（provider={Provider}），已直接放行 {StorageKey}。生产环境请在运营后台切换为 http 并配置扫描服务。",
-                provider,
-                storageKey);
-            return EvidenceScanStatus.Clean;
-        }
-
         var endpoint = settings.GetValue(SettingKeys.EvidenceScannerEndpoint);
         if (string.IsNullOrWhiteSpace(endpoint))
         {

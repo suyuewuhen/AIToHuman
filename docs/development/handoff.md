@@ -135,10 +135,11 @@ docs/                             ai-planning、api/api-guidelines、architectur
 - 下载有两条路：默认 `GET /api/v1/evidence/{id}/content`（服务端鉴权后流式转发，两种存储都支持）；对象存储可用时还可以走 `GET /api/v1/evidence/{id}/download-url` 拿一条**短时直连签名地址**，浏览器直接去 Bucket 取字节，省掉一次转发。列表响应里的 `presignedDownloadAvailable` 告诉客户端该走哪条路。
 - 直连地址的有效期由 `evidence.downloadUrlLifetimeSeconds` 控制（默认 120 秒，范围 5 至 900）。有效期、对象路径、`response-content-disposition` 都参与签名，客户端改任何一项都会被对象存储拒绝（403）；权限与扫描门禁的判定和流式下载完全一致。
 - 扫描状态：`Pending`（不可下载）/`Clean`/`Rejected`，终态不可回退；被拒绝的内容不落库也不留在存储里。
-- 扫描方式与存储位置都不是写死的：`evidence.scanner.provider` 可选 `none`（显式放行并打警告日志）或 `http`（把内容 POST 给配置的扫描服务），扫描不可用时按 `failMode` 处理；`storage.provider` 可选 `local`（本机目录）或 `s3`（S3 兼容对象存储，已实现）。两者都在运营后台可改，见下面「运营可配置的三方集成参数」。
+- 扫描方式三选一（`evidence.scanner.provider`）：`none` 显式放行并打警告日志；`http` 把内容 POST 给配置的扫描服务；`clamav` 直连 clamd 的 INSTREAM 端口（`evidence.scanner.clamavHost` / `clamavPort`，默认 127.0.0.1:3310）。扫描不可用时按 `failMode` 处理（`closed` 保持待扫描、不可下载，`open` 放行）。三者都由 `SettingsEvidenceScanner` 按配置分派，因此在后台切换不需要重启。
+- ClamAV 走的是官方 INSTREAM 协议：连接后发 `zINSTREAM\0`，随后是「4 字节大端长度 + 数据」分块（64 KB 一块），最后发零长度块结束；clamd 回 `stream: OK` / `stream: <签名> FOUND` / `... ERROR`。**内容不落临时文件**，也不依赖任何厂商 SDK。
 - S3 兼容存储（`S3FileStorage`）：不依赖厂商 SDK，只用 `HttpClient` 加自己实现的 AWS Signature V4；路径风格请求 `{endpoint}/{bucket}/{prefix}{key}`，只签 `host`、`x-amz-content-sha256`、`x-amz-date`。上传、下载、存在性判断与删除四个操作齐全；密钥不全时按缺哪项报哪项，Bucket 不存在或密钥无权限时把 S3 的错误码翻译成可行动的说明。MinIO、阿里云 OSS、AWS S3 都能用，换服务商只改运营配置。
 - 切换 `storage.provider` **不会迁移已有文件**：从 s3 切回 local 之后，之前写进 Bucket 的凭证在本机目录里找不到，下载会 `404`。生产切换要么保持同一 provider，要么先把对象搬过去。
-- 尚未实现：图片重新编码（只剥元数据，不做像素级重编码），以及真实的病毒/内容扫描服务商接入（协议已实现，缺的是部署一个真实的扫描服务）。
+- 尚未实现：图片像素级重新编码；真实的病毒库由部署方自己维护（协议已实现并验证，缺的是部署一个真实的 clamd 或用真实服务商替换 `http` 实现）。
 
 ### 订单会话（聊天）
 
@@ -149,7 +150,7 @@ docs/                             ai-planning、api/api-guidelines、architectur
 
 ### 运营可配置的三方集成参数
 
-- 设置目录（白名单）在 `backend/AIToHuman.Application/Settings/SettingCatalog.cs`：目前 21 个键，分 AI 服务商、对象存储、凭证上传、内容扫描四组。只有登记在册的键才能被后台读写，`ConnectionStrings__Postgres`、日志、密钥环路径这类部署级配置永远不会出现在配置表里。
+- 设置目录（白名单）在 `backend/AIToHuman.Application/Settings/SettingCatalog.cs`：目前 25 个键，分 AI 服务商、对象存储、凭证上传、内容扫描四组。只有登记在册的键才能被后台读写，`ConnectionStrings__Postgres`、日志、密钥环路径这类部署级配置永远不会出现在配置表里。
 - 生效值的解析顺序固定为「数据库覆盖 → 环境变量/配置文件 → 代码默认值」。删除覆盖记录就等于恢复默认，不需要额外的启用/停用开关。
 - 运营接口（需管理员身份）：`GET /api/v1/admin/settings`、`GET /api/v1/admin/settings/{key}`、`PUT /api/v1/admin/settings/{key}`、`DELETE /api/v1/admin/settings/{key}`（恢复默认）、`POST /api/v1/admin/settings/{key}/test`（只读自检）、`GET /api/v1/admin/settings/audits`。
 - 机密（`ai.apiKey`、`storage.s3.secretAccessKey`、`evidence.scanner.apiKey`）用 Data Protection 加密后落库，密文带 `dp1:` 前缀；接口只返回 `****末四位` 与指纹，审计记录同样只留掩码与指纹，明文只在服务端内存里出现。
@@ -494,7 +495,7 @@ Order: Accepted → InProgress → Submitted → Approved
 
 - 扫描闭环端到端（真实 PostgreSQL + 真实 HTTP + 本地 TCP 扫描替身）：上传 67 字节 PNG 时替身返回 `pending` → 接口 `200`、`scanStatus=Pending`、`scanAttempts=1`、`isDownloadable=false`、下载 `403`；把替身改成 `clean` 后，后台重扫在 60 秒那一轮把它变为 `Clean`（`scanAttempts=2`、说明“重新扫描通过。”），需求方再下载拿到完全一致的 67 字节。替身日志显示两次调用依次是 `pending`、`clean`。
 - 可配置上传上限生效：把 `evidence.maxSizeBytes` 改成 1024 后上传 2048 字节返回 `413 凭证大小不能超过 1 KB。`，且磁盘上不留文件；`DELETE` 该配置后回到默认 5242880（`source=default`）。
-- 运营配置目录当时共 20 个键、四个分组：AI 服务商 / 对象存储 / 凭证上传 / 内容扫描（现在 21 个，凭证上传组多了直连下载有效期）。
+- 运营配置目录当时共 20 个键、四个分组：AI 服务商 / 对象存储 / 凭证上传 / 内容扫描（现在是 25 个：凭证上传组多了直连下载有效期、元数据开关、按人配额，内容扫描组多了 ClamAV 的地址与端口）。
 - 全新数据库：同一轮启动时 `Migrate()` 从零建库并应用全部 14 个迁移，随后在该库上完成上面的用例。
 
 本轮（S3 兼容对象存储）新增验证：
@@ -505,6 +506,13 @@ Order: Accepted → InProgress → Submitted → Approved
 - 短时直连下载地址端到端（真实 MinIO）：`GET /evidence/{id}/download-url` 返回带 `X-Amz-Signature` 的地址（`expiresAt` = 签发时刻 + 120 秒）；用**不带任何鉴权头的普通 HTTP GET**（等价于浏览器直接用这条地址）取回 67 字节且哈希与上传一致，响应头是 `Content-Disposition: attachment; filename="evidence-<id>.png"`（签名里的附件名参数生效）。
 - 防篡改与有效期（真实 MinIO 自己判定）：把签名末位改掉 → `403`；把路径里的对象 ID 换掉 → `403`（说明路径也在签名覆盖内）；把有效期配成 5 秒，签发后立刻取 → `200`，8 秒后再取 → `403`。非订单参与者申请地址 → `403`。
 - 不支持时的表现：把 `storage.provider` 切回 `local` 后，列表里 `presignedDownloadAvailable=false`，申请地址返回 `422 当前是本机目录存储，不能签发短时直连下载地址：请改用鉴权后的 /content 接口下载，或把 storage.provider 切到 s3。`（顺带修掉了“存储类错误文案被通用兜底吃掉”的问题，见下方修复）。
+
+本轮（元数据剥离、按人限速与 ClamAV）新增验证：
+
+- 元数据剥离端到端（真实 PostgreSQL + 本机目录存储）：上传 107 字节、带 `tEXt`（内含 `GPS 39.9042,116.4074`）的 PNG → 接口返回 `200`、`metadataRemoved=PNG tEXt`、`sizeBytes=67`（即剥离后的长度）；需求方下载 67 字节，内容里**不含 `GPS` 也不含 `tEXt`**，而 `IDAT`（像素数据）保留。
+- ClamAV 协议端到端（本机 clamd 协议替身，独立记录它收到了什么）：替身日志显示 `command=zINSTREAM.`（z 前缀 + NUL 结尾的命令）与 `payload=67`（**剥离后的字节**，证明剥离发生在扫描之前）；干净内容收到 `stream: OK` → 上传 `200`/`Clean`；把 EICAR 测试串藏进 IDAT 的上传（剥离后 125 字节）收到 `stream: Eicar-Test-Signature FOUND` → 上传 `422 凭证未通过安全检查，已拒绝保存。`，且存储目录里的文件数**前后不变**（被拒绝的内容没有留下）。
+- 按人限速端到端（真实 PostgreSQL）：把 `evidence.uploadsPerUserPerHour` 配成 3 → 第 2、3 次上传 `200`，第 4 次返回 `422 一小时内的凭证上传次数已达上限（3 次），请稍后再试。`
+- 顺带发现并修掉一个只有真机启动才会暴露的问题：`ClamAvEvidenceScanner` 一开始注册成单例，而它依赖 scoped 的 `IFileStorage`，DI 校验会在启动时直接拒绝（`Cannot consume scoped service ... from singleton`）。单元测试看不到这个，只有把 API 真正拉起来才会报。
 
 本轮修复：
 
@@ -535,8 +543,8 @@ npm run build
 
 测试现状：
 
-- 领域单元测试 91 个（`AIToHuman.Domain.Tests`）：任务加价、禁止自己报名、禁止重复报名、选择服务者、订单参与者权限、履约状态流、返工闭环与批准后关单、执行地址校验；对话回合不变量、历史窗口与截断；通知字段校验与标记幂等；订单会话消息校验与未读语义；执行凭证的类型/大小/签名校验、扫描状态机与扫描尝试记账、上传限额边界；配置键形状、取值上限、版本自增与审计脱敏。
-- 集成测试 197 个（`AIToHuman.IntegrationTests`）：AI 多轮协议、输出严格校验与可控重试、SSE 线格式、会话用例、`IUnitOfWork` 事务边界、通知骨干、订单会话、评价盲期、大厅分页筛选与地址披露、执行凭证（上传/下载/权限/扫描门禁/上限/重扫闭环/直连地址签发），S3 兼容存储（请求形态、签名确定性、预签名参数与有效期、403/404 映射、缺配置不发请求）、EF 模型快照，以及运营配置（设置目录校验、解析顺序、加密与脱敏、审计、并发冲突、自检、HTTP 扫描器、存储 provider 选择、管理员名单判定与优先级、AI 配置热更新）。全部走上游替身与内存仓储，不需要网络和数据库。
+- 领域单元测试 101 个（`AIToHuman.Domain.Tests`）：任务加价、禁止自己报名、禁止重复报名、选择服务者、订单参与者权限、履约状态流、返工闭环与批准后关单、执行地址校验；对话回合不变量、历史窗口与截断；通知字段校验与标记幂等；订单会话消息校验与未读语义；执行凭证的类型/大小/签名校验、扫描状态机与扫描尝试记账、上传限额边界、元数据剥离（JPEG/PNG/WebP 的段结构、损坏文件不改写）；配置键形状、取值上限、版本自增与审计脱敏。
+- 集成测试 210 个（`AIToHuman.IntegrationTests`）：AI 多轮协议、输出严格校验与可控重试、SSE 线格式、会话用例、`IUnitOfWork` 事务边界、通知骨干、订单会话、评价盲期、大厅分页筛选与地址披露、执行凭证（上传/下载/权限/扫描门禁/上限/重扫闭环/直连地址签发/元数据剥离/按人配额），ClamAV 的 INSTREAM 协议与扫描实现分派，S3 兼容存储（请求形态、签名确定性、预签名参数与有效期、403/404 映射、缺配置不发请求）、EF 模型快照，以及运营配置（设置目录校验、解析顺序、加密与脱敏、审计、并发冲突、自检、管理员名单判定与优先级、AI 配置热更新）。全部走上游替身与内存仓储，不需要网络和数据库。
 - 尚缺：认证与授权、PostgreSQL 仓储的自动化测试（目前只有手工端到端验证）、SignalR 重连与派发失败重试、运营后台的其余能力，以及主机级端到端测试——本机 NuGet 无法还原 `Microsoft.AspNetCore.Mvc.Testing`，所以没有 `WebApplicationFactory` 用例；网络可用后补该包，就能把本节的手工联调步骤逐步自动化。
 
 ## 12. 完成状态与后续顺序
@@ -574,6 +582,7 @@ npm run build
 - S3 兼容对象存储：新增 `S3FileStorage`（自研 AWS SigV4，不依赖厂商 SDK），按 `storage.s3.*` 做上传/下载/存在性/删除；`SettingsFileStorage` 按 `storage.provider` 分派 local 与 s3；配置不全、Bucket 不存在、密钥无权限都会翻译成可行动的说明；已用本机 MinIO 加独立客户端 `mc` 端到端验证（见第 11 节）。
 - 短时直连下载地址：`S3FileStorage` 实现可选的 `IPresignedFileStorage`（SigV4 查询串签名，含对象路径、有效期与附件名），新增 `GET /api/v1/evidence/{id}/download-url` 与 `evidence.downloadUrlLifetimeSeconds`（5 至 900 秒，默认 120），前端在支持时直接跳转签名地址、否则回退流式下载；篡改与过期都由对象存储自己拒绝（403），已用真实 MinIO 验证。
 - 元数据剥离与按人限速：`EvidenceContentSanitizer`（领域层，纯字节解析）处理 JPEG/PNG/WebP 的元数据段，`evidence.stripMetadata` 控制开关、剥离结果落库到 `evidence.MetadataRemoved`（迁移 `AddEvidenceMetadataRemoved`）并在接口与页面展示；`evidence.uploadsPerUserPerHour`（默认 60）按上传者限速，计数走数据库并配了 `(UploadedBy, CreatedAt)` 索引，多实例一致。
+- ClamAV 扫描器：`ClamAvEvidenceScanner` 实现官方 INSTREAM 协议（分块推送、不落临时文件、无 SDK 依赖），`SettingsEvidenceScanner` 按 `evidence.scanner.provider` 在 none/http/clamav 之间分派；新增 `evidence.scanner.clamavHost` / `clamavPort`；已用协议级 TCP 替身验证命令格式、分块载荷、OK/FOUND/ERROR 三种判定与不可用时的失败模式（见第 11 节）。
 
 ### 后续跟进（原 P1 的延伸项）
 
@@ -610,17 +619,20 @@ npm run build
 - [ ] 以服务者上传一张小于当前上限（默认 5 MB）的 PNG 凭证：列表出现、可下载；把文本文件改名成 `.png` 上传应被 `422` 拒绝，超过当前上限返回 `413`。
 - [ ] 大厅能按区域与悬赏区间筛选，并能“加载更多”翻页；大厅与公开详情的响应里不含精确地址文本。
 - [ ] 用一个全新空库启动 API：`Database.Migrate()` 一次应用全部迁移；用早期 `EnsureCreated` 建出的旧库启动会打印基线化警告后正常工作。
-- [ ] 在部署配置里设置 `Admin__UserIds` 或 `Admin__Emails`，用它登录后访问 `/api/v1/admin/settings`：非管理员应拿到 `401/403`，管理员拿到 21 个配置项。
+- [ ] 在部署配置里设置 `Admin__UserIds` 或 `Admin__Emails`，用它登录后访问 `/api/v1/admin/settings`：非管理员应拿到 `401/403`，管理员拿到 25 个配置项。
 - [ ] 通过运营接口把 `ai.apiKey` 换成新密钥：响应只显示 `****末四位`；接着发起一轮 AI 对话应立刻用新密钥，不需要重启进程。
 - [ ] 把 `evidence.scanner.provider` 改成 `http` 但不填扫描地址，服务者上传凭证应返回“待扫描、不可下载”，文件不被删除也不放行。
 - [ ] 重启进程后重新读取运营配置：机密仍能解密（说明 `DataProtection__KeysPath` 指向了持久目录，而不是临时目录）。
-- [ ] 用管理员账户登录后打开顶栏“运营配置”：能看到 21 个配置项、四个分组与来源徽标；普通服务者账户看不到这个入口。
+- [ ] 用管理员账户登录后打开顶栏“运营配置”：能看到 25 个配置项、四个分组与来源徽标；普通服务者账户看不到这个入口。
 - [ ] 在页面上改一个机密项并保存：列表立刻显示新的掩码与“后台已改”，点“测试连接”能看到自检结果，切到“变更记录”能看到这次修改；把某条改坏（例如把超时填成 1）保存应看到可读的校验提示。
 - [ ] 把 `evidence.maxSizeBytes` 调成 1024 后上传一张 2 KB 的图片：应返回“凭证大小不能超过 1 KB”，恢复默认后能正常上传。
 - [ ] 把 `evidence.scanner.provider` 改成 `http` 并把扫描地址清空（或指向不可用地址），上传凭证：状态应是“检查中 / 不可下载”并写明原因；扫描服务恢复后，一分钟内后台重扫会把状态改成“已通过检查”。
 - [ ] 在对象存储里建好私有 Bucket，运营配置里把 `storage.provider` 换成 `s3` 并填好 endpoint/region/bucket/密钥：上传凭证后应在 Bucket 里看到 `<prefix>/<orderId>/<evidenceId>.png`，且本机目录不再新增文件。
 - [ ] 故意把 `storage.s3.secretAccessKey` 改错：上传应返回可读的错误（提到密钥或权限、并带上 S3 的错误码），而不是 500 或静默写本机。
 - [ ] 对象存储模式下点凭证“下载”：地址是带 `X-Amz-Signature` 的短时链接，浏览器直接拿到文件；把 `evidence.downloadUrlLifetimeSeconds` 改成 5 秒后重新下载，等 8 秒再点应被对象存储拒绝（403）。
+- [ ] 上传一张带 GPS 的截图（手机原图即可）：凭证面板应显示“已在上传时移除元数据：PNG tEXt（或 EXIF/XMP）”，下载下来的文件里搜不到拍摄地点。
+- [ ] 部署一个 clamd（或用替身）并把 `evidence.scanner.provider` 改成 `clamav`：上传正常图片应 `200`；上传含 EICAR 测试串的文件应被 `422` 拒绝，且存储里不留文件。
+- [ ] 把 `evidence.uploadsPerUserPerHour` 调成 2，连续上传三次：第三次应返回可读的限流提示。
 - [ ] 新功能先补 Contract、领域规则和测试，再扩展页面。
 
 ## 14. 相关文档

@@ -11,18 +11,6 @@ public sealed class HttpEvidenceScannerTests
     private static readonly byte[] Content = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
 
     [Fact]
-    public async Task Provider_none_allows_content_without_touching_the_network()
-    {
-        var handler = new RecordingHttpHandler(_ => SettingsTestData.Json("{}"));
-        var host = Build(handler, new Dictionary<string, string?>(), InMemoryStorage());
-
-        var status = await host.Scanner.ScanAsync("order/file.png", "image/png");
-
-        Assert.Equal(EvidenceScanStatus.Clean, status);
-        Assert.Empty(handler.Requests);
-    }
-
-    [Fact]
     public async Task Http_provider_posts_the_file_with_api_key_and_returns_clean()
     {
         var handler = new RecordingHttpHandler(_ => SettingsTestData.Json("{\"verdict\":\"clean\"}"));

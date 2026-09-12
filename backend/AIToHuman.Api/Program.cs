@@ -98,7 +98,10 @@ builder.Services.AddHttpClient<S3FileStorage>(client => client.Timeout = Timeout
 // 放进单例会把 HttpClient 的处理器永久钉死，scoped 则与 EvidenceService 的生命周期一致。
 builder.Services.AddScoped<IFileStorage, SettingsFileStorage>();
 builder.Services.AddHttpClient<HttpEvidenceScanner>(client => client.Timeout = Timeout.InfiniteTimeSpan);
-builder.Services.AddScoped<IEvidenceScanner>(provider => provider.GetRequiredService<HttpEvidenceScanner>());
+// 扫描实现按 evidence.scanner.provider 分派：none 显式放行、http 调外部服务、clamav 走 clamd INSTREAM。
+// 三者都依赖 scoped 的 IFileStorage，因此注册成 scoped：放进单例会被 DI 校验直接拒绝启动。
+builder.Services.AddScoped<ClamAvEvidenceScanner>();
+builder.Services.AddScoped<IEvidenceScanner, SettingsEvidenceScanner>();
 builder.Services.AddScoped<EvidenceService>();
 builder.Services.AddScoped<TaskService>();
 builder.Services.AddScoped<ConversationService>();
