@@ -149,6 +149,9 @@ docs/                             ai-planning、api/api-guidelines、architectur
 - 每次写入在同一事务里追加一条审计记录（键、动作、脱敏前后值、操作人、时间），覆盖行带 `Version` 并发令牌，`PUT` 可带 `expectedVersion`，冲突返回 `409`。
 - 管理员名单来自部署配置 `Admin__UserIds` / `Admin__Emails`（也接受 `admin` 角色声明），刻意不放进可后台修改的配置表，避免任何能改配置的人把自己提权；没有配置管理员时运营接口对所有人返回 `403`。
 - “测试连接”只做只读自检：本机存储目录是否可写、AI 服务与扫描服务是否可达且接受当前密钥。
+- 前端入口：`GET /api/v1/auth/me` 会返回 `isAdmin`，只有管理员在顶栏看到“运营配置”。面板按分组列出配置项，标注来源（后台已改 / 部署配置 / 默认值）与是否机密，支持保存（带 `expectedVersion`，冲突时提示刷新后重试）、恢复默认、测试连接，以及“变更记录”页签。
+- 机密项在页面上只显示掩码，输入框留空表示“不修改”；要清空必须点专门的“清空”按钮，避免把 `****1234` 当成新值写回去。
+- 前端文件：`frontend/src/api/settings.ts`（接口客户端）与 `frontend/src/App.vue`（“运营配置”弹窗），样式在 `frontend/src/styles.css` 的 `.setting-*` 一节。
 
 ## 4. 已确定产品规则
 
@@ -186,11 +189,12 @@ backend/AIToHuman.Domain/              # TaskItem、Order、Review、Conversatio
 backend/AIToHuman.Infrastructure/      # EF Core/PostgreSQL、内存仓储、本机文件存储、内容扫描适配
 backend/tests/AIToHuman.Domain.Tests/  # 领域单元测试
 backend/tests/AIToHuman.IntegrationTests/ # 用例与 AI 多轮协议/SSE 集成测试（上游替身 + 内存仓储）
-frontend/src/App.vue                   # 对话工作台、草稿、大厅、订单、会话弹窗、凭证面板和评价
+frontend/src/App.vue                   # 对话工作台、草稿、大厅、订单、会话弹窗、凭证面板、评价与运营配置
 frontend/src/api/ai.ts                 # SSE 客户端与多轮对话协议
 frontend/src/api/conversations.ts       # 会话创建、读取与列表
 frontend/src/api/messages.ts           # 订单会话消息与未读数
 frontend/src/api/evidence.ts           # 凭证上传、列表与鉴权下载
+frontend/src/api/settings.ts           # 运营配置：读取、写入、恢复默认、自检与变更记录
 frontend/src/api/tasks.ts              # 任务、订单和评价 API
 frontend/src/api/notifications.ts      # 通知 REST 与 SignalR 客户端
 frontend/src/styles.css                # 全局响应式样式
@@ -339,7 +343,7 @@ netstat -ano | Select-String ':5188|:5173'
 | POST | `/api/v1/auth/register` | 匿名注册 |
 | POST | `/api/v1/auth/login` | 匿名登录 |
 | POST | `/api/v1/auth/switch-role` | JWT，切换 owner/worker |
-| GET | `/api/v1/auth/me` | JWT，当前用户 |
+| GET | `/api/v1/auth/me` | JWT，当前用户；带 `isAdmin` 供前端决定是否展示运营配置入口 |
 | POST | `/api/v1/conversations` | 创建对话会话，写入开场白 |
 | GET | `/api/v1/conversations/{id}?userId=...` | 读取历史与当前草稿，用于刷新恢复；仅所有者可读 |
 | GET | `/api/v1/conversations?userId=...&limit=...` | 该用户的会话列表（含预览与是否有草稿） |
@@ -470,6 +474,12 @@ Order: Accepted → InProgress → Submitted → Approved
 - 自检接口：`storage.localRoot/test` 返回 `ok=true` 与实际目录；`evidence.scanner.provider/test` 在 `provider=none` 时明确提示“凭证会直接放行，生产建议切换为 http”。
 - 配置热更新（集成测试）：同一个 `AiPlanningService` 实例连续两轮对话，第二轮改用新模型与新密钥，请求体与 `Authorization` 头随之变化，证明配置不是构造时读一次的缓存值；存储根目录改到新路径后，同一个 `LocalFileStorage` 实例的下一次写入就落在新目录。
 
+本轮（运营配置页面）新增验证：
+
+- `/api/v1/auth/me` 在真实 JWT 下对管理员返回 `isAdmin=true`、对普通服务者返回 `isAdmin=false`，页面入口据此显隐；`GET /api/v1/admin/settings` 返回 18 项、三个分组（AI 服务商 / 对象存储 / 内容扫描）。
+- 页面链路：`npm run typecheck`（strict + `noUncheckedIndexedAccess`，vue-tsc 会一起校验模板绑定）与 Vite 生产构建均通过。
+- 说明：本机没有 Playwright 与浏览器驱动，离线也装不上，所以**浏览器交互没有自动化用例**，界面部分只做了构建校验与第 13 节的人工清单。
+
 本轮修复：
 
 - 客户端或 AI 提交带本地偏移量（如 `+08:00`）的 `deadline` 时，PostgreSQL 写入抛出 `ArgumentException`，创建任务返回 `500`。现在领域层统一归一化为 UTC（`UtcTimestamp.Normalize`），并由单元测试固化。
@@ -528,11 +538,12 @@ npm run build
 
 - 配置骨架：新增 `system_settings`（覆盖值 + `Version` 并发令牌）与 `system_setting_audits`（只追加、脱敏）两张表（迁移 `AddSystemSettings`）、18 个键的设置目录（白名单 + 类型校验 + 兼容的环境变量名）、固定的解析顺序（数据库 → 环境变量 → 默认值）、Data Protection 加密的机密、写入即刷新的内存快照与 15 秒后台轮询、运营接口与“测试连接”自检、管理员名单策略；决策见 [ADR-0003](../architecture/decisions/0003-operator-configurable-settings.md)。
 - 消费方接线：AI 服务商（地址、密钥、模型、无活动超时）、对象存储 provider、内容扫描 provider 都改为从配置读取；写死的 `NoOpEvidenceScanner` 换成按配置工作的 `HttpEvidenceScanner`，`LocalFileStorage` 的根目录也改为运行时解析。
+- 运营配置页面：顶栏入口（仅管理员）、按分组列出配置项与来源徽标、机密脱敏输入、保存（带版本冲突提示）、恢复默认、测试连接、变更记录；见第 3 节。
 
 ### 后续跟进（原 P1 的延伸项）
 
 - 补齐 S3/OSS 的 `IFileStorage` 实现（含短时签名 URL），把 `storage.provider` 从 `local` 切到 `s3`；选定病毒/内容扫描服务后把 `evidence.scanner.provider` 切成 `http` + `failMode=closed`，并补“待扫描凭证重新扫描”的后台任务。
-- 运营后台页面：列出配置、编辑、测试连接、查看审计；把上传大小/份数上限、凭证类型白名单等业务旋钮也纳入设置目录（目前目录里只有三方集成参数）。
+- 运营后台的其余部分：任务/用户/订单检索、风险记录与高风险任务人工复核、争议处理看板；同时把上传大小/份数上限、凭证类型白名单等业务旋钮也纳入设置目录（目前目录里只有三方集成参数）。
 - 通知的更多事件类型（报名、评价公开、任务过期）与推送渠道（短信、邮件）。
 - 会话消息的分页与历史截断、消息撤回与编辑。
 - 大厅排序选项（悬赏、距离）、任务分类筛选，以及精确地址的访问审计。
@@ -567,6 +578,8 @@ npm run build
 - [ ] 通过运营接口把 `ai.apiKey` 换成新密钥：响应只显示 `****末四位`；接着发起一轮 AI 对话应立刻用新密钥，不需要重启进程。
 - [ ] 把 `evidence.scanner.provider` 改成 `http` 但不填扫描地址，服务者上传凭证应返回“待扫描、不可下载”，文件不被删除也不放行。
 - [ ] 重启进程后重新读取运营配置：机密仍能解密（说明 `DataProtection__KeysPath` 指向了持久目录，而不是临时目录）。
+- [ ] 用管理员账户登录后打开顶栏“运营配置”：能看到 18 个配置项、分组与来源徽标；普通服务者账户看不到这个入口。
+- [ ] 在页面上改一个机密项并保存：列表立刻显示新的掩码与“后台已改”，点“测试连接”能看到自检结果，切到“变更记录”能看到这次修改；把某条改坏（例如把超时填成 1）保存应看到可读的校验提示。
 - [ ] 新功能先补 Contract、领域规则和测试，再扩展页面。
 
 ## 14. 相关文档

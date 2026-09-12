@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { getDevSession, type DevSession } from './api/session'
-import { clearAccessToken, getAccessToken, getCurrentUser, login, register, switchRole, type ActiveRole, type AuthResponse } from './api/auth'
+import { clearAccessToken, getAccessToken, getCurrentUser, login, register, switchRole, type ActiveRole, type CurrentUser } from './api/auth'
 import { applyForTask, approveOrder, createOrderReview, createTask, getExecutionAddress, getReviewSummary, increaseTaskReward, listMyOrders, listMyTasks, listOrderReviews, listPublishedTasks, listTaskApplications, publishTask, rejectOrder, resumeOrder, selectTaskApplication, startOrder, submitOrder, type OrderItem, type ReviewItem, type TaskApplication, type TaskItem, type ReviewSummary } from './api/tasks'
 import { connectNotifications as connectNotificationHub, disconnectNotifications, listNotifications, markNotificationsRead, type NotificationEnvelope, type NotificationItem } from './api/notifications'
 import { listOrderMessages, markOrderMessagesRead, sendOrderMessage, type OrderMessage } from './api/messages'
 import { allowedEvidenceTypes, downloadEvidence, listOrderEvidence, maxEvidenceBytes, uploadOrderEvidence, type EvidenceItem } from './api/evidence'
 import { continueTaskConversation, type AiTaskPlan } from './api/ai'
 import { createConversation, getConversation, type Conversation } from './api/conversations'
+import { listSettingAudits, listSettings, resetSetting, settingChoiceLabel, settingSourceLabel, testSetting, updateSetting, type AdminSetting, type SettingAudit, type SettingTestResult } from './api/settings'
 
 type Step = { label: string; done: boolean }
 type ChatMessage = { id: string; role: 'user' | 'assistant'; content: string }
@@ -25,7 +26,7 @@ const suggestionMin = ref(55)
 const suggestionMax = ref(75)
 const suggestionSource = ref('演示建议')
 const session = ref<DevSession | null>(null)
-const authUser = ref<Pick<AuthResponse, 'userId' | 'email' | 'displayName' | 'role'> | null>(null)
+const authUser = ref<CurrentUser | null>(null)
 const sessionError = ref('')
 const authOpen = ref(false)
 const authMode = ref<'login' | 'register'>('login')
@@ -149,6 +150,134 @@ async function saveEvidence(item: EvidenceItem) {
 
 function evidenceStatusLabel(status: string) {
   return ({ Pending: '检查中', Clean: '已通过检查', Rejected: '未通过检查' } as Record<string, string>)[status] ?? status
+}
+
+// 运营配置：入口只对管理员展示，真正的授权在服务端（/api/v1/admin/settings 需要管理员身份）。
+const settingsOpen = ref(false)
+const settingsTab = ref<'values' | 'audits'>('values')
+const settingsLoading = ref(false)
+const settingsError = ref('')
+const settingsNotice = ref('')
+const settingsItems = ref<AdminSetting[]>([])
+const settingsDrafts = ref<Record<string, string>>({})
+const settingsBusyKey = ref('')
+const settingsTests = ref<Record<string, SettingTestResult>>({})
+const settingsAudits = ref<SettingAudit[]>([])
+
+const isAdmin = computed(() => authUser.value?.isAdmin === true)
+const settingsGroups = computed(() => {
+  const categories: string[] = []
+  for (const item of settingsItems.value) if (!categories.includes(item.category)) categories.push(item.category)
+  return categories.map((category) => ({ category, items: settingsItems.value.filter((item) => item.category === category) }))
+})
+
+async function openSettings() {
+  settingsOpen.value = true
+  settingsTab.value = 'values'
+  await loadSettings()
+}
+
+async function loadSettings() {
+  settingsLoading.value = true
+  settingsError.value = ''
+  try {
+    const items = await listSettings()
+    settingsItems.value = items
+    const drafts: Record<string, string> = {}
+    for (const item of items) {
+      // 机密项只下发掩码，输入框留空表示“不修改”，避免把 ****1234 当成新值写回去。
+      drafts[item.key] = item.isSecret ? '' : item.value
+    }
+    settingsDrafts.value = drafts
+  } catch (error) {
+    settingsError.value = error instanceof Error ? error.message : '读取运营配置失败'
+  } finally {
+    settingsLoading.value = false
+  }
+}
+
+async function loadSettingAudits() {
+  settingsTab.value = 'audits'
+  settingsLoading.value = true
+  settingsError.value = ''
+  try {
+    if (settingsItems.value.length === 0) await loadSettings()
+    settingsAudits.value = await listSettingAudits(20)
+  } catch (error) {
+    settingsError.value = error instanceof Error ? error.message : '读取变更记录失败'
+  } finally {
+    settingsLoading.value = false
+  }
+}
+
+function settingDraft(item: AdminSetting): string {
+  return settingsDrafts.value[item.key] ?? ''
+}
+
+function setSettingDraft(item: AdminSetting, value: string) {
+  settingsDrafts.value = { ...settingsDrafts.value, [item.key]: value }
+}
+
+function settingTest(item: AdminSetting): SettingTestResult | null {
+  return settingsTests.value[item.key] ?? null
+}
+
+function settingPlaceholder(item: AdminSetting): string {
+  if (item.isSecret) return item.value ? `已配置 ${item.value}，留空表示不修改` : '尚未配置'
+  return item.kind === 'Url' ? '留空表示停用' : '留空表示置空'
+}
+
+function settingLabel(key: string): string {
+  return settingsItems.value.find((item) => item.key === key)?.displayName ?? key
+}
+
+async function saveSetting(item: AdminSetting, mode: 'draft' | 'clear' = 'draft') {
+  const draft = mode === 'clear' ? '' : settingDraft(item)
+  if (mode === 'draft' && item.isSecret && draft.trim().length === 0) {
+    settingsError.value = `${item.displayName} 是机密项：接口只返回掩码，不会回写；请输入新值，或用“清空”显式置空。`
+    return
+  }
+
+  settingsBusyKey.value = item.key
+  settingsError.value = ''
+  settingsNotice.value = ''
+  try {
+    const updated = await updateSetting(item.key, draft, item.overrideVersion)
+    settingsNotice.value = `${item.displayName} 已保存（来源：${settingSourceLabel(updated.source)}），立即生效。`
+    await loadSettings()
+  } catch (error) {
+    settingsError.value = error instanceof Error ? error.message : '保存失败'
+  } finally {
+    settingsBusyKey.value = ''
+  }
+}
+
+async function resetSettingValue(item: AdminSetting) {
+  settingsBusyKey.value = item.key
+  settingsError.value = ''
+  settingsNotice.value = ''
+  try {
+    const updated = await resetSetting(item.key)
+    settingsNotice.value = `${item.displayName} 已恢复默认（来源：${settingSourceLabel(updated.source)}）。`
+    await loadSettings()
+  } catch (error) {
+    settingsError.value = error instanceof Error ? error.message : '恢复默认失败'
+  } finally {
+    settingsBusyKey.value = ''
+  }
+}
+
+async function runSettingTest(item: AdminSetting) {
+  settingsBusyKey.value = item.key
+  settingsError.value = ''
+  try {
+    const result = await testSetting(item.key)
+    settingsTests.value = { ...settingsTests.value, [item.key]: result }
+  } catch (error) {
+    settingsError.value = error instanceof Error ? error.message : '自检失败'
+  } finally {
+    settingsBusyKey.value = ''
+  }
 }
 
 const completion = computed(() => !aiPlan.value || steps.value.length === 0
@@ -694,7 +823,8 @@ async function submitAuth() {
     const result = authMode.value === 'login'
       ? await login({ email: authForm.value.email, password: authForm.value.password })
       : await register(authForm.value)
-    authUser.value = result
+    // /auth/me 里带 isAdmin，重新拉一次才能决定是否展示运营配置入口。
+    await restoreAuth()
     authOpen.value = false
     applicationNotice.value = `已登录：${result.displayName}`
     await restoreConversation()
@@ -716,8 +846,8 @@ async function changeRole(role: ActiveRole) {
   roleSwitchBusy.value = true
   roleSwitchError.value = ''
   try {
-    const result = await switchRole(role)
-    authUser.value = result
+    await switchRole(role)
+    await restoreAuth()
     roleMenuOpen.value = false
     viewingApplicationsTaskId.value = ''
     applicationNotice.value = `已切换为${role === 'owner' ? '需求方' : '服务者'}身份。`
@@ -736,6 +866,12 @@ function logout() {
   authUser.value = null
   orders.value = []
   myTasks.value = []
+  // 运营配置只属于管理员会话，退出时一并清掉，避免下一个登录者看到上一个会话的数据。
+  settingsOpen.value = false
+  settingsItems.value = []
+  settingsAudits.value = []
+  settingsTests.value = {}
+  settingsDrafts.value = {}
   void disconnectNotifications()
   roleMenuOpen.value = false
   applicationNotice.value = '已退出登录，当前为开发会话。'
@@ -766,6 +902,7 @@ onMounted(async () => {
         <a href="#orders">我的订单</a>
       </div>
       <div class="profile-wrap">
+        <button v-if="isAdmin" class="notify admin-entry" type="button" @click="openSettings">运营配置 <b>⚙</b></button>
         <div class="notify-wrap">
           <button class="notify" type="button" @click="toggleNotifications">通知 <b v-if="unreadCount > 0">{{ unreadCount > 99 ? '99+' : unreadCount }}</b></button>
           <div v-if="notificationsOpen" class="notify-menu">
@@ -1056,6 +1193,62 @@ onMounted(async () => {
           <button class="auth-submit" type="submit" :disabled="orderChatBusy || !orderChatDraft.trim()">{{ orderChatBusy ? '处理中…' : '发送' }}</button>
         </form>
         <p v-if="orderChatError" class="auth-error">{{ orderChatError }}</p>
+      </section>
+    </div>
+
+    <div v-if="settingsOpen" class="auth-backdrop" @click.self="settingsOpen = false">
+      <section class="auth-dialog settings-dialog">
+        <div class="auth-dialog-head"><div><p class="eyebrow">OPERATIONS CONSOLE / 06</p><h2>运营配置</h2></div><button type="button" class="icon-button" @click="settingsOpen = false">×</button></div>
+        <p class="settings-hint">生效顺序：后台覆盖 → 部署配置 → 代码默认值。机密只以掩码展示、审计也只留掩码；保存后立即生效，不需要重启服务。</p>
+        <div class="settings-tabs">
+          <button type="button" :class="{ selected: settingsTab === 'values' }" @click="settingsTab = 'values'">配置项 <b>{{ settingsItems.length }}</b></button>
+          <button type="button" :class="{ selected: settingsTab === 'audits' }" @click="loadSettingAudits()">变更记录</button>
+          <button type="button" class="settings-refresh" :disabled="settingsLoading" @click="settingsTab === 'audits' ? loadSettingAudits() : loadSettings()">{{ settingsLoading ? '读取中…' : '刷新 ↻' }}</button>
+        </div>
+        <p v-if="settingsError" class="auth-error">{{ settingsError }}</p>
+        <p v-if="settingsNotice" class="settings-notice">{{ settingsNotice }}</p>
+
+        <div v-if="settingsTab === 'audits'" class="settings-body">
+          <span v-if="settingsAudits.length === 0" class="settings-empty">还没有变更记录。</span>
+          <div v-for="audit in settingsAudits" v-else :key="audit.id" class="setting-audit">
+            <div><strong>{{ settingLabel(audit.key) }}</strong><small>{{ audit.action === 'Reset' ? '恢复默认' : '更新' }} · {{ formatDeadline(audit.occurredAt) }}</small></div>
+            <p><span>{{ audit.oldValue }}</span> → <b>{{ audit.newValue }}</b></p>
+          </div>
+        </div>
+
+        <div v-else class="settings-body">
+          <span v-if="settingsLoading && settingsItems.length === 0" class="settings-empty">正在读取配置…</span>
+          <div v-for="group in settingsGroups" :key="group.category" class="setting-group">
+            <p class="setting-group-head">{{ group.category }}</p>
+            <div v-for="item in group.items" :key="item.key" class="setting-row">
+              <div class="setting-title">
+                <strong>{{ item.displayName }}</strong>
+                <span class="setting-badge" :class="`source-${item.source}`">{{ settingSourceLabel(item.source) }}</span>
+                <span v-if="item.isSecret" class="setting-badge secret">机密</span>
+                <span v-if="item.hasOverride" class="setting-badge version">第 {{ item.overrideVersion }} 版</span>
+              </div>
+              <p class="setting-desc">{{ item.description }}</p>
+              <p class="setting-key">{{ item.key }} · 部署配置键 {{ item.configurationKey }} · 默认值 {{ item.defaultValue || '（空）' }}</p>
+              <div class="setting-control">
+                <select v-if="item.kind === 'Choice'" :value="settingDraft(item)" @change="setSettingDraft(item, ($event.target as HTMLSelectElement).value)">
+                  <option v-for="option in item.allowedValues" :key="option" :value="option">{{ settingChoiceLabel(option) }}</option>
+                </select>
+                <select v-else-if="item.kind === 'Bool'" :value="settingDraft(item)" @change="setSettingDraft(item, ($event.target as HTMLSelectElement).value)">
+                  <option value="true">true</option>
+                  <option value="false">false</option>
+                </select>
+                <input v-else :value="settingDraft(item)" :type="item.kind === 'Int' ? 'number' : 'text'" :placeholder="settingPlaceholder(item)" @input="setSettingDraft(item, ($event.target as HTMLInputElement).value)" />
+                <div class="setting-actions">
+                  <button type="button" class="settings-primary" :disabled="settingsBusyKey === item.key" @click="saveSetting(item)">{{ settingsBusyKey === item.key ? '保存中…' : '保存' }}</button>
+                  <button type="button" class="settings-secondary" :disabled="settingsBusyKey === item.key || !item.hasOverride" @click="resetSettingValue(item)">恢复默认</button>
+                  <button type="button" class="settings-secondary" :disabled="settingsBusyKey === item.key" @click="runSettingTest(item)">测试连接</button>
+                  <button v-if="item.isSecret" type="button" class="settings-secondary danger" :disabled="settingsBusyKey === item.key" @click="saveSetting(item, 'clear')">清空</button>
+                </div>
+                <p v-if="settingTest(item)" class="setting-test" :class="{ ok: settingTest(item)?.ok }">自检：{{ settingTest(item)?.message }}</p>
+              </div>
+            </div>
+          </div>
+        </div>
       </section>
     </div>
 

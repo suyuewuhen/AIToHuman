@@ -26,7 +26,7 @@ AIToHuman 是一个“AI 任务管家 + 真人服务任务大厅”平台。用�
 - 数据：PostgreSQL（当前开发事实来源；未配置连接串时回退内存仓储）
 - 实时通信：SignalR（订单创建、状态变化与新消息通知；持久化 Outbox + 后台派发 + 未读数收件箱，推送只是刷新提示）
 - AI：火山引擎 Ark OpenAI 兼容接口，SSE 流式多轮澄清
-- 运营配置：设置目录（白名单）+ 加密机密 + 变更审计 + 写入即生效，管理员可通过 `/api/v1/admin/settings` 调整模型、对象存储与内容扫描参数（管理页面待补，见 [ADR-0003](docs/architecture/decisions/0003-operator-configurable-settings.md)）
+- 运营配置：设置目录（白名单）+ 加密机密 + 变更审计 + 写入即生效；管理员在顶栏“运营配置”页面即可调整模型、对象存储与内容扫描参数（见 [ADR-0003](docs/architecture/decisions/0003-operator-configurable-settings.md)）
 - 本地依赖：`compose.yaml` 定义 PostgreSQL、Redis 和 MinIO
 
 规划中、代码尚未接入：
@@ -41,8 +41,8 @@ AIToHuman 是一个“AI 任务管家 + 真人服务任务大厅”平台。用�
 AIToHuman/
 ├── frontend/                       # Vue 用户端与服务者端（单页工作台）
 │   └── src/
-│       ├── api/                    # AI SSE、认证、会话、任务、订单消息、凭证、评价、SignalR 客户端
-│       ├── App.vue                 # 对话工作台、草稿、大厅、订单、会话弹窗与凭证面板
+│       ├── api/                    # AI SSE、认证、会话、任务、订单消息、凭证、评价、运营配置、SignalR 客户端
+│       ├── App.vue                 # 对话工作台、草稿、大厅、订单、会话弹窗、凭证面板与运营配置
 │       └── styles.css
 ├── backend/
 │   ├── AIToHuman.Api/              # HTTP、JWT、AI SSE、SignalR Hub、通知后台派发、运营配置接口

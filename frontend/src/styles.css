@@ -277,3 +277,41 @@ h1 em { color: var(--acid); font-style: normal; }
 .hall-tabs { margin: 18px 0 0; }
 .task-card > p.own-flag { display: inline-block; height: auto; margin: 14px 0 0; padding: 5px 9px; background: var(--acid); color: var(--ink); font: 600 10px Georgia,serif; letter-spacing: .06em; }
 .order-row .order-actions button:disabled { opacity: .55; cursor: default; }
+
+/* 运营配置面板（仅管理员可见） */
+.admin-entry { margin-right: 8px; }
+.settings-dialog { width: min(780px, 96vw); max-height: 88vh; overflow-y: auto; }
+.settings-hint { margin: 0 0 14px; color: #747b77; font-size: 11px; line-height: 1.75; }
+.settings-tabs { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
+.settings-tabs button { padding: 8px 12px; border: 1px solid var(--line); background: transparent; color: var(--ink); cursor: pointer; font-size: 11px; }
+.settings-tabs button.selected { border-color: var(--ink); background: #eee9dc; font-weight: 600; }
+.settings-tabs button b { margin-left: 5px; color: var(--green); }
+.settings-tabs .settings-refresh { margin-left: auto; }
+.settings-notice { margin: 14px 0 0; color: var(--green); font-size: 12px; }
+.settings-empty { display: block; padding: 10px 0; color: #747b77; font-size: 11px; }
+.settings-body { margin-top: 10px; }
+.setting-group { margin-bottom: 18px; }
+.setting-group-head { margin: 0 0 8px; color: var(--green); font-size: 10px; letter-spacing: .16em; font-weight: 600; }
+.setting-row { padding: 12px 0; border-top: 1px solid var(--line); }
+.setting-title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.setting-title strong { font-size: 13px; }
+.setting-badge { padding: 2px 7px; border: 1px solid var(--line); background: #f2ede1; color: #626b66; font-size: 10px; }
+.setting-badge.source-database { border-color: var(--green); color: var(--green); }
+.setting-badge.secret { border-color: #b8860b; color: #8a6100; }
+.setting-badge.version { background: transparent; }
+.setting-desc { margin: 7px 0 0; color: #626b66; font-size: 11px; line-height: 1.7; }
+.setting-key { margin: 5px 0 0; color: #909792; font-size: 10px; word-break: break-all; }
+.setting-control { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.setting-control input, .setting-control select { flex: 1 1 240px; min-width: 180px; padding: 9px 11px; border: 1px solid var(--line); background: #fffdf7; color: var(--ink); }
+.setting-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.settings-primary { padding: 9px 14px; border: 0; background: var(--acid); color: #fff; cursor: pointer; font-size: 11px; font-weight: 600; }
+.settings-primary:disabled, .settings-secondary:disabled { opacity: .5; cursor: not-allowed; }
+.settings-secondary { padding: 9px 12px; border: 1px solid var(--line); background: transparent; color: var(--ink); cursor: pointer; font-size: 11px; }
+.settings-secondary.danger { border-color: #9a321f; color: #9a321f; }
+.setting-test { flex: 1 1 100%; margin: 2px 0 0; color: #9a321f; font-size: 11px; line-height: 1.6; }
+.setting-test.ok { color: var(--green); }
+.setting-audit { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.setting-audit strong { font-size: 12px; }
+.setting-audit small { display: block; margin-top: 4px; color: #747b77; font-size: 10px; }
+.setting-audit p { margin: 0; color: #626b66; font-size: 11px; }
+.setting-audit b { color: var(--ink); }

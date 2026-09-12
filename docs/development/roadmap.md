@@ -19,7 +19,7 @@
 - ✅ Vue 与 .NET 项目骨架。
 - ✅ PostgreSQL、Redis、MinIO 的本地开发环境定义（`compose.yaml`）。
 - ⚠️ CI、格式和测试基线：`.github/workflows/ci.yml` 已执行后端 `restore/build/test` 和前端 `npm ci/build`，并有 `.editorconfig` 与 74 个领域单元测试、167 个集成测试；尚无 Lint、Markdown 检查、OpenAPI 兼容性检查和技术文档生成。
-- ✅ 配置分层与运营可配置项：部署级配置（连接串、Redis、日志、密钥环路径）只走环境变量；三方集成参数（模型服务、对象存储、内容扫描）登记在设置目录里，可通过管理员接口修改，机密加密落库并留审计，改完立即生效（见 [ADR-0003](../architecture/decisions/0003-operator-configurable-settings.md)）。运营后台页面仍未实现。
+- ✅ 配置分层与运营可配置项：部署级配置（连接串、Redis、日志、密钥环路径）只走环境变量；三方集成参数（模型服务、对象存储、内容扫描）登记在设置目录里，可通过管理员接口与顶栏“运营配置”页面修改，机密加密落库并留审计，改完立即生效（见 [ADR-0003](../architecture/decisions/0003-operator-configurable-settings.md)）。运营后台的其余能力（任务/用户检索、风险复核、争议处理）仍未实现。
 - ⛔ 秘密扫描与依赖更新自动化。
 
 遗留项：

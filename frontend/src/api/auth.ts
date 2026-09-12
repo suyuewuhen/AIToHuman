@@ -60,7 +60,16 @@ export async function switchRole(role: ActiveRole): Promise<AuthResponse> {
   return auth
 }
 
-export async function getCurrentUser(): Promise<Pick<AuthResponse, 'userId' | 'email' | 'displayName' | 'role'>> {
+export interface CurrentUser {
+  userId: string
+  email: string
+  displayName: string
+  role: string
+  /** 是否为运营管理员：决定前端是否展示运营配置入口，真正的授权仍在服务端。 */
+  isAdmin: boolean
+}
+
+export async function getCurrentUser(): Promise<CurrentUser> {
   const token = getAccessToken()
   if (!token) throw new Error('未登录')
   const response = await fetch('/api/v1/auth/me', { headers: { Authorization: `Bearer ${token}` } })
@@ -68,7 +77,7 @@ export async function getCurrentUser(): Promise<Pick<AuthResponse, 'userId' | 'e
     clearAccessToken()
     throw new Error('登录已过期，请重新登录。')
   }
-  return response.json() as Promise<Pick<AuthResponse, 'userId' | 'email' | 'displayName' | 'role'>>
+  return response.json() as Promise<CurrentUser>
 }
 
 export function getAccessToken(): string | null {

@@ -219,11 +219,12 @@ auth.MapPost("/switch-role", (SwitchRoleRequest request, ClaimsPrincipal user, I
         ? Results.Ok(service.SwitchRole(userId, request.Role))
         : Results.Problem("未配置 PostgreSQL，认证功能暂不可用。", statusCode: StatusCodes.Status503ServiceUnavailable);
 }).RequireAuthorization();
-auth.MapGet("/me", (ClaimsPrincipal user) => Results.Ok(new CurrentUserResponse(
+auth.MapGet("/me", (ClaimsPrincipal user, AdminAccess adminAccess) => Results.Ok(new CurrentUserResponse(
     Guid.Parse(user.FindFirstValue(ClaimTypes.NameIdentifier)!),
     user.FindFirstValue(ClaimTypes.Email)!,
     user.FindFirstValue(ClaimTypes.Name)!,
-    user.FindFirstValue(ClaimTypes.Role)!))).RequireAuthorization();
+    user.FindFirstValue(ClaimTypes.Role)!,
+    adminAccess.IsAdmin(user)))).RequireAuthorization();
 
 var tasks = app.MapGroup("/api/v1/tasks");
 // 大厅列表：按区域与悬赏区间筛选，游标分页（按截止时间升序）。

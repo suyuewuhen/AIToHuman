@@ -216,7 +216,6 @@ GET    /api/v1/admin/settings/audits?limit=50  变更审计，按时间倒序
 - **立即生效**：写入成功后服务端刷新内存快照，消费方下一次调用就用新值，不需要重启进程；绕过 API 直接改库的改动会在 15 秒内被后台轮询同步。
 
 示例响应（机密已脱敏）：
-
 ```json
 {
   "key": "ai.apiKey",
@@ -232,3 +231,5 @@ GET    /api/v1/admin/settings/audits?limit=50  变更审计，按时间倒序
   "fingerprint": "7ab5f1bce26a"
 }
 ```
+
+前端：顶栏的“运营配置”入口只对 `GET /api/v1/auth/me` 返回 `isAdmin=true` 的账户展示（服务端仍会独立校验，前端隐藏不构成安全边界）。客户端封装在 `frontend/src/api/settings.ts`；机密项在界面上只显示掩码，必须输入新值才能保存，清空需要显式操作。
