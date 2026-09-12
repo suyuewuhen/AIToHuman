@@ -12,12 +12,24 @@ export interface EvidenceItem {
   createdAt: string
   scannedAt: string | null
   isDownloadable: boolean
+  /** 已经尝试过几次扫描（含后台自动重试）。 */
+  scanAttempts: number
+  /** 最近一次扫描的说明：通过、拒绝原因，或“扫描服务不可用”。 */
+  lastScanNote: string | null
+  /** 一直是待扫描但自动重试已用尽：需要人工处理。 */
+  scanExhausted: boolean
 }
 
 export const allowedEvidenceTypes = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf']
 
-/** 与服务端保持一致的 5 MB 上限，用于在选择文件时提前给出提示。 */
+/**
+ * 选择文件时的提示上限。服务端实际上限来自运营配置（默认 5 MB，可在硬上限内调整），
+ * 这里只是提前给用户一个合理提示，真正的判断以服务端返回为准。
+ */
 export const maxEvidenceBytes = 5 * 1024 * 1024
+
+/** 服务端硬上限：无论运营怎么配都不会超过，浏览器侧用它挡掉明显过大的文件。 */
+export const absoluteMaxEvidenceBytes = 25 * 1024 * 1024
 
 async function parseResponse<T>(response: Response): Promise<T> {
   if (response.ok) return response.json() as Promise<T>

@@ -1,3 +1,4 @@
+using AIToHuman.Domain.Orders;
 using AIToHuman.Domain.Settings;
 using Microsoft.EntityFrameworkCore;
 
@@ -131,6 +132,9 @@ public sealed class TaskDbContext(DbContextOptions<TaskDbContext> options) : DbC
             entity.Property(item => item.StorageKey).HasMaxLength(120).IsRequired();
             entity.Property(item => item.ContentHash).HasMaxLength(64).IsRequired();
             entity.Property(item => item.ScanStatus).HasMaxLength(16).IsRequired();
+            entity.Property(item => item.LastScanNote).HasMaxLength(OrderEvidence.MaxScanNoteLength);
+            // 后台重扫按“待扫描 + 上传时间”扫描，这里给它一条索引。
+            entity.HasIndex(item => new { item.ScanStatus, item.CreatedAt });
         });
 
         modelBuilder.Entity<SystemSettingRecord>(entity =>
@@ -288,6 +292,14 @@ public sealed class EvidenceRecord
     public DateTimeOffset CreatedAt { get; set; }
     public string ScanStatus { get; set; } = "Pending";
     public DateTimeOffset? ScannedAt { get; set; }
+
+    /// <summary>已经尝试过几次扫描（含自动重试）。</summary>
+    public int ScanAttempts { get; set; }
+
+    /// <summary>最近一次扫描的说明：通过、拒绝原因，或扫描服务不可用。</summary>
+    public string? LastScanNote { get; set; }
+
+    public DateTimeOffset? LastScanAttemptAt { get; set; }
 }
 
 /// <summary>运营可配置项的覆盖值：等于“这条键被后台显式改过”，删除即恢复默认。机密在 <see cref="Value"/> 里是密文。</summary>

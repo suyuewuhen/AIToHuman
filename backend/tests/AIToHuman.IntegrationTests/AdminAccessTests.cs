@@ -51,6 +51,21 @@ public sealed class AdminAccessTests
     }
 
     [Fact]
+    public void Scalar_configuration_wins_over_an_array_from_lower_priority_source()
+    {
+        // 部署里常见的情形：appsettings 里是数组，环境变量是标量覆盖。
+        // 标量的优先级更高，绝不能被数组子项盖掉（否则“配了管理员却还是 403”）。
+        var access = Build(new Dictionary<string, string?>
+        {
+            ["Admin:Emails:0"] = "demo@aitohuman.local",
+            ["Admin:Emails"] = "admin@example.com"
+        });
+
+        Assert.True(access.IsAdmin(Principal(new Claim(ClaimTypes.Email, "admin@example.com"))));
+        Assert.False(access.IsAdmin(Principal(new Claim(ClaimTypes.Email, "demo@aitohuman.local"))));
+    }
+
+    [Fact]
     public void Anonymous_and_empty_configuration_are_denied()
     {
         var access = Build([]);

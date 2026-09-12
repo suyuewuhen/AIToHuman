@@ -123,14 +123,17 @@ docs/                             ai-planning、api/api-guidelines、architectur
 
 ### 执行凭证（文件）
 
-- 只有订单服务者可以上传，且订单必须处于 `InProgress` 或 `Submitted`；每个订单最多 10 份，单份不超过 5 MB。
+- 只有订单服务者可以上传，且订单必须处于 `InProgress` 或 `Submitted`。份数与单份大小上限来自运营配置（`evidence.maxPerOrder` / `evidence.maxSizeBytes`，默认 10 份 / 5 MB），硬上限是 50 份 / 25 MB，运营只能收紧不能突破。
+- 扫描没给出结论时凭证保持 `Pending`（不可下载）：后台 `EvidenceRescanService` 每 60 秒重扫一批，同一条凭证退避 30 秒、最多尝试 5 次；文件已不在存储里则直接判定为 `Rejected`。用尽次数后保留待扫描状态并写明“停止自动重试”，交给人工处理，不会无声无息地永远挂着。
+- 凭证接口会返回检查次数与最近一次说明（`scanAttempts` / `lastScanNote` / `scanExhausted`），前端凭证面板直接显示，因此“为什么不可下载”对双方都是可见的。
+- 类型白名单（JPEG / PNG / WebP / PDF）**刻意不做成运营配置**：放开它等于允许上传可执行内容。
 - 类型白名单为 JPEG / PNG / WebP / PDF。服务端不信客户端声明的 MIME：先做白名单校验，再按**文件签名**核对内容（PNG 头、JPEG SOI、WebP RIFF+WEBP、`%PDF`），不一致直接拒绝。
 - 声明大小必须与实际字节数一致；读取时按上限截断，防止谎报大小绕过限额；摘要为 SHA-256。
 - 存储键完全由系统生成（`{orderId:N}/{evidenceId:N}.{ext}`），原始文件名只作为展示元数据，永不参与路径拼接。
 - 文件存私有存储（Development 为本机目录 `ObjectStorage__LocalRoot`，默认应用目录下的 `evidence`），下载前重新校验当前用户与订单关系与扫描状态。
 - 扫描状态：`Pending`（不可下载）/`Clean`/`Rejected`，终态不可回退；被拒绝的内容不落库也不留在存储里。
 - 扫描方式与存储位置都不是写死的：`evidence.scanner.provider` 可选 `none`（显式放行并打警告日志）或 `http`（把内容 POST 给配置的扫描服务），扫描不可用时按 `failMode` 处理；`storage.provider` 可选 `local` 或 `s3`。两者都在运营后台可改，见下面「运营可配置的三方集成参数」。
-- 尚未实现：S3/OSS 的 `IFileStorage` 实现（把 `storage.provider` 改成 `s3` 会直接报错，不会静默退回本机目录）、真实扫描服务商接入、短时签名 URL、上传限速、图片重新编码与 EXIF 去除，以及“待扫描”凭证的重新扫描任务。
+- 尚未实现：S3/OSS 的 `IFileStorage` 实现（把 `storage.provider` 改成 `s3` 会直接报错，不会静默退回本机目录）、真实扫描服务商接入、短时签名 URL、上传限速、图片重新编码与 EXIF 去除。
 
 ### 订单会话（聊天）
 
@@ -391,7 +394,7 @@ netstat -ano | Select-String ':5188|:5173'
 
 Development + PostgreSQL 启动时改为应用 EF Core 迁移（`Database.Migrate()`），不再使用 `EnsureCreated()` 和幂等建表 SQL。生产环境由部署流程执行迁移，不在应用启动时自动迁移。
 
-迁移历史（13 个）：`AddUsers` → `AddOrders` → `AddOrderEvidence` → `AddReviews` → `AddOrderRework` → `AddConversations` → `AddTaskTables` → `AddConcurrencyTokens` → `AddNotifications` → `AddOrderMessages` → `AddTaskExecutionAddress` → `AddEvidence` → `AddSystemSettings`。其中 `AddTaskTables` 补上了此前只由 `EnsureCreated()` 建出、从未纳入迁移的 `tasks` 与 `task_applications` 两张核心表；`AddConcurrencyTokens` 给 `tasks`/`orders` 加 `Version` 乐观并发令牌；`AddTaskExecutionAddress` 给 `tasks` 加参与者层的精确执行地址；`AddEvidence` 建 `evidence` 表；`AddSystemSettings` 建运营配置的两张表。
+迁移历史（14 个）：`AddUsers` → `AddOrders` → `AddOrderEvidence` → `AddReviews` → `AddOrderRework` → `AddConversations` → `AddTaskTables` → `AddConcurrencyTokens` → `AddNotifications` → `AddOrderMessages` → `AddTaskExecutionAddress` → `AddEvidence` → `AddSystemSettings` → `AddEvidenceScanAttempts`。其中 `AddTaskTables` 补上了此前只由 `EnsureCreated()` 建出、从未纳入迁移的 `tasks` 与 `task_applications` 两张核心表；`AddConcurrencyTokens` 给 `tasks`/`orders` 加 `Version` 乐观并发令牌；`AddTaskExecutionAddress` 给 `tasks` 加参与者层的精确执行地址；`AddEvidence` 建 `evidence` 表；`AddSystemSettings` 建运营配置的两张表；`AddEvidenceScanAttempts` 给 `evidence` 补上扫描尝试次数、最近一次说明与尝试时间，并为“待扫描 + 上传时间”建索引。
 
 早期 `EnsureCreated()` 建出的本地库没有迁移历史记录。启动逻辑会检测这种情况：先用模型对比物理表的「表名.列名」，只有结构完全对得上时，才把当时已有的迁移整体标记为已应用并打警告日志；一旦缺表或缺列就直接报错说明缺了什么，提示删除重建，避免在错误的 schema 上继续运行。基线化之后新增的迁移会正常应用——例如 `AddConcurrencyTokens` 就是在基线化之后自动补上的 `Version` 列。目标库不存在时由 `Migrate()` 负责建库。
 
@@ -452,7 +455,7 @@ Order: Accepted → InProgress → Submitted → Approved
 - 执行凭证端到端（真实 PostgreSQL + 本机存储目录，multipart 上传 67 字节 PNG）：上传 `200`（`scanStatus=Clean`、SHA-256 摘要、`isDownloadable=true`）→ 需求方列表 1 条 → 下载 `200`、字节完全一致、`Content-Type: image/png`、`X-Content-Type-Options: nosniff`、`Content-Disposition` 为系统生成的 `evidence-<id>.png`；无关用户列表与下载均 `403`；需求方上传 `403`；`text/plain` 与伪造 PNG 各返回 `422` 与对应原因；5 MB + 1 字节返回 `413`；落盘路径为 `<根目录>/<orderId>/<evidenceId>.png`，不含任何用户输入。
 - `npm run typecheck`：通过。
 - Vite 生产构建：通过；若默认 `frontend/dist` 被运行中的进程占用，先停止该进程或输出到临时目录。
-- EF Core 迁移：当前共 13 个（清单见第 10 节）；本轮新增 `AddOrderRework`（`orders` 两列）、`AddConversations`（会话两表）、`AddTaskTables`（补上此前缺失的 `tasks`、`task_applications`）、`AddConcurrencyTokens`（`Version` 列）、`AddNotifications`、`AddOrderMessages`、`AddTaskExecutionAddress`、`AddEvidence`、`AddSystemSettings`。
+- EF Core 迁移：当前共 14 个（清单见第 10 节）；本轮新增 `AddOrderRework`（`orders` 两列）、`AddConversations`（会话两表）、`AddTaskTables`（补上此前缺失的 `tasks`、`task_applications`）、`AddConcurrencyTokens`（`Version` 列）、`AddNotifications`、`AddOrderMessages`、`AddTaskExecutionAddress`、`AddEvidence`、`AddSystemSettings`、`AddEvidenceScanAttempts`（扫描尝试次数与说明）。
 - 全新数据库路径（2026-09-12 复核）：用一个从未存在的空库（`Database=aitohuman_migration_check_v2`）启动 API，`Migrate()` 自动建库并**按顺序应用全部 12 个迁移**（日志 12 条 `Applying migration '...'`），`/health` 返回 `healthy`。
 - 全新数据库路径（2026-09-12，含 `AddSystemSettings`）：另起一个空库 `aitohuman_settings_check2` 启动 API，直接查 `__EFMigrationsHistory` 得到 `migrations_applied=13`，最后一条是 `20260912083117_AddSystemSettings`；随后在同一库上完成下面的运营配置端到端用例。
 - 全新数据库路径（更早一版，当时 8 个迁移）：在同一路径的空库 `aitohuman_migration_check` 上跑通任务创建、发布、报名与会话创建，`dotnet ef migrations list` 显示全部已应用、无待执行。
@@ -480,6 +483,17 @@ Order: Accepted → InProgress → Submitted → Approved
 - 页面链路：`npm run typecheck`（strict + `noUncheckedIndexedAccess`，vue-tsc 会一起校验模板绑定）与 Vite 生产构建均通过。
 - 说明：本机没有 Playwright 与浏览器驱动，离线也装不上，所以**浏览器交互没有自动化用例**，界面部分只做了构建校验与第 13 节的人工清单。
 
+本轮（凭证扫描闭环）新增验证：
+
+- 扫描闭环端到端（真实 PostgreSQL + 真实 HTTP + 本地 TCP 扫描替身）：上传 67 字节 PNG 时替身返回 `pending` → 接口 `200`、`scanStatus=Pending`、`scanAttempts=1`、`isDownloadable=false`、下载 `403`；把替身改成 `clean` 后，后台重扫在 60 秒那一轮把它变为 `Clean`（`scanAttempts=2`、说明“重新扫描通过。”），需求方再下载拿到完全一致的 67 字节。替身日志显示两次调用依次是 `pending`、`clean`。
+- 可配置上传上限生效：把 `evidence.maxSizeBytes` 改成 1024 后上传 2048 字节返回 `413 凭证大小不能超过 1 KB。`，且磁盘上不留文件；`DELETE` 该配置后回到默认 5242880（`source=default`）。
+- 运营配置目录此时共 20 个键、四个分组：AI 服务商 / 对象存储 / 凭证上传 / 内容扫描。
+- 全新数据库：同一轮启动时 `Migrate()` 从零建库并应用全部 14 个迁移，随后在该库上完成上面的用例。
+
+本轮修复：
+
+- 运营管理员名单的读取顺序有缺陷：`appsettings` 里写成数组（`Admin:Emails:0`）时，优先级更高的环境变量标量 `Admin__Emails` 会被数组子项盖掉，表现为“明明配了管理员却仍然 403”。现在标量优先、数组兜底，并补了对应测试。这个缺陷是端到端联调时才暴露的，纯单元测试用的是干净的配置源，覆盖不到。
+
 本轮修复：
 
 - 客户端或 AI 提交带本地偏移量（如 `+08:00`）的 `deadline` 时，PostgreSQL 写入抛出 `ArgumentException`，创建任务返回 `500`。现在领域层统一归一化为 UTC（`UtcTimestamp.Normalize`），并由单元测试固化。
@@ -504,8 +518,8 @@ npm run build
 
 测试现状：
 
-- 领域单元测试 74 个（`AIToHuman.Domain.Tests`）：任务加价、禁止自己报名、禁止重复报名、选择服务者、订单参与者权限、履约状态流、返工闭环与批准后关单、执行地址校验；对话回合不变量、历史窗口与截断；通知字段校验与标记幂等；订单会话消息校验与未读语义；执行凭证的类型/大小/签名校验与扫描状态机；配置键形状、取值上限、版本自增与审计脱敏。
-- 集成测试 167 个（`AIToHuman.IntegrationTests`）：AI 多轮协议、输出严格校验与可控重试、SSE 线格式、会话用例、`IUnitOfWork` 事务边界、通知骨干、订单会话、评价盲期、大厅分页筛选与地址披露、执行凭证、EF 模型快照，以及本轮的运营配置（设置目录校验、解析顺序、加密与脱敏、审计、并发冲突、自检、HTTP 扫描器、存储 provider 选择、管理员名单判定、AI 配置热更新）。全部走上游替身与内存仓储，不需要网络和数据库。
+- 领域单元测试 91 个（`AIToHuman.Domain.Tests`）：任务加价、禁止自己报名、禁止重复报名、选择服务者、订单参与者权限、履约状态流、返工闭环与批准后关单、执行地址校验；对话回合不变量、历史窗口与截断；通知字段校验与标记幂等；订单会话消息校验与未读语义；执行凭证的类型/大小/签名校验、扫描状态机与扫描尝试记账、上传限额边界；配置键形状、取值上限、版本自增与审计脱敏。
+- 集成测试 178 个（`AIToHuman.IntegrationTests`）：AI 多轮协议、输出严格校验与可控重试、SSE 线格式、会话用例、`IUnitOfWork` 事务边界、通知骨干、订单会话、评价盲期、大厅分页筛选与地址披露、执行凭证（上传/下载/权限/扫描门禁/上限/重扫闭环）、EF 模型快照，以及运营配置（设置目录校验、解析顺序、加密与脱敏、审计、并发冲突、自检、HTTP 扫描器、存储 provider 选择、管理员名单判定与优先级、AI 配置热更新）。全部走上游替身与内存仓储，不需要网络和数据库。
 - 尚缺：认证与授权、PostgreSQL 仓储的自动化测试（目前只有手工端到端验证）、SignalR 重连与派发失败重试、上传限速与并发上传、运营后台页面，以及主机级端到端测试——本机 NuGet 无法还原 `Microsoft.AspNetCore.Mvc.Testing`，所以没有 `WebApplicationFactory` 用例；网络可用后补该包，就能把本节的手工联调步骤逐步自动化。
 
 ## 12. 完成状态与后续顺序
@@ -539,10 +553,11 @@ npm run build
 - 配置骨架：新增 `system_settings`（覆盖值 + `Version` 并发令牌）与 `system_setting_audits`（只追加、脱敏）两张表（迁移 `AddSystemSettings`）、18 个键的设置目录（白名单 + 类型校验 + 兼容的环境变量名）、固定的解析顺序（数据库 → 环境变量 → 默认值）、Data Protection 加密的机密、写入即刷新的内存快照与 15 秒后台轮询、运营接口与“测试连接”自检、管理员名单策略；决策见 [ADR-0003](../architecture/decisions/0003-operator-configurable-settings.md)。
 - 消费方接线：AI 服务商（地址、密钥、模型、无活动超时）、对象存储 provider、内容扫描 provider 都改为从配置读取；写死的 `NoOpEvidenceScanner` 换成按配置工作的 `HttpEvidenceScanner`，`LocalFileStorage` 的根目录也改为运行时解析。
 - 运营配置页面：顶栏入口（仅管理员）、按分组列出配置项与来源徽标、机密脱敏输入、保存（带版本冲突提示）、恢复默认、测试连接、变更记录；见第 3 节。
+- 凭证扫描闭环与可配置上传上限：`evidence` 表新增扫描尝试次数、最近说明与尝试时间（迁移 `AddEvidenceScanAttempts`）；`EvidenceRescanService` 每 60 秒按 30 秒退避重扫 `Pending` 凭证、最多 5 次，文件缺失直接判定 `Rejected`，用尽次数后保留说明交给人工；`evidence.maxSizeBytes` / `evidence.maxPerOrder` 纳入设置目录（硬上限 25 MB / 50 份），凭证接口与页面展示检查次数与说明；见第 3、10 节。
 
 ### 后续跟进（原 P1 的延伸项）
 
-- 补齐 S3/OSS 的 `IFileStorage` 实现（含短时签名 URL），把 `storage.provider` 从 `local` 切到 `s3`；选定病毒/内容扫描服务后把 `evidence.scanner.provider` 切成 `http` + `failMode=closed`，并补“待扫描凭证重新扫描”的后台任务。
+- 补齐 S3/OSS 的 `IFileStorage` 实现（含短时签名 URL），把 `storage.provider` 从 `local` 切到 `s3`；选定病毒/内容扫描服务后把 `evidence.scanner.provider` 切成 `http` + `failMode=closed`（重扫闭环已经就绪，只差真实服务商）。
 - 运营后台的其余部分：任务/用户/订单检索、风险记录与高风险任务人工复核、争议处理看板；同时把上传大小/份数上限、凭证类型白名单等业务旋钮也纳入设置目录（目前目录里只有三方集成参数）。
 - 通知的更多事件类型（报名、评价公开、任务过期）与推送渠道（短信、邮件）。
 - 会话消息的分页与历史截断、消息撤回与编辑。
@@ -580,6 +595,8 @@ npm run build
 - [ ] 重启进程后重新读取运营配置：机密仍能解密（说明 `DataProtection__KeysPath` 指向了持久目录，而不是临时目录）。
 - [ ] 用管理员账户登录后打开顶栏“运营配置”：能看到 18 个配置项、分组与来源徽标；普通服务者账户看不到这个入口。
 - [ ] 在页面上改一个机密项并保存：列表立刻显示新的掩码与“后台已改”，点“测试连接”能看到自检结果，切到“变更记录”能看到这次修改；把某条改坏（例如把超时填成 1）保存应看到可读的校验提示。
+- [ ] 把 `evidence.maxSizeBytes` 调成 1024 后上传一张 2 KB 的图片：应返回“凭证大小不能超过 1 KB”，恢复默认后能正常上传。
+- [ ] 把 `evidence.scanner.provider` 改成 `http` 并把扫描地址清空（或指向不可用地址），上传凭证：状态应是“检查中 / 不可下载”并写明原因；扫描服务恢复后，一分钟内后台重扫会把状态改成“已通过检查”。
 - [ ] 新功能先补 Contract、领域规则和测试，再扩展页面。
 
 ## 14. 相关文档

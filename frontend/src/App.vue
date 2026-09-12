@@ -5,7 +5,7 @@ import { clearAccessToken, getAccessToken, getCurrentUser, login, register, swit
 import { applyForTask, approveOrder, createOrderReview, createTask, getExecutionAddress, getReviewSummary, increaseTaskReward, listMyOrders, listMyTasks, listOrderReviews, listPublishedTasks, listTaskApplications, publishTask, rejectOrder, resumeOrder, selectTaskApplication, startOrder, submitOrder, type OrderItem, type ReviewItem, type TaskApplication, type TaskItem, type ReviewSummary } from './api/tasks'
 import { connectNotifications as connectNotificationHub, disconnectNotifications, listNotifications, markNotificationsRead, type NotificationEnvelope, type NotificationItem } from './api/notifications'
 import { listOrderMessages, markOrderMessagesRead, sendOrderMessage, type OrderMessage } from './api/messages'
-import { allowedEvidenceTypes, downloadEvidence, listOrderEvidence, maxEvidenceBytes, uploadOrderEvidence, type EvidenceItem } from './api/evidence'
+import { absoluteMaxEvidenceBytes, allowedEvidenceTypes, downloadEvidence, listOrderEvidence, uploadOrderEvidence, type EvidenceItem } from './api/evidence'
 import { continueTaskConversation, type AiTaskPlan } from './api/ai'
 import { createConversation, getConversation, type Conversation } from './api/conversations'
 import { listSettingAudits, listSettings, resetSetting, settingChoiceLabel, settingSourceLabel, testSetting, updateSetting, type AdminSetting, type SettingAudit, type SettingTestResult } from './api/settings'
@@ -118,8 +118,9 @@ async function uploadEvidence(order: OrderItem, event: Event) {
     input.value = ''
     return
   }
-  if (file.size > maxEvidenceBytes) {
-    evidenceError.value = `凭证大小不能超过 ${maxEvidenceBytes / 1024 / 1024} MB。`
+  if (file.size > absoluteMaxEvidenceBytes) {
+    // 实际上限由服务端运营配置决定，这里只挡掉连硬上限都超过的文件，其余交给服务端判断并给出准确原因。
+    evidenceError.value = `凭证大小不能超过 ${absoluteMaxEvidenceBytes / 1024 / 1024} MB（服务端硬上限）。`
     input.value = ''
     return
   }
@@ -1162,11 +1163,15 @@ onMounted(async () => {
               <span v-if="evidenceBusy && !evidenceByOrder[order.id]">正在读取凭证…</span>
               <span v-else-if="!evidenceByOrder[order.id]?.length">还没有上传凭证。</span>
               <div v-for="item in evidenceByOrder[order.id]" v-else :key="item.id" class="evidence-row">
-                <div><strong>{{ item.fileName }}</strong><small>{{ (item.sizeBytes / 1024).toFixed(1) }} KB · {{ item.contentType }} · {{ evidenceStatusLabel(item.scanStatus) }}</small></div>
+                <div>
+                  <strong>{{ item.fileName }}</strong>
+                  <small>{{ (item.sizeBytes / 1024).toFixed(1) }} KB · {{ item.contentType }} · {{ evidenceStatusLabel(item.scanStatus) }}<template v-if="item.scanAttempts > 0"> · 已检查 {{ item.scanAttempts }} 次</template></small>
+                  <small v-if="item.lastScanNote" class="evidence-note">{{ item.lastScanNote }}{{ item.scanExhausted ? '（不会再自动重试）' : '' }}</small>
+                </div>
                 <button type="button" :disabled="!item.isDownloadable" @click="saveEvidence(item)">{{ item.isDownloadable ? '下载' : '不可下载' }}</button>
               </div>
               <label v-if="orderTab === 'taken' && (order.status === 'InProgress' || order.status === 'Submitted')" class="evidence-upload">
-                上传凭证（JPEG / PNG / WebP / PDF，最多 5 MB）
+                上传凭证（JPEG / PNG / WebP / PDF，单份上限以服务端配置为准）
                 <input type="file" accept="image/jpeg,image/png,image/webp,application/pdf" :disabled="evidenceBusy" @change="uploadEvidence(order, $event)" />
               </label>
               <p v-if="evidenceError" class="notice warning">{{ evidenceError }}</p>

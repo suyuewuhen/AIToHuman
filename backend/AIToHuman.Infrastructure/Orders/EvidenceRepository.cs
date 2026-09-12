@@ -20,6 +20,16 @@ public sealed class EfEvidenceRepository(TaskDbContext db) : IEvidenceRepository
 
     public int CountByOrder(Guid orderId) => db.Evidence.AsNoTracking().Count(item => item.OrderId == orderId);
 
+    public IReadOnlyCollection<OrderEvidence> ListPendingScans(int limit) => db.Evidence
+        .AsNoTracking()
+        .Where(item => item.ScanStatus == nameof(EvidenceScanStatus.Pending))
+        .OrderBy(item => item.CreatedAt)
+        .ThenBy(item => item.Id)
+        .Take(limit)
+        .AsEnumerable()
+        .Select(Map)
+        .ToArray();
+
     public void Add(OrderEvidence evidence)
     {
         db.Evidence.Add(ToRecord(evidence));
@@ -31,6 +41,9 @@ public sealed class EfEvidenceRepository(TaskDbContext db) : IEvidenceRepository
         var record = db.Evidence.Single(item => item.Id == evidence.Id);
         record.ScanStatus = evidence.ScanStatus.ToString();
         record.ScannedAt = evidence.ScannedAt;
+        record.ScanAttempts = evidence.ScanAttempts;
+        record.LastScanNote = evidence.LastScanNote;
+        record.LastScanAttemptAt = evidence.LastScanAttemptAt;
         db.SaveChanges();
     }
 
@@ -46,7 +59,10 @@ public sealed class EfEvidenceRepository(TaskDbContext db) : IEvidenceRepository
         ContentHash = evidence.ContentHash,
         CreatedAt = evidence.CreatedAt,
         ScanStatus = evidence.ScanStatus.ToString(),
-        ScannedAt = evidence.ScannedAt
+        ScannedAt = evidence.ScannedAt,
+        ScanAttempts = evidence.ScanAttempts,
+        LastScanNote = evidence.LastScanNote,
+        LastScanAttemptAt = evidence.LastScanAttemptAt
     };
 
     private static OrderEvidence Map(EvidenceRecord record) => OrderEvidence.Rehydrate(
@@ -59,8 +75,11 @@ public sealed class EfEvidenceRepository(TaskDbContext db) : IEvidenceRepository
         record.SizeBytes,
         record.ContentHash,
         record.CreatedAt,
-        Enum.Parse<EvidenceScanStatus>(record.ScanStatus),
-        record.ScannedAt);
+        Enum.TryParse<EvidenceScanStatus>(record.ScanStatus, out var status) ? status : EvidenceScanStatus.Pending,
+        record.ScannedAt,
+        record.ScanAttempts,
+        record.LastScanNote,
+        record.LastScanAttemptAt);
 }
 
 public sealed class InMemoryEvidenceRepository : IEvidenceRepository
@@ -79,6 +98,19 @@ public sealed class InMemoryEvidenceRepository : IEvidenceRepository
     }
 
     public int CountByOrder(Guid orderId) { lock (gate) { return evidence.Count(item => item.OrderId == orderId); } }
+
+    public IReadOnlyCollection<OrderEvidence> ListPendingScans(int limit)
+    {
+        lock (gate)
+        {
+            return evidence
+                .Where(item => item.ScanStatus == EvidenceScanStatus.Pending)
+                .OrderBy(item => item.CreatedAt)
+                .ThenBy(item => item.Id)
+                .Take(limit)
+                .ToArray();
+        }
+    }
 
     public void Add(OrderEvidence item) { lock (gate) { evidence.Add(item); } }
 

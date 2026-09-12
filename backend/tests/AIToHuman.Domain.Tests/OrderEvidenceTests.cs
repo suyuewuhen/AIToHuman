@@ -100,5 +100,81 @@ public sealed class OrderEvidenceTests
         Assert.Equal(_now.AddMinutes(3), evidence.ScannedAt);
     }
 
+    [Fact]
+    public void Scan_attempts_are_counted_and_bounded()
+    {
+        var evidence = Create();
+
+        for (var attempt = 1; attempt <= OrderEvidence.MaxScanAttempts; attempt++)
+        {
+            Assert.True(evidence.CanRetryScan);
+            evidence.RecordScanAttempt($"第 {attempt} 次没有结论", _now.AddSeconds(attempt));
+        }
+
+        Assert.Equal(OrderEvidence.MaxScanAttempts, evidence.ScanAttempts);
+        Assert.Equal(_now.AddSeconds(OrderEvidence.MaxScanAttempts), evidence.LastScanAttemptAt);
+        // 用完次数后不再自动重试，但仍保留待扫描状态与最后一条说明。
+        Assert.False(evidence.CanRetryScan);
+        Assert.True(evidence.ScanExhausted);
+        Assert.Equal(EvidenceScanStatus.Pending, evidence.ScanStatus);
+        Assert.Contains("没有结论", evidence.LastScanNote);
+    }
+
+    [Fact]
+    public void Scan_attempts_are_rejected_once_the_result_is_final()
+    {
+        var evidence = Create();
+        evidence.MarkScanned(EvidenceScanStatus.Clean, _now);
+
+        Assert.Throws<DomainException>(() => evidence.RecordScanAttempt("不应该被记录", _now.AddMinutes(1)));
+        Assert.False(evidence.ScanExhausted);
+    }
+
+    [Fact]
+    public void Scan_note_is_trimmed_and_truncated()
+    {
+        var evidence = Create();
+
+        evidence.MarkScanned(EvidenceScanStatus.Rejected, _now, new string('x', OrderEvidence.MaxScanNoteLength + 50));
+
+        Assert.Equal(OrderEvidence.MaxScanNoteLength, evidence.LastScanNote!.Length);
+        Assert.Equal(1, evidence.ScanAttempts);
+    }
+
+    [Fact]
+    public void Empty_scan_note_is_stored_as_null()
+    {
+        var evidence = Create();
+
+        evidence.MarkScanned(EvidenceScanStatus.Clean, _now, "   ");
+
+        Assert.Null(evidence.LastScanNote);
+    }
+
+    [Fact]
+    public void Rehydrate_restores_scan_bookkeeping()
+    {
+        var evidence = OrderEvidence.Rehydrate(
+            Guid.NewGuid(), _order, _worker, "a.png", "image/png", "key.png", 2048, "hash", _now,
+            EvidenceScanStatus.Pending, null, 3, "扫描服务不可用", _now.AddMinutes(5));
+
+        Assert.Equal(3, evidence.ScanAttempts);
+        Assert.Equal("扫描服务不可用", evidence.LastScanNote);
+        Assert.Equal(_now.AddMinutes(5), evidence.LastScanAttemptAt);
+        Assert.True(evidence.CanRetryScan);
+    }
+
+    [Fact]
+    public void Rehydrate_accepts_evidence_larger_than_the_current_configured_limit()
+    {
+        // 上传时上限可能是 10 MB，之后运营收紧到 2 MB：历史凭证必须仍然读得出来（只受硬上限约束）。
+        var evidence = OrderEvidence.Rehydrate(
+            Guid.NewGuid(), _order, _worker, "big.png", "image/png", "key.png", 8 * 1024 * 1024, "hash", _now,
+            EvidenceScanStatus.Clean, _now);
+
+        Assert.Equal(8 * 1024 * 1024, evidence.SizeBytes);
+        Assert.True(evidence.IsDownloadable);
+    }
+
     private OrderEvidence Create() => new(_order, _worker, "取件码截图.png", "image/png", 2048, "abc123", _now);
 }

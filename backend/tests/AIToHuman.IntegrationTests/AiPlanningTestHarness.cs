@@ -161,6 +161,25 @@ internal sealed class FakeEvidenceScanner(AIToHuman.Domain.Orders.EvidenceScanSt
     }
 }
 
+/// <summary>结果可切换、可失败的扫描替身，用于验证“先待扫描、重扫后得出结论”。</summary>
+internal sealed class MutableEvidenceScanner(AIToHuman.Domain.Orders.EvidenceScanStatus status = AIToHuman.Domain.Orders.EvidenceScanStatus.Pending)
+    : AIToHuman.Application.Orders.IEvidenceScanner
+{
+    public AIToHuman.Domain.Orders.EvidenceScanStatus Status { get; set; } = status;
+
+    public int Calls { get; private set; }
+
+    public Exception? Failure { get; set; }
+
+    public Task<AIToHuman.Domain.Orders.EvidenceScanStatus> ScanAsync(string storageKey, string contentType, CancellationToken cancellationToken = default)
+    {
+        Calls++;
+        return Failure is null
+            ? Task.FromResult(Status)
+            : Task.FromException<AIToHuman.Domain.Orders.EvidenceScanStatus>(Failure);
+    }
+}
+
 /// <summary>配置提供者的替身：只认给定的键值，来源统一算作配置文件。</summary>
 internal sealed class StubSettingsProvider(Dictionary<string, string> values) : ISettingsProvider
 {

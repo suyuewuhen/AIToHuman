@@ -1,4 +1,6 @@
 using AIToHuman.Application.Orders;
+using AIToHuman.Application.Settings;
+using AIToHuman.Contracts.Orders;
 using AIToHuman.Domain.Common;
 using AIToHuman.Domain.Orders;
 using AIToHuman.Domain.Tasks;
@@ -195,9 +197,175 @@ public sealed class EvidenceServiceTests
         Assert.Empty(world.Evidence.ListByOrder(order.Id));
     }
 
+    [Fact]
+    public async Task Configured_size_limit_is_enforced_before_the_hard_ceiling()
+    {
+        var world = new EvidenceWorld(settings: new Dictionary<string, string> { [SettingKeys.EvidenceMaxSizeBytes] = "1024" });
+        var order = world.CreateOrder();
+        var tooBig = new byte[2048];
+
+        var error = await Assert.ThrowsAsync<DomainException>(() =>
+            world.Service.UploadAsync(order.Id, order.WorkerId, "big.png", "image/png", tooBig.Length, new MemoryStream(tooBig)));
+
+        Assert.Contains("凭证大小不能超过 1 KB", error.Message);
+        Assert.Empty(world.Storage.Files);
+    }
+
+    [Fact]
+    public void Configured_limits_are_clamped_to_the_hard_ceiling()
+    {
+        var world = new EvidenceWorld(settings: new Dictionary<string, string>
+        {
+            [SettingKeys.EvidenceMaxSizeBytes] = "999999999",
+            [SettingKeys.EvidenceMaxPerOrder] = "9999"
+        });
+
+        var limits = world.Service.Limits();
+
+        // 写坏一个数字不该让上传彻底不可用，但也绝不允许突破硬上限。
+        Assert.Equal(OrderEvidence.AbsoluteMaxSizeBytes, limits.MaxSizeBytes);
+        Assert.Equal(OrderEvidence.AbsoluteMaxPerOrder, limits.MaxPerOrder);
+    }
+
+    [Fact]
+    public async Task Configured_count_limit_is_enforced()
+    {
+        var world = new EvidenceWorld(EvidenceScanStatus.Clean, new Dictionary<string, string> { [SettingKeys.EvidenceMaxPerOrder] = "1" });
+        var order = world.CreateOrder();
+        await world.UploadPendingAsync(order);
+
+        var error = await Assert.ThrowsAsync<DomainException>(() => world.UploadPendingAsync(order));
+
+        Assert.Equal("每个订单最多上传 1 份凭证。", error.Message);
+    }
+
+    [Fact]
+    public async Task Pending_upload_stays_undownloadable_and_records_an_attempt()
+    {
+        var world = new EvidenceWorld(EvidenceScanStatus.Pending);
+        var order = world.CreateOrder();
+
+        var uploaded = await world.UploadPendingAsync(order);
+
+        Assert.Equal("Pending", uploaded.ScanStatus);
+        Assert.False(uploaded.IsDownloadable);
+        Assert.Equal(1, uploaded.ScanAttempts);
+        Assert.False(uploaded.ScanExhausted);
+        Assert.Contains("稍后自动重试", uploaded.LastScanNote);
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(() => world.Service.DownloadAsync(uploaded.Id, order.OwnerId));
+    }
+
+    [Fact]
+    public async Task Rescan_marks_previously_pending_evidence_clean()
+    {
+        var world = new EvidenceWorld(EvidenceScanStatus.Pending);
+        var order = world.CreateOrder();
+        await world.UploadPendingAsync(order);
+
+        world.Scanner.Status = EvidenceScanStatus.Clean;
+        world.PassRescanBackoff();
+
+        Assert.Equal(1, await world.Service.RescanPendingAsync());
+
+        var item = world.Single(order);
+        Assert.Equal(EvidenceScanStatus.Clean, item.ScanStatus);
+        Assert.True(item.IsDownloadable);
+        Assert.Equal(2, item.ScanAttempts);
+        Assert.Equal("重新扫描通过。", item.LastScanNote);
+
+        // 已经有结论的凭证不会再进重扫队列。
+        world.PassRescanBackoff();
+        Assert.Equal(0, await world.Service.RescanPendingAsync());
+    }
+
+    [Fact]
+    public async Task Rescan_rejects_and_removes_the_file_when_the_scanner_rejects()
+    {
+        var world = new EvidenceWorld(EvidenceScanStatus.Pending);
+        var order = world.CreateOrder();
+        await world.UploadPendingAsync(order);
+        var storageKey = world.Single(order).StorageKey;
+
+        world.Scanner.Status = EvidenceScanStatus.Rejected;
+        world.PassRescanBackoff();
+        await world.Service.RescanPendingAsync();
+
+        Assert.Equal(EvidenceScanStatus.Rejected, world.Single(order).ScanStatus);
+        Assert.DoesNotContain(storageKey, world.Storage.Files.Keys);
+    }
+
+    [Fact]
+    public async Task Rescan_marks_missing_files_as_rejected()
+    {
+        var world = new EvidenceWorld(EvidenceScanStatus.Pending);
+        var order = world.CreateOrder();
+        await world.UploadPendingAsync(order);
+        world.Storage.Files.Clear();
+
+        world.PassRescanBackoff();
+        await world.Service.RescanPendingAsync();
+
+        var item = world.Single(order);
+        Assert.Equal(EvidenceScanStatus.Rejected, item.ScanStatus);
+        Assert.Contains("找不到文件", item.LastScanNote);
+    }
+
+    [Fact]
+    public async Task Rescan_skips_items_that_were_just_attempted()
+    {
+        var world = new EvidenceWorld(EvidenceScanStatus.Pending);
+        var order = world.CreateOrder();
+        await world.UploadPendingAsync(order);
+
+        // 退避窗口内不重复打扫描服务。
+        Assert.Equal(0, await world.Service.RescanPendingAsync());
+        world.PassRescanBackoff();
+        Assert.Equal(1, await world.Service.RescanPendingAsync());
+    }
+
+    [Fact]
+    public async Task Rescan_stops_after_the_maximum_attempts()
+    {
+        var world = new EvidenceWorld(EvidenceScanStatus.Pending);
+        var order = world.CreateOrder();
+        await world.UploadPendingAsync(order);
+
+        for (var round = 0; round < OrderEvidence.MaxScanAttempts + 3; round++)
+        {
+            world.PassRescanBackoff();
+            await world.Service.RescanPendingAsync();
+        }
+
+        var item = world.Single(order);
+        Assert.Equal(OrderEvidence.MaxScanAttempts, item.ScanAttempts);
+        Assert.True(item.ScanExhausted);
+        Assert.False(item.CanRetryScan);
+        Assert.Contains("停止自动重试", item.LastScanNote);
+        Assert.Equal(EvidenceScanStatus.Pending, item.ScanStatus);
+
+        world.PassRescanBackoff();
+        Assert.Equal(0, await world.Service.RescanPendingAsync());
+    }
+
+    [Fact]
+    public async Task Rescan_counts_transport_failures_against_the_attempt_budget()
+    {
+        var world = new EvidenceWorld(EvidenceScanStatus.Pending);
+        var order = world.CreateOrder();
+        await world.UploadPendingAsync(order);
+
+        world.Scanner.Failure = new InvalidOperationException("扫描服务挂了");
+        world.PassRescanBackoff();
+        await world.Service.RescanPendingAsync();
+
+        var item = world.Single(order);
+        Assert.Equal(2, item.ScanAttempts);
+        Assert.Contains("扫描失败", item.LastScanNote);
+        Assert.Equal(EvidenceScanStatus.Pending, item.ScanStatus);
+    }
+
     /// <summary>1x1 透明 PNG（67 字节），用于让文件签名校验通过。</summary>
-    private static byte[] PngBytes() =>
-    [
+    private static byte[] PngBytes() =>    [
         0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
         0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
         0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
@@ -209,22 +377,33 @@ public sealed class EvidenceServiceTests
         0x42, 0x60, 0x82
     ];
 
+    /// <summary>测试用的凭证环境：真实 EvidenceService + 内存仓储 + 可切换的扫描替身。</summary>
     private sealed class EvidenceWorld
     {
-        public EvidenceWorld(EvidenceScanStatus scanStatus = EvidenceScanStatus.Clean)
+        public EvidenceWorld(
+            EvidenceScanStatus scanStatus = EvidenceScanStatus.Clean,
+            Dictionary<string, string>? settings = null,
+            MutableEvidenceScanner? scanner = null)
         {
-            Clock = new FixedTimeProvider(Now);
+            Clock = new MutableTimeProvider(Now);
             Storage = new InMemoryFileStorage();
             Evidence = new InMemoryEvidenceRepository();
             Orders = new InMemoryOrderRepository();
-            Service = new EvidenceService(Orders, Evidence, Storage, new FakeEvidenceScanner(scanStatus), Clock);
+            Scanner = scanner ?? new MutableEvidenceScanner(scanStatus);
+            Settings = new StubSettingsProvider(settings ?? []);
+            Service = new EvidenceService(Orders, Evidence, Storage, Scanner, Settings, Clock);
         }
 
-        public FixedTimeProvider Clock { get; }
+        public MutableTimeProvider Clock { get; }
         public InMemoryFileStorage Storage { get; }
         public InMemoryEvidenceRepository Evidence { get; }
         public InMemoryOrderRepository Orders { get; }
+        public MutableEvidenceScanner Scanner { get; }
+        public StubSettingsProvider Settings { get; }
         public EvidenceService Service { get; }
+
+        /// <summary>推进时钟，跨过重新扫描的退避窗口。</summary>
+        public void PassRescanBackoff() => Clock.Advance(EvidenceService.RescanBackoff + TimeSpan.FromSeconds(1));
 
         public Order CreateOrder(bool start = true)
         {
@@ -233,5 +412,10 @@ public sealed class EvidenceServiceTests
             if (start) order.Start(order.WorkerId);
             return order;
         }
+
+        public Task<EvidenceResponse> UploadPendingAsync(Order order) =>
+            Service.UploadAsync(order.Id, order.WorkerId, "a.png", "image/png", PngBytes().Length, new MemoryStream(PngBytes()));
+
+        public OrderEvidence Single(Order order) => Evidence.ListByOrder(order.Id).Single();
     }
 }

@@ -1,9 +1,11 @@
+using System.Globalization;
+using AIToHuman.Domain.Orders;
+
 namespace AIToHuman.Application.Settings;
 
 /// <summary>设置键常量：消费方代码只引用这里的常量，避免拼写漂移。</summary>
 public static class SettingKeys
-{
-    public const string AiProvider = "ai.provider";
+{    public const string AiProvider = "ai.provider";
     public const string AiBaseUrl = "ai.baseUrl";
     public const string AiApiKey = "ai.apiKey";
     public const string AiModel = "ai.model";
@@ -23,6 +25,9 @@ public static class SettingKeys
     public const string EvidenceScannerApiKey = "evidence.scanner.apiKey";
     public const string EvidenceScannerTimeoutSeconds = "evidence.scanner.timeoutSeconds";
     public const string EvidenceScannerFailMode = "evidence.scanner.failMode";
+
+    public const string EvidenceMaxSizeBytes = "evidence.maxSizeBytes";
+    public const string EvidenceMaxPerOrder = "evidence.maxPerOrder";
 }
 
 /// <summary>
@@ -50,6 +55,9 @@ public static class SettingCatalog
         new(SettingKeys.StorageS3AccessKeyId, "对象存储", "S3 AccessKeyId", "对象存储的访问密钥 ID。", SettingValueKind.String, SettingCatalog.Empty, "Settings:storage:s3:accessKeyId", MaxLength: 200),
         new(SettingKeys.StorageS3SecretAccessKey, "对象存储", "S3 SecretAccessKey", "对象存储的访问密钥。保存后只以掩码形式展示。", SettingValueKind.String, SettingCatalog.Empty, "Settings:storage:s3:secretAccessKey", IsSecret: true, MaxLength: 400),
         new(SettingKeys.StorageS3Prefix, "对象存储", "S3 对象前缀", "所有凭证对象的前缀，便于按环境隔离。", SettingValueKind.String, "evidence", "Settings:storage:s3:prefix", MaxLength: 200),
+
+        new(SettingKeys.EvidenceMaxSizeBytes, "凭证上传", "单份上限（字节）", $"单份凭证的最大字节数，硬上限 {OrderEvidence.AbsoluteMaxSizeBytes / 1024 / 1024} MB：只能往里收紧，不能突破。", SettingValueKind.Int, OrderEvidence.MaxSizeBytes.ToString(CultureInfo.InvariantCulture), "Settings:evidence:maxSizeBytes", MinInt: (int)EvidenceLimits.MinSizeBytes, MaxInt: (int)OrderEvidence.AbsoluteMaxSizeBytes),
+        new(SettingKeys.EvidenceMaxPerOrder, "凭证上传", "每单份数上限", $"每个订单最多几份凭证，硬上限 {OrderEvidence.AbsoluteMaxPerOrder} 份。", SettingValueKind.Int, OrderEvidence.MaxPerOrder.ToString(CultureInfo.InvariantCulture), "Settings:evidence:maxPerOrder", MinInt: 1, MaxInt: OrderEvidence.AbsoluteMaxPerOrder),
 
         new(SettingKeys.EvidenceScannerProvider, "内容扫描", "扫描方式", "none 表示未接入扫描（显式放行并打警告日志），http 表示调用下面配置的扫描服务。", SettingValueKind.Choice, "none", "Settings:evidence:scanner:provider", Choices: ["none", "http"]),
         new(SettingKeys.EvidenceScannerEndpoint, "内容扫描", "扫描服务地址", "接收凭证内容并返回判定结果的服务地址；留空等于停用。", SettingValueKind.Url, SettingCatalog.Empty, "Settings:evidence:scanner:endpoint"),

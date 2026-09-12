@@ -315,3 +315,6 @@ h1 em { color: var(--acid); font-style: normal; }
 .setting-audit small { display: block; margin-top: 4px; color: #747b77; font-size: 10px; }
 .setting-audit p { margin: 0; color: #626b66; font-size: 11px; }
 .setting-audit b { color: var(--ink); }
+
+/* 凭证面板里的扫描说明 */
+.evidence-note { display: block; margin-top: 3px; color: #8a6100; font-size: 10px; line-height: 1.5; }

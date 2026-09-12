@@ -11,4 +11,7 @@ public sealed record EvidenceResponse(
     string ScanStatus,
     DateTimeOffset CreatedAt,
     DateTimeOffset? ScannedAt,
-    bool IsDownloadable);
+    bool IsDownloadable,
+    int ScanAttempts,
+    string? LastScanNote,
+    bool ScanExhausted);

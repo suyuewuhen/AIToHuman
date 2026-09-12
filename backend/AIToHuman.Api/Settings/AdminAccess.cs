@@ -40,21 +40,22 @@ public sealed class AdminAccess
         return email is not null && emails.Contains(email.Trim().ToLowerInvariant());
     }
 
-    /// <summary>同时支持 <c>Admin__UserIds=a,b</c> 与数组形式的 <c>Admin__UserIds__0=a</c>。</summary>
+    /// <summary>
+    /// 同时支持 <c>Admin__UserIds=a,b</c>（标量）与数组形式的 <c>Admin__UserIds__0=a</c>。
+    /// 标量优先：环境变量比 appsettings 优先级更高，但它在配置系统里只是同一个键的值，
+    /// 如果先看数组子项，appsettings 里的数组会把环境变量的覆盖悄悄吃掉。
+    /// </summary>
     private static IEnumerable<string> ReadValues(IConfiguration configuration, string key)
     {
-        var section = configuration.GetSection(key);
-        var children = section.GetChildren()
+        var single = configuration[key];
+        if (!string.IsNullOrWhiteSpace(single))
+            return single.Split([',', ';', ' '], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+        return configuration.GetSection(key)
+            .GetChildren()
             .Select(child => child.Value)
             .Where(value => !string.IsNullOrWhiteSpace(value))
             .Select(value => value!)
             .ToArray();
-
-        if (children.Length > 0) return children;
-
-        var single = configuration[key];
-        return string.IsNullOrWhiteSpace(single)
-            ? []
-            : single.Split([',', ';', ' '], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
     }
 }

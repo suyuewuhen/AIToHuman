@@ -159,6 +159,8 @@ GET /api/v1/tasks?category=pickup&district=chaoyang&limit=20&cursor=...
 - `POST /api/v1/orders/{orderId}/evidence` 使用 `multipart/form-data`（字段名 `file`），仅订单服务者可调用；服务端按白名单校验 MIME、按文件签名校验内容、核对声明大小与实际字节数，超出 5 MB 返回 `413`、类型或内容不符返回 `422`。
 - `GET /api/v1/orders/{orderId}/evidence` 返回元数据（含扫描状态与是否可下载），仅订单参与者。
 - `GET /api/v1/evidence/{id}/content` 在鉴权后流式返回文件，响应带 `X-Content-Type-Options: nosniff`，下载文件名由系统生成（不使用用户原始文件名，避免响应头注入）；未通过扫描的凭证返回 `403`。
+- 上传上限来自运营配置（`evidence.maxPerOrder` / `evidence.maxSizeBytes`，默认 10 份 / 5 MB，硬上限 50 份 / 25 MB）：超限返回 `413`（请求体过大）或 `422`（份数已满），错误文案里带上当前生效的数值。浏览器侧只挡超过硬上限的文件，真正判断以服务端为准。
+- 凭证状态里带 `scanAttempts` / `lastScanNote` / `scanExhausted`：扫描服务没给出结论时凭证保持 `Pending`、不可下载，由后台任务退避重扫（30 秒退避、最多 5 次）；用尽次数后 `scanExhausted=true` 并保留原因，说明“为什么不能下载”对参与者始终可见。
 - 换成 S3/OSS 时保持同样的授权判定，只是把流式转发改为签发短时 URL；`IFileStorage` 已经把这个差异隔离在基础设施层。
 
 ## 9. SignalR 事件

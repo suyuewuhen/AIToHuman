@@ -18,6 +18,7 @@ using AIToHuman.Application.Orders;
 using AIToHuman.Application.Notifications;
 using AIToHuman.Api;
 using AIToHuman.Api.Notifications;
+using AIToHuman.Api.Orders;
 using AIToHuman.Api.Settings;
 using AIToHuman.Application.Settings;
 using AIToHuman.Contracts.Settings;
@@ -100,6 +101,8 @@ builder.Services.AddScoped<TaskService>();
 builder.Services.AddScoped<ConversationService>();
 // Outbox 派发：把已落库但还没推送的通知发给在线客户端。
 builder.Services.AddHostedService<NotificationDispatcher>();
+// 待扫描凭证的自动重扫：扫描服务不可用时不让凭证永远卡在“不可下载”。
+builder.Services.AddHostedService<EvidenceRescanService>();
 builder.Services.AddProblemDetails();
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBearer(options =>
 {
@@ -370,9 +373,10 @@ orderEvidence.MapGet("/", (Guid orderId, Guid? userId, ClaimsPrincipal user, IHo
 orderEvidence.MapPost("/", async (Guid orderId, IFormFile file, Guid? userId, ClaimsPrincipal user, IHostEnvironment environment, EvidenceService service, CancellationToken cancellationToken) =>
 {
     var uploaderId = ResolveUserId(user, userId ?? Guid.Empty, environment);
-    // 先用声明的长度拦掉超大上传，避免把大文件读进内存。
-    if (file.Length > EvidenceService.MaxUploadBytes)
-        return Results.Problem(title: "凭证过大", detail: $"凭证大小不能超过 {EvidenceService.MaxUploadBytes / 1024 / 1024} MB。", statusCode: StatusCodes.Status413PayloadTooLarge);
+    // 先用声明的长度拦掉超大上传，避免把大文件读进内存；上限来自运营配置，硬上限在领域层。
+    var limits = service.Limits();
+    if (file.Length > limits.MaxSizeBytes)
+        return Results.Problem(title: "凭证过大", detail: $"凭证大小不能超过 {limits.MaxSizeDisplay}。", statusCode: StatusCodes.Status413PayloadTooLarge);
 
     await using var stream = file.OpenReadStream();
     return Results.Ok(await service.UploadAsync(orderId, uploaderId, file.FileName, file.ContentType, file.Length, stream, cancellationToken));
