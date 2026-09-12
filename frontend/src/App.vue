@@ -1166,6 +1166,7 @@ onMounted(async () => {
                 <div>
                   <strong>{{ item.fileName }}</strong>
                   <small>{{ (item.sizeBytes / 1024).toFixed(1) }} KB · {{ item.contentType }} · {{ evidenceStatusLabel(item.scanStatus) }}<template v-if="item.scanAttempts > 0"> · 已检查 {{ item.scanAttempts }} 次</template></small>
+                  <small v-if="item.metadataRemoved" class="evidence-note">已在上传时移除元数据：{{ item.metadataRemoved }}</small>
                   <small v-if="item.lastScanNote" class="evidence-note">{{ item.lastScanNote }}{{ item.scanExhausted ? '（不会再自动重试）' : '' }}</small>
                 </div>
                 <button type="button" :disabled="!item.isDownloadable" @click="saveEvidence(item)">{{ item.isDownloadable ? '下载' : '不可下载' }}</button>

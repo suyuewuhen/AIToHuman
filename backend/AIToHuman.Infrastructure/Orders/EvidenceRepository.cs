@@ -20,6 +20,9 @@ public sealed class EfEvidenceRepository(TaskDbContext db) : IEvidenceRepository
 
     public int CountByOrder(Guid orderId) => db.Evidence.AsNoTracking().Count(item => item.OrderId == orderId);
 
+    public int CountByUploaderSince(Guid uploaderId, DateTimeOffset since) =>
+        db.Evidence.AsNoTracking().Count(item => item.UploadedBy == uploaderId && item.CreatedAt >= since);
+
     public IReadOnlyCollection<OrderEvidence> ListPendingScans(int limit) => db.Evidence
         .AsNoTracking()
         .Where(item => item.ScanStatus == nameof(EvidenceScanStatus.Pending))
@@ -62,7 +65,8 @@ public sealed class EfEvidenceRepository(TaskDbContext db) : IEvidenceRepository
         ScannedAt = evidence.ScannedAt,
         ScanAttempts = evidence.ScanAttempts,
         LastScanNote = evidence.LastScanNote,
-        LastScanAttemptAt = evidence.LastScanAttemptAt
+        LastScanAttemptAt = evidence.LastScanAttemptAt,
+        MetadataRemoved = evidence.MetadataRemoved
     };
 
     private static OrderEvidence Map(EvidenceRecord record) => OrderEvidence.Rehydrate(
@@ -79,7 +83,8 @@ public sealed class EfEvidenceRepository(TaskDbContext db) : IEvidenceRepository
         record.ScannedAt,
         record.ScanAttempts,
         record.LastScanNote,
-        record.LastScanAttemptAt);
+        record.LastScanAttemptAt,
+        record.MetadataRemoved);
 }
 
 public sealed class InMemoryEvidenceRepository : IEvidenceRepository
@@ -98,6 +103,14 @@ public sealed class InMemoryEvidenceRepository : IEvidenceRepository
     }
 
     public int CountByOrder(Guid orderId) { lock (gate) { return evidence.Count(item => item.OrderId == orderId); } }
+
+    public int CountByUploaderSince(Guid uploaderId, DateTimeOffset since)
+    {
+        lock (gate)
+        {
+            return evidence.Count(item => item.UploadedBy == uploaderId && item.CreatedAt >= since);
+        }
+    }
 
     public IReadOnlyCollection<OrderEvidence> ListPendingScans(int limit)
     {

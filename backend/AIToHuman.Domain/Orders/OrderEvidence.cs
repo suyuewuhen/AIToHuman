@@ -55,6 +55,26 @@ public sealed record EvidenceLimits(long MaxSizeBytes, int MaxPerOrder)
 }
 
 /// <summary>
+/// 按上传者统计的提交频率上限。用数据库计数而不是内存计数器，
+/// 因此多实例部署时每个实例看到的是同一个数字。
+/// </summary>
+public static class EvidenceUploadQuota
+{
+    public const int DefaultPerUserPerHour = 60;
+    public const int MinPerUserPerHour = 1;
+    public const int MaxPerUserPerHour = 1000;
+
+    /// <summary>统计窗口：一小时。</summary>
+    public static TimeSpan Window => TimeSpan.FromHours(1);
+
+    public static void EnsureWithin(int recentUploads, int quota)
+    {
+        if (recentUploads >= quota)
+            throw new DomainException($"一小时内的凭证上传次数已达上限（{quota} 次），请稍后再试。");
+    }
+}
+
+/// <summary>
 /// 订单执行凭证的元数据；文件本身存放在私有对象存储，通过系统生成的存储键访问。
 /// 原始文件名只作为展示元数据，永不参与路径拼接。
 /// 允许的类型白名单刻意留在代码里而不是做成运营配置：放开它等于允许上传可执行内容。
@@ -78,6 +98,9 @@ public sealed class OrderEvidence
 
     public const int MaxFileNameLength = 200;
     public const int MaxScanNoteLength = 200;
+
+    /// <summary>“已移除元数据”说明的长度上限。</summary>
+    public const int MaxMetadataNoteLength = 200;
 
     /// <summary>允许的凭证类型白名单；判断依据是服务端解析出的 MIME，不是扩展名。</summary>
     private static readonly Dictionary<string, string> AllowedContentTypes = new(StringComparer.OrdinalIgnoreCase)
@@ -149,6 +172,21 @@ public sealed class OrderEvidence
 
     public DateTimeOffset? LastScanAttemptAt { get; private set; }
 
+    /// <summary>上传时被剥离掉的元数据（例如 EXIF/GPS、PNG 文本块）；为空表示没剥或不需要剥。</summary>
+    public string? MetadataRemoved { get; private set; }
+
+    /// <summary>
+    /// 记录上传时剥离了哪些元数据。隐私相关的处理结果要能被查到，
+    /// 因此这里落库而不是只写日志。
+    /// </summary>
+    public void RecordStrippedMetadata(IReadOnlyList<string> removed)
+    {
+        if (removed.Count == 0) return;
+
+        var text = string.Join("、", removed);
+        MetadataRemoved = text.Length <= MaxMetadataNoteLength ? text : text[..MaxMetadataNoteLength];
+    }
+
     /// <summary>只有通过安全检查的凭证才能下载。</summary>
     public bool IsDownloadable => ScanStatus == EvidenceScanStatus.Clean;
 
@@ -172,7 +210,8 @@ public sealed class OrderEvidence
         DateTimeOffset? scannedAt,
         int scanAttempts = 0,
         string? lastScanNote = null,
-        DateTimeOffset? lastScanAttemptAt = null)
+        DateTimeOffset? lastScanAttemptAt = null,
+        string? metadataRemoved = null)
     {
         // 还原历史数据时只套用硬上限：当前的运营配置可能比上传时更紧，不能因此让旧凭证读不出来。
         var evidence = new OrderEvidence(orderId, uploadedBy, fileName, contentType, sizeBytes, contentHash, createdAt, EvidenceLimits.Absolute)
@@ -183,7 +222,8 @@ public sealed class OrderEvidence
             ScannedAt = scannedAt is null ? null : UtcTimestamp.Normalize(scannedAt.Value),
             ScanAttempts = scanAttempts < 0 ? 0 : scanAttempts,
             LastScanNote = NormalizeNote(lastScanNote),
-            LastScanAttemptAt = lastScanAttemptAt is null ? null : UtcTimestamp.Normalize(lastScanAttemptAt.Value)
+            LastScanAttemptAt = lastScanAttemptAt is null ? null : UtcTimestamp.Normalize(lastScanAttemptAt.Value),
+            MetadataRemoved = string.IsNullOrWhiteSpace(metadataRemoved) ? null : metadataRemoved.Trim()
         };
 
         return evidence;

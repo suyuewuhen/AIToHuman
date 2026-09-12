@@ -133,6 +133,9 @@ public sealed class TaskDbContext(DbContextOptions<TaskDbContext> options) : DbC
             entity.Property(item => item.ContentHash).HasMaxLength(64).IsRequired();
             entity.Property(item => item.ScanStatus).HasMaxLength(16).IsRequired();
             entity.Property(item => item.LastScanNote).HasMaxLength(OrderEvidence.MaxScanNoteLength);
+            entity.Property(item => item.MetadataRemoved).HasMaxLength(OrderEvidence.MaxMetadataNoteLength);
+            // 按上传者限速时要统计“某人最近一小时的提交”，这里给它一条索引。
+            entity.HasIndex(item => new { item.UploadedBy, item.CreatedAt });
             // 后台重扫按“待扫描 + 上传时间”扫描，这里给它一条索引。
             entity.HasIndex(item => new { item.ScanStatus, item.CreatedAt });
         });
@@ -300,6 +303,9 @@ public sealed class EvidenceRecord
     public string? LastScanNote { get; set; }
 
     public DateTimeOffset? LastScanAttemptAt { get; set; }
+
+    /// <summary>上传时被剥离的元数据（例如 EXIF/XMP、PNG 文本块）。</summary>
+    public string? MetadataRemoved { get; set; }
 }
 
 /// <summary>运营可配置项的覆盖值：等于“这条键被后台显式改过”，删除即恢复默认。机密在 <see cref="Value"/> 里是密文。</summary>

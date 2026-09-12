@@ -161,6 +161,8 @@ GET /api/v1/tasks?category=pickup&district=chaoyang&limit=20&cursor=...
 - `GET /api/v1/evidence/{id}/content` 在鉴权后流式返回文件，响应带 `X-Content-Type-Options: nosniff`，下载文件名由系统生成（不使用用户原始文件名，避免响应头注入）；未通过扫描的凭证返回 `403`。
 - 上传上限来自运营配置（`evidence.maxPerOrder` / `evidence.maxSizeBytes`，默认 10 份 / 5 MB，硬上限 50 份 / 25 MB）：超限返回 `413`（请求体过大）或 `422`（份数已满），错误文案里带上当前生效的数值。浏览器侧只挡超过硬上限的文件，真正判断以服务端为准。
 - 凭证状态里带 `scanAttempts` / `lastScanNote` / `scanExhausted`：扫描服务没给出结论时凭证保持 `Pending`、不可下载，由后台任务退避重扫（30 秒退避、最多 5 次）；用尽次数后 `scanExhausted=true` 并保留原因，说明“为什么不能下载”对参与者始终可见。
+- 上传时默认剥离图片元数据（`evidence.stripMetadata`）：JPEG 的 EXIF/XMP 与注释、PNG 的文本/时间/EXIF 块、WebP 的 EXIF/XMP 块会被丢掉，像素数据不变；`metadataRemoved` 字段说明剥掉了什么，为空表示没剥或不需要剥。关闭该开关会保留原始文件。
+- 每个上传者每小时有提交次数上限（`evidence.uploadsPerUserPerHour`，默认 60），超限返回 `422` 并给出当前上限；计数来自数据库，多实例部署同样生效。
 - 对象存储模式下还可以走两步流程：`GET /api/v1/evidence/{id}/download-url` 返回短时签名地址（有效期由 `evidence.downloadUrlLifetimeSeconds` 决定，默认 120 秒），客户端直接向私有 Bucket 取字节，省掉一次转发。地址里签了对象路径、有效期与 `response-content-disposition`，改动任何一项都会被对象存储拒绝（`403`）；权限与扫描门禁的判定和 `/content` 完全一致。列表响应里的 `presignedDownloadAvailable` 表明当前存储是否支持这条路径，本机目录存储申请地址会返回 `422` 并提示改用 `/content`。
 - 切换存储 provider 不会迁移已有对象：切回本机目录后，之前写在对象存储里的凭证下载会返回 `404`。
 

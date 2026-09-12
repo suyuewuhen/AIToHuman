@@ -68,16 +68,34 @@ public sealed class EvidenceService(
             throw new DomainException("只有执行中或待验收的订单可以上传凭证。");
         limits.EnsureCountWithin(evidenceRepository.CountByOrder(orderId));
 
+        // 频率限制：按上传者统计最近一小时的提交，计数来自数据库，因此多实例部署同样有效。
+        var now = timeProvider.GetUtcNow();
+        EvidenceUploadQuota.EnsureWithin(
+            evidenceRepository.CountByUploaderSince(uploaderId, now - EvidenceUploadQuota.Window),
+            Math.Clamp(
+                settings.GetInt(SettingKeys.EvidenceUploadsPerUserPerHour) ?? EvidenceUploadQuota.DefaultPerUserPerHour,
+                EvidenceUploadQuota.MinPerUserPerHour,
+                EvidenceUploadQuota.MaxPerUserPerHour));
+
         // 先按声明值做便宜校验，再把内容读进有界缓冲区并核对真实长度与摘要。
         OrderEvidence.EnsureSupportedContentType(contentType);
-        var (bytes, hash) = await ReadAllAsync(content, limits, cancellationToken);
+        var bytes = await ReadAllAsync(content, limits, cancellationToken);
         if (declaredSize != bytes.Length) throw new DomainException("声明的文件大小与实际内容不一致，请重新上传。");
         // 不信客户端声明的 MIME，按文件签名再核对一次。
         OrderEvidence.EnsureContentMatchesType(contentType, bytes);
 
-        var now = timeProvider.GetUtcNow();
-        var evidence = new OrderEvidence(orderId, uploaderId, fileName, OrderEvidence.NormalizeContentType(contentType), bytes.Length, hash, now, limits);
-        await storage.SaveAsync(evidence.StorageKey, new MemoryStream(bytes), evidence.ContentType, cancellationToken);
+        // 元数据剥离发生在校验之后、落库之前：摘要与大小都按“真正存下来的内容”计算。
+        var sanitized = settings.GetBool(SettingKeys.EvidenceStripMetadata, true)
+            ? EvidenceContentSanitizer.StripMetadata(contentType, bytes)
+            : new SanitizedContent(bytes, []);
+        // 改写之后再核对一次签名与大小，确保剥离没有破坏文件、也不会绕过限额。
+        OrderEvidence.EnsureContentMatchesType(contentType, sanitized.Bytes);
+        limits.EnsureSizeWithin(sanitized.Bytes.Length);
+        var hash = Convert.ToHexString(SHA256.HashData(sanitized.Bytes)).ToLowerInvariant();
+
+        var evidence = new OrderEvidence(orderId, uploaderId, fileName, OrderEvidence.NormalizeContentType(contentType), sanitized.Bytes.Length, hash, now, limits);
+        evidence.RecordStrippedMetadata(sanitized.Removed);
+        await storage.SaveAsync(evidence.StorageKey, new MemoryStream(sanitized.Bytes), evidence.ContentType, cancellationToken);
 
         var scanStatus = await scanner.ScanAsync(evidence.StorageKey, evidence.ContentType, cancellationToken);
         if (scanStatus == EvidenceScanStatus.Rejected)
@@ -211,7 +229,7 @@ public sealed class EvidenceService(
             ? $"{note}（已尝试 {OrderEvidence.MaxScanAttempts} 次，停止自动重试，请人工处理）"
             : note;
 
-    private static async Task<(byte[] Bytes, string Hash)> ReadAllAsync(Stream content, EvidenceLimits limits, CancellationToken cancellationToken)
+    private static async Task<byte[]> ReadAllAsync(Stream content, EvidenceLimits limits, CancellationToken cancellationToken)
     {
         // 读取时按上限加 1 字节截断，避免恶意大文件把内存吃满。
         using var buffer = new MemoryStream();
@@ -224,8 +242,7 @@ public sealed class EvidenceService(
             if (buffer.Length > limits.MaxSizeBytes) throw new DomainException($"凭证大小不能超过 {limits.MaxSizeDisplay}。");
         }
 
-        var bytes = buffer.ToArray();
-        return (bytes, Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant());
+        return buffer.ToArray();
     }
 
     private EvidenceResponse Map(OrderEvidence evidence) => new(
@@ -243,5 +260,6 @@ public sealed class EvidenceService(
         evidence.ScanAttempts,
         evidence.LastScanNote,
         evidence.ScanExhausted,
-        SupportsDirectDownload);
+        SupportsDirectDownload,
+        evidence.MetadataRemoved);
 }

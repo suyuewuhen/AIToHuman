@@ -24,7 +24,7 @@
 
 遗留项：
 
-- ✅ 数据库结构已收敛为 EF Core Migration 单一来源：14 个迁移覆盖 users、orders、order_evidence、reviews、tasks、task_applications、conversations、conversation_messages、notifications、order_messages、evidence（含扫描尝试记账）、system_settings、system_setting_audits 等表，Development 启动执行 `Database.Migrate()`，早期 `EnsureCreated()` 建出的旧库会自动基线化（见 `handoff.md` 第 10 节）。
+- ✅ 数据库结构已收敛为 EF Core Migration 单一来源：15 个迁移覆盖 users、orders、order_evidence、reviews、tasks、task_applications、conversations、conversation_messages、notifications、order_messages、evidence（含扫描记账与元数据剥离记录）、system_settings、system_setting_audits 等表，Development 启动执行 `Database.Migrate()`，早期 `EnsureCreated()` 建出的旧库会自动基线化（见 `handoff.md` 第 10 节）。
 - ⚠️ Redis 和 MinIO 仍只在 `compose.yaml` 中定义：缓存与实时扩展（SignalR backplane）没有接入。S3 兼容对象存储的实现已经有了（`S3FileStorage`，自研 SigV4，含短时直连下载地址，已用本机 MinIO 端到端验证），默认仍写本机私有目录，切到 `storage.provider=s3` 即可。
 
 退出条件：团队确认首发城市、任务分类、AI 建议价冷启动方式和身份/支付策略；开发环境可复现。开发环境可复现已基本达成，产品决策项仍未确认。
@@ -56,7 +56,7 @@
 交付：
 
 - ⚠️ 订单消息和 SignalR 更新：订单内消息、会话未读数与状态变更事件已实现（统一走持久化通知 + SignalR 推送，客户端按 REST 重新拉取事实状态）；消息分页、撤回与编辑未实现。
-- ⚠️ 文件上传、扫描、凭证关联和验收：验收与驳回已实现（驳回必须填原因），凭证文件上传与鉴权下载已实现（类型白名单 + 文件签名校验 + 大小与摘要校验 + 扫描状态机 + 待扫描凭证的退避重扫），存储位置可在本机目录与 S3 兼容对象存储之间切换，下载也支持短时直连签名地址，扫描方式与上传上限都可在运营后台调整；真实病毒/内容扫描服务、上传限速与“凭证关联到具体验收项”未实现。
+- ⚠️ 文件上传、扫描、凭证关联和验收：验收与驳回已实现（驳回必须填原因），凭证文件上传与鉴权下载已实现（类型白名单 + 文件签名校验 + 大小与摘要校验 + 扫描状态机 + 待扫描凭证的退避重扫 + 按人小时配额），存储位置可在本机目录与 S3 兼容对象存储之间切换，下载也支持短时直连签名地址，上传时默认剥离图片元数据（EXIF/GPS 等），扫描方式与这些上限都可在运营后台调整；真实病毒/内容扫描服务、图片像素级重编码与“凭证关联到具体验收项”未实现。
 - ⚠️ 取消、超时、争议、双向评价盲期/公开和运营处理：评价盲期与公开规则（双方提交或 7 天后）已实现；取消、超时和争议未实现，运营处理缺失。
 - ⛔ 完整可观测性、备份和恢复演练。
 

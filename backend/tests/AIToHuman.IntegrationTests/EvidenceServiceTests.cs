@@ -454,6 +454,97 @@ public sealed class EvidenceServiceTests
         Assert.Equal(Now.AddSeconds(EvidenceService.MinDownloadUrlLifetimeSeconds), world.Service.CreateDownloadUrl(uploaded.Id, order.OwnerId).ExpiresAt);
     }
 
+    [Fact]
+    public async Task Upload_strips_image_metadata_and_records_it()
+    {
+        var world = new EvidenceWorld();
+        var order = world.CreateOrder();
+        var withMetadata = PngWithText("Comment\0GPS 39.90,116.40");
+        Assert.Contains("GPS", System.Text.Encoding.Latin1.GetString(withMetadata), StringComparison.Ordinal);
+
+        var uploaded = await world.Service.UploadAsync(order.Id, order.WorkerId, "proof.png", "image/png", withMetadata.Length, new MemoryStream(withMetadata));
+
+        // 落库的是剥掉元数据之后的内容：字节更少、文本不再出现，摘要也按新内容算。
+        Assert.Equal("PNG tEXt", uploaded.MetadataRemoved);
+        Assert.True(uploaded.SizeBytes < withMetadata.Length);
+        var stored = world.Storage.Files.Values.Single();
+        Assert.Equal(uploaded.SizeBytes, stored.Length);
+        Assert.DoesNotContain("GPS", System.Text.Encoding.Latin1.GetString(stored), StringComparison.Ordinal);
+        Assert.Equal(uploaded.ContentHash, Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(stored)).ToLowerInvariant());
+        // 保留下来的块与像素数据必须逐字节一致（只有文本块被拿走）。
+        Assert.True(stored.AsSpan(0, 8).SequenceEqual(withMetadata.AsSpan(0, 8)));
+        Assert.Contains("IDAT", System.Text.Encoding.Latin1.GetString(stored), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Metadata_stripping_can_be_turned_off_for_forensic_use()
+    {
+        var world = new EvidenceWorld(settings: new Dictionary<string, string> { [SettingKeys.EvidenceStripMetadata] = "false" });
+        var order = world.CreateOrder();
+        var withMetadata = PngWithText("Comment\0GPS 39.90,116.40");
+
+        var uploaded = await world.Service.UploadAsync(order.Id, order.WorkerId, "proof.png", "image/png", withMetadata.Length, new MemoryStream(withMetadata));
+
+        Assert.Null(uploaded.MetadataRemoved);
+        Assert.Equal(withMetadata, world.Storage.Files.Values.Single());
+    }
+
+    [Fact]
+    public async Task Upload_quota_is_enforced_per_user()
+    {
+        var world = new EvidenceWorld(EvidenceScanStatus.Clean, new Dictionary<string, string> { [SettingKeys.EvidenceUploadsPerUserPerHour] = "2" });
+        var order = world.CreateOrder();
+        await world.UploadPendingAsync(order);
+        await world.UploadPendingAsync(order);
+
+        var error = await Assert.ThrowsAsync<DomainException>(() => world.UploadPendingAsync(order));
+
+        Assert.Equal("一小时内的凭证上传次数已达上限（2 次），请稍后再试。", error.Message);
+        Assert.Equal(2, world.Evidence.ListByOrder(order.Id).Count);
+    }
+
+    [Fact]
+    public async Task Upload_quota_counts_each_uploader_separately()
+    {
+        var world = new EvidenceWorld(EvidenceScanStatus.Clean, new Dictionary<string, string> { [SettingKeys.EvidenceUploadsPerUserPerHour] = "1" });
+        var first = world.CreateOrder();
+        var second = world.CreateOrder();
+        await world.UploadPendingAsync(first);
+
+        // 换一个服务者（另一个订单）不受前一个人的配额影响。
+        var other = await world.UploadPendingAsync(second);
+
+        Assert.Equal("Clean", other.ScanStatus);
+        // 每个上传者各自计数：第一个人用满配额，第二个人照样能传。
+        Assert.Equal(1, world.Evidence.CountByUploaderSince(first.WorkerId, Now - TimeSpan.FromHours(1)));
+        Assert.Equal(1, world.Evidence.CountByUploaderSince(second.WorkerId, Now - TimeSpan.FromHours(1)));
+        // 起点落在未来（等价于查询“此刻之后”的记录）时不计入任何历史上传。
+        Assert.Equal(0, world.Evidence.CountByUploaderSince(first.WorkerId, Now + TimeSpan.FromMinutes(1)));
+    }
+
+    /// <summary>带 <c>tEXt</c> 元数据块的最小 PNG：IHDR + tEXt + IDAT + IEND。</summary>
+    private static byte[] PngWithText(string text)
+    {
+        var output = new List<byte> { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A };
+        output.AddRange(Chunk("IHDR", [0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0]));
+        output.AddRange(Chunk("tEXt", System.Text.Encoding.ASCII.GetBytes(text)));
+        output.AddRange(Chunk("IDAT", [0x78, 0x9C, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01]));
+        output.AddRange(Chunk("IEND", []));
+        return output.ToArray();
+
+        static byte[] Chunk(string type, byte[] payload)
+        {
+            var chunk = new List<byte>();
+            var length = new byte[4];
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(length, (uint)payload.Length);
+            chunk.AddRange(length);
+            chunk.AddRange(System.Text.Encoding.ASCII.GetBytes(type));
+            chunk.AddRange(payload);
+            chunk.AddRange(new byte[4]);   // CRC 占位：服务端的剥离逻辑与签名校验都不校验 CRC
+            return chunk.ToArray();
+        }
+    }
+
     /// <summary>1x1 透明 PNG（67 字节），用于让文件签名校验通过。</summary>
     private static byte[] PngBytes() =>    [
         0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,

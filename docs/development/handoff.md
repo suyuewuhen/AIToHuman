@@ -29,7 +29,7 @@ AI 多轮澄清（每轮一个问题）
 → 双方评价，双方提交或 7 天后公开
 ```
 
-尚未实现：真实支付和托管、实名认证、禁止任务风险拦截、真实的病毒/内容扫描服务商（调用链路已就绪，只差选定服务商）、争议处理、取消与超时、精确地址访问审计、上传限速与 EXIF 去除；运营后台目前只有配置页面，任务/用户检索与风险复核等仍未实现；多实例可靠投递（Redis backplane）也未落地。
+尚未实现：真实支付和托管、实名认证、禁止任务风险拦截、真实的病毒/内容扫描服务商（协议已接好，只差选定/部署服务）、争议处理、取消与超时、精确地址访问审计、图片重新编码；运营后台目前只有配置页面，任务/用户检索与风险复核等仍未实现；多实例可靠投递（Redis backplane）也未落地。
 
 ## 2. 当前工作区状态
 
@@ -56,7 +56,7 @@ backend/AIToHuman.Application/    Common/（IUnitOfWork）、Conversations/、No
                                   Orders/（OrderChatService、EvidenceService）、Tasks/TaskService
 backend/AIToHuman.Contracts/      Conversations/、Notifications/、Orders/（消息与凭证）、Tasks/
 backend/AIToHuman.Domain/         Common/UtcTimestamp、Conversations/、Notifications/、Orders/、Tasks/
-backend/AIToHuman.Infrastructure/ Persistence/（TaskDbContext、EfUnitOfWork、14 个迁移）、
+backend/AIToHuman.Infrastructure/ Persistence/（TaskDbContext、EfUnitOfWork、15 个迁移）、
                                   Conversations/、Notifications/、Orders/（消息与凭证仓储）、
                                   Storage/（本机目录与 S3 兼容对象存储）
 backend/tests/AIToHuman.Domain.Tests/      新增 ConversationTests、NotificationTests、
@@ -127,7 +127,9 @@ docs/                             ai-planning、api/api-guidelines、architectur
 - 扫描没给出结论时凭证保持 `Pending`（不可下载）：后台 `EvidenceRescanService` 每 60 秒重扫一批，同一条凭证退避 30 秒、最多尝试 5 次；文件已不在存储里则直接判定为 `Rejected`。用尽次数后保留待扫描状态并写明“停止自动重试”，交给人工处理，不会无声无息地永远挂着。
 - 凭证接口会返回检查次数与最近一次说明（`scanAttempts` / `lastScanNote` / `scanExhausted`），前端凭证面板直接显示，因此“为什么不可下载”对双方都是可见的。
 - 类型白名单为 JPEG / PNG / WebP / PDF，且**刻意不做成运营配置**（放开它等于允许上传可执行内容）。服务端不信客户端声明的 MIME：先做白名单校验，再按**文件签名**核对内容（PNG 头、JPEG SOI、WebP RIFF+WEBP、`%PDF`），不一致直接拒绝。
-- 声明大小必须与实际字节数一致；读取时按上限截断，防止谎报大小绕过限额；摘要为 SHA-256。
+- 上传时默认剥离元数据（`evidence.stripMetadata`，默认开启）：JPEG 丢掉 EXIF/XMP（含 GPS）与注释段、PNG 丢掉 `tEXt`/`zTXt`/`iTXt`/`eXIf`/`tIME` 块、WebP 丢掉 `EXIF`/`XMP ` 子块并同步清掉 VP8X 的对应标志位与 RIFF 长度；**像素数据逐字节不动**，也不需要图像库（纯字节解析）。剥离结果写进 `metadataRemoved` 并落库，前端凭证面板会显示“已在上传时移除元数据：…”；需要完整取证链时可以把这个开关关掉，保留原始文件。PDF 不做处理（没有统一的元数据块结构）。
+- 按人限速（`evidence.uploadsPerUserPerHour`，默认 60）：同一个上传者一小时内提交的凭证数上限，计数直接查数据库（`IX_evidence_UploadedBy_CreatedAt`），因此多实例部署也一致；超限返回 `422` 与“一小时内的凭证上传次数已达上限（N 次），请稍后再试。”
+- 摘要与大小都按**真正存下来的内容**计算（先剥离、再核对签名与大小、最后算 SHA-256），所以剥离不会绕过单份上限。
 - 存储键完全由系统生成（`{orderId:N}/{evidenceId:N}.{ext}`），原始文件名只作为展示元数据，永不参与路径拼接。
 - 文件存私有存储：`local` 写本机目录（`ObjectStorage__LocalRoot`，默认应用目录下的 `evidence`），`s3` 走对象存储。下载前都要重新校验当前用户与订单关系以及扫描状态。
 - 下载有两条路：默认 `GET /api/v1/evidence/{id}/content`（服务端鉴权后流式转发，两种存储都支持）；对象存储可用时还可以走 `GET /api/v1/evidence/{id}/download-url` 拿一条**短时直连签名地址**，浏览器直接去 Bucket 取字节，省掉一次转发。列表响应里的 `presignedDownloadAvailable` 告诉客户端该走哪条路。
@@ -136,7 +138,7 @@ docs/                             ai-planning、api/api-guidelines、architectur
 - 扫描方式与存储位置都不是写死的：`evidence.scanner.provider` 可选 `none`（显式放行并打警告日志）或 `http`（把内容 POST 给配置的扫描服务），扫描不可用时按 `failMode` 处理；`storage.provider` 可选 `local`（本机目录）或 `s3`（S3 兼容对象存储，已实现）。两者都在运营后台可改，见下面「运营可配置的三方集成参数」。
 - S3 兼容存储（`S3FileStorage`）：不依赖厂商 SDK，只用 `HttpClient` 加自己实现的 AWS Signature V4；路径风格请求 `{endpoint}/{bucket}/{prefix}{key}`，只签 `host`、`x-amz-content-sha256`、`x-amz-date`。上传、下载、存在性判断与删除四个操作齐全；密钥不全时按缺哪项报哪项，Bucket 不存在或密钥无权限时把 S3 的错误码翻译成可行动的说明。MinIO、阿里云 OSS、AWS S3 都能用，换服务商只改运营配置。
 - 切换 `storage.provider` **不会迁移已有文件**：从 s3 切回 local 之后，之前写进 Bucket 的凭证在本机目录里找不到，下载会 `404`。生产切换要么保持同一 provider，要么先把对象搬过去。
-- 尚未实现：上传限速、图片重新编码与 EXIF 去除，以及真实的病毒/内容扫描服务商接入。
+- 尚未实现：图片重新编码（只剥元数据，不做像素级重编码），以及真实的病毒/内容扫描服务商接入（协议已实现，缺的是部署一个真实的扫描服务）。
 
 ### 订单会话（聊天）
 
@@ -398,7 +400,7 @@ netstat -ano | Select-String ':5188|:5173'
 
 Development + PostgreSQL 启动时改为应用 EF Core 迁移（`Database.Migrate()`），不再使用 `EnsureCreated()` 和幂等建表 SQL。生产环境由部署流程执行迁移，不在应用启动时自动迁移。
 
-迁移历史（14 个）：`AddUsers` → `AddOrders` → `AddOrderEvidence` → `AddReviews` → `AddOrderRework` → `AddConversations` → `AddTaskTables` → `AddConcurrencyTokens` → `AddNotifications` → `AddOrderMessages` → `AddTaskExecutionAddress` → `AddEvidence` → `AddSystemSettings` → `AddEvidenceScanAttempts`。其中 `AddTaskTables` 补上了此前只由 `EnsureCreated()` 建出、从未纳入迁移的 `tasks` 与 `task_applications` 两张核心表；`AddConcurrencyTokens` 给 `tasks`/`orders` 加 `Version` 乐观并发令牌；`AddTaskExecutionAddress` 给 `tasks` 加参与者层的精确执行地址；`AddEvidence` 建 `evidence` 表；`AddSystemSettings` 建运营配置的两张表；`AddEvidenceScanAttempts` 给 `evidence` 补上扫描尝试次数、最近一次说明与尝试时间，并为“待扫描 + 上传时间”建索引。
+迁移历史（15 个）：`AddUsers` → `AddOrders` → `AddOrderEvidence` → `AddReviews` → `AddOrderRework` → `AddConversations` → `AddTaskTables` → `AddConcurrencyTokens` → `AddNotifications` → `AddOrderMessages` → `AddTaskExecutionAddress` → `AddEvidence` → `AddSystemSettings` → `AddEvidenceScanAttempts` → `AddEvidenceMetadataRemoved`。其中 `AddTaskTables` 补上了此前只由 `EnsureCreated()` 建出、从未纳入迁移的 `tasks` 与 `task_applications` 两张核心表；`AddConcurrencyTokens` 给 `tasks`/`orders` 加 `Version` 乐观并发令牌；`AddTaskExecutionAddress` 给 `tasks` 加参与者层的精确执行地址；`AddEvidence` 建 `evidence` 表；`AddSystemSettings` 建运营配置的两张表；`AddEvidenceScanAttempts` 给 `evidence` 补上扫描尝试次数、最近一次说明与尝试时间，并为“待扫描 + 上传时间”建索引；`AddEvidenceMetadataRemoved` 补上“已移除元数据”说明，并为“上传者 + 上传时间”建索引供按人限速使用。
 
 早期 `EnsureCreated()` 建出的本地库没有迁移历史记录。启动逻辑会检测这种情况：先用模型对比物理表的「表名.列名」，只有结构完全对得上时，才把当时已有的迁移整体标记为已应用并打警告日志；一旦缺表或缺列就直接报错说明缺了什么，提示删除重建，避免在错误的 schema 上继续运行。基线化之后新增的迁移会正常应用——例如 `AddConcurrencyTokens` 就是在基线化之后自动补上的 `Version` 列。目标库不存在时由 `Migrate()` 负责建库。
 
@@ -535,7 +537,7 @@ npm run build
 
 - 领域单元测试 91 个（`AIToHuman.Domain.Tests`）：任务加价、禁止自己报名、禁止重复报名、选择服务者、订单参与者权限、履约状态流、返工闭环与批准后关单、执行地址校验；对话回合不变量、历史窗口与截断；通知字段校验与标记幂等；订单会话消息校验与未读语义；执行凭证的类型/大小/签名校验、扫描状态机与扫描尝试记账、上传限额边界；配置键形状、取值上限、版本自增与审计脱敏。
 - 集成测试 197 个（`AIToHuman.IntegrationTests`）：AI 多轮协议、输出严格校验与可控重试、SSE 线格式、会话用例、`IUnitOfWork` 事务边界、通知骨干、订单会话、评价盲期、大厅分页筛选与地址披露、执行凭证（上传/下载/权限/扫描门禁/上限/重扫闭环/直连地址签发），S3 兼容存储（请求形态、签名确定性、预签名参数与有效期、403/404 映射、缺配置不发请求）、EF 模型快照，以及运营配置（设置目录校验、解析顺序、加密与脱敏、审计、并发冲突、自检、HTTP 扫描器、存储 provider 选择、管理员名单判定与优先级、AI 配置热更新）。全部走上游替身与内存仓储，不需要网络和数据库。
-- 尚缺：认证与授权、PostgreSQL 仓储的自动化测试（目前只有手工端到端验证）、SignalR 重连与派发失败重试、上传限速与并发上传、运营后台的其余能力，以及主机级端到端测试——本机 NuGet 无法还原 `Microsoft.AspNetCore.Mvc.Testing`，所以没有 `WebApplicationFactory` 用例；网络可用后补该包，就能把本节的手工联调步骤逐步自动化。
+- 尚缺：认证与授权、PostgreSQL 仓储的自动化测试（目前只有手工端到端验证）、SignalR 重连与派发失败重试、运营后台的其余能力，以及主机级端到端测试——本机 NuGet 无法还原 `Microsoft.AspNetCore.Mvc.Testing`，所以没有 `WebApplicationFactory` 用例；网络可用后补该包，就能把本节的手工联调步骤逐步自动化。
 
 ## 12. 完成状态与后续顺序
 
@@ -571,6 +573,7 @@ npm run build
 - 凭证扫描闭环与可配置上传上限：`evidence` 表新增扫描尝试次数、最近说明与尝试时间（迁移 `AddEvidenceScanAttempts`）；`EvidenceRescanService` 每 60 秒按 30 秒退避重扫 `Pending` 凭证、最多 5 次，文件缺失直接判定 `Rejected`，用尽次数后保留说明交给人工；`evidence.maxSizeBytes` / `evidence.maxPerOrder` 纳入设置目录（硬上限 25 MB / 50 份），凭证接口与页面展示检查次数与说明；见第 3、10 节。
 - S3 兼容对象存储：新增 `S3FileStorage`（自研 AWS SigV4，不依赖厂商 SDK），按 `storage.s3.*` 做上传/下载/存在性/删除；`SettingsFileStorage` 按 `storage.provider` 分派 local 与 s3；配置不全、Bucket 不存在、密钥无权限都会翻译成可行动的说明；已用本机 MinIO 加独立客户端 `mc` 端到端验证（见第 11 节）。
 - 短时直连下载地址：`S3FileStorage` 实现可选的 `IPresignedFileStorage`（SigV4 查询串签名，含对象路径、有效期与附件名），新增 `GET /api/v1/evidence/{id}/download-url` 与 `evidence.downloadUrlLifetimeSeconds`（5 至 900 秒，默认 120），前端在支持时直接跳转签名地址、否则回退流式下载；篡改与过期都由对象存储自己拒绝（403），已用真实 MinIO 验证。
+- 元数据剥离与按人限速：`EvidenceContentSanitizer`（领域层，纯字节解析）处理 JPEG/PNG/WebP 的元数据段，`evidence.stripMetadata` 控制开关、剥离结果落库到 `evidence.MetadataRemoved`（迁移 `AddEvidenceMetadataRemoved`）并在接口与页面展示；`evidence.uploadsPerUserPerHour`（默认 60）按上传者限速，计数走数据库并配了 `(UploadedBy, CreatedAt)` 索引，多实例一致。
 
 ### 后续跟进（原 P1 的延伸项）
 
@@ -580,7 +583,7 @@ npm run build
 - 通知的更多事件类型（报名、评价公开、任务过期）与推送渠道（短信、邮件）。
 - 会话消息的分页与历史截断、消息撤回与编辑。
 - 大厅排序选项（悬赏、距离）、任务分类筛选，以及精确地址的访问审计。
-- 上传限速、图片重新编码与 EXIF 去除、凭证与验收项关联。
+- 图片像素级重新编码、凭证与验收项关联，以及运营后台的任务/用户检索与风险复核。
 
 ### P2
 

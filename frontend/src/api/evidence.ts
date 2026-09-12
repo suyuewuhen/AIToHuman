@@ -20,6 +20,8 @@ export interface EvidenceItem {
   scanExhausted: boolean
   /** 当前存储是否支持短时直连下载地址；false 时走鉴权后的 /content 流式下载。 */
   presignedDownloadAvailable: boolean
+  /** 上传时被剥离的元数据（例如 EXIF/XMP、PNG 文本块）；为空表示没剥或不需要剥。 */
+  metadataRemoved: string | null
 }
 
 /** 短时直连下载地址；有效期由服务端运营配置决定，过期后需要重新申请。 */
