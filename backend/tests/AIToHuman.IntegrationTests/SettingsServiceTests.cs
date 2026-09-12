@@ -84,6 +84,8 @@ public sealed class SettingsServiceTests
         var host = new TestSettingsHost();
 
         await host.Service.UpdateAsync(SettingKeys.AiApiKey, new UpdateSettingRequest("sk-first-1111"), Admin);
+        // 审计按发生时间倒序；同一时刻的两条记录之间没有稳定顺序，所以这里推进时钟。
+        host.Clock.Advance(TimeSpan.FromMinutes(1));
         await host.Service.UpdateAsync(SettingKeys.AiApiKey, new UpdateSettingRequest("sk-second-2222"), Admin);
 
         var audits = host.Audits();
