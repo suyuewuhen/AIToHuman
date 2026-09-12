@@ -180,6 +180,32 @@ public sealed class TaskItem
         Status = TaskStatus.Closed;
     }
 
+    /// <summary>
+    /// 运营人工下架：草稿或已发布但尚未分配的任务可以下架，下架后不再出现在任务大厅。
+    /// 必须给出原因（原因本身记在运营审计里，任务实体只负责拦住“没有原因的下架”）。
+    /// 已经产生订单的任务不能直接下架——订单要先按正常流程结束或走争议处理，
+    /// 否则会出现“任务消失了但订单还挂在服务者名下”的状态。
+    /// </summary>
+    public void Cancel(string reason, DateTimeOffset now)
+    {
+        if (Status is not (TaskStatus.ReadyToPublish or TaskStatus.Published))
+        {
+            throw Status == TaskStatus.Assigned
+                ? new DomainException("任务已经分配并产生订单，不能直接下架：请先处理订单（验收、驳回或走争议流程）。")
+                : new DomainException($"任务当前状态 {Status} 不允许下架。");
+        }
+
+        var trimmed = reason?.Trim() ?? string.Empty;
+        if (trimmed.Length is < 1 or > MaxCancellationReasonLength)
+            throw new DomainException($"下架任务必须填写原因，长度不超过 {MaxCancellationReasonLength} 个字符。");
+
+        _ = UtcTimestamp.Normalize(now);
+        Status = TaskStatus.Cancelled;
+    }
+
+    /// <summary>下架原因的长度上限（原因记在运营审计表里）。</summary>
+    public const int MaxCancellationReasonLength = 200;
+
     private void EnsureStatus(TaskStatus expected)
     {
         if (Status != expected)

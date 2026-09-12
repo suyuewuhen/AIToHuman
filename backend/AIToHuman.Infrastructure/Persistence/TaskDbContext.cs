@@ -1,3 +1,4 @@
+using AIToHuman.Domain.Admin;
 using AIToHuman.Domain.Orders;
 using AIToHuman.Domain.Settings;
 using Microsoft.EntityFrameworkCore;
@@ -18,6 +19,7 @@ public sealed class TaskDbContext(DbContextOptions<TaskDbContext> options) : DbC
     public DbSet<EvidenceRecord> Evidence => Set<EvidenceRecord>();
     public DbSet<SystemSettingRecord> SystemSettings => Set<SystemSettingRecord>();
     public DbSet<SettingsAuditRecord> SettingsAudits => Set<SettingsAuditRecord>();
+    public DbSet<AdminAuditRecord> AdminAudits => Set<AdminAuditRecord>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -159,6 +161,17 @@ public sealed class TaskDbContext(DbContextOptions<TaskDbContext> options) : DbC
             entity.Property(item => item.Action).HasMaxLength(16).IsRequired();
             entity.Property(item => item.OldValue).HasMaxLength(SettingsAuditEntry.MaxValueLength).IsRequired();
             entity.Property(item => item.NewValue).HasMaxLength(SettingsAuditEntry.MaxValueLength).IsRequired();
+        });
+
+        modelBuilder.Entity<AdminAuditRecord>(entity =>
+        {
+            entity.ToTable("admin_audit_entries");
+            entity.HasKey(item => item.Id);
+            entity.HasIndex(item => item.OccurredAt);
+            entity.HasIndex(item => new { item.TargetType, item.TargetId });
+            entity.Property(item => item.Action).HasMaxLength(AdminAuditEntry.MaxActionLength).IsRequired();
+            entity.Property(item => item.TargetType).HasMaxLength(AdminAuditEntry.MaxTargetTypeLength).IsRequired();
+            entity.Property(item => item.Reason).HasMaxLength(AdminAuditEntry.MaxReasonLength).IsRequired();
         });
     }
 }
@@ -317,6 +330,18 @@ public sealed class SystemSettingRecord
     public int Version { get; set; }
     public Guid UpdatedBy { get; set; }
     public DateTimeOffset UpdatedAt { get; set; }
+}
+
+/// <summary>运营操作审计，只追加；取值已由领域层校验长度。</summary>
+public sealed class AdminAuditRecord
+{
+    public Guid Id { get; set; }
+    public Guid ActorId { get; set; }
+    public string Action { get; set; } = "";
+    public string TargetType { get; set; } = "";
+    public Guid TargetId { get; set; }
+    public string Reason { get; set; } = "";
+    public DateTimeOffset OccurredAt { get; set; }
 }
 
 /// <summary>配置变更审计，只追加；取值已由应用层脱敏。</summary>

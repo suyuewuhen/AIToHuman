@@ -20,8 +20,11 @@ using AIToHuman.Api;
 using AIToHuman.Api.Notifications;
 using AIToHuman.Api.Orders;
 using AIToHuman.Api.Settings;
+using AIToHuman.Application.Admin;
 using AIToHuman.Application.Settings;
+using AIToHuman.Contracts.Admin;
 using AIToHuman.Contracts.Settings;
+using AIToHuman.Infrastructure.Admin;
 using AIToHuman.Infrastructure.Persistence;
 using AIToHuman.Infrastructure.Settings;
 using Microsoft.AspNetCore.DataProtection;
@@ -49,6 +52,7 @@ builder.Services.AddSingleton<ISecretProtector, DataProtectionSecretProtector>()
 builder.Services.AddScoped<SettingsSnapshotBuilder>();
 builder.Services.AddScoped<ISettingProbe, SettingProbe>();
 builder.Services.AddScoped<SettingsService>();
+builder.Services.AddScoped<AdminConsoleService>();
 builder.Services.AddHostedService<SettingsRefreshService>();
 builder.Services.AddHttpClient("settings-probe", client => client.Timeout = Timeout.InfiniteTimeSpan);
 
@@ -71,6 +75,9 @@ if (usePostgres)
     builder.Services.AddScoped<IOrderMessageRepository, EfOrderMessageRepository>();
     builder.Services.AddScoped<IEvidenceRepository, EfEvidenceRepository>();
     builder.Services.AddScoped<ISystemSettingsRepository, EfSystemSettingRepository>();
+    builder.Services.AddScoped<IAdminTaskQuery, EfAdminTaskQuery>();
+    builder.Services.AddScoped<IUserDirectory, EfUserDirectory>();
+    builder.Services.AddScoped<IAdminAuditRepository, EfAdminAuditRepository>();
     builder.Services.AddScoped<IUnitOfWork, EfUnitOfWork>();
     builder.Services.AddScoped<AuthService>();
 }
@@ -84,6 +91,9 @@ else
     builder.Services.AddSingleton<IOrderMessageRepository, InMemoryOrderMessageRepository>();
     builder.Services.AddSingleton<IEvidenceRepository, InMemoryEvidenceRepository>();
     builder.Services.AddSingleton<ISystemSettingsRepository, InMemorySystemSettingRepository>();
+    builder.Services.AddSingleton<IAdminTaskQuery, InMemoryTaskRepository>();
+    builder.Services.AddSingleton<IUserDirectory, EmptyUserDirectory>();
+    builder.Services.AddSingleton<IAdminAuditRepository, InMemoryAdminAuditRepository>();
     builder.Services.AddSingleton<IUnitOfWork, InMemoryUnitOfWork>();
 }
 builder.Services.AddSingleton(TimeProvider.System);
@@ -428,6 +438,23 @@ adminSettings.MapDelete("/{key}", async (string key, ClaimsPrincipal user, Setti
 });
 adminSettings.MapPost("/{key}/test", async (string key, SettingsService service, CancellationToken cancellationToken) =>
     Results.Ok(await service.TestAsync(key, cancellationToken)));
+
+// 运营后台的人工兜底：跨所有者检索任务/用户、看详情、把尚未分配的任务下架（原因进审计）。
+// 风险规则引擎还没有实现，因此这里不做任何自动判定，只是人工介入的入口。
+var adminConsole = app.MapGroup("/api/v1/admin").RequireAuthorization(AdminAccess.PolicyName);
+adminConsole.MapGet("/tasks", (string? keyword, string? status, int? limit, AdminConsoleService service) =>
+    Results.Ok(service.SearchTasks(keyword, status, limit)));
+adminConsole.MapGet("/tasks/{id:guid}", (Guid id, AdminConsoleService service) => Results.Ok(service.GetTask(id)));
+adminConsole.MapPost("/tasks/{id:guid}/cancel", (Guid id, AdminCancelTaskRequest request, ClaimsPrincipal user, AdminConsoleService service) =>
+{
+    var actorId = ResolveAdminId(user);
+    var cancelled = service.CancelTask(id, request.Reason, actorId);
+    app.Logger.LogInformation("运营 {ActorId} 下架了任务 {TaskId}：{Reason}", actorId, cancelled.Id, request.Reason);
+    return Results.Ok(cancelled);
+});
+adminConsole.MapGet("/users", (string? keyword, int? limit, AdminConsoleService service) =>
+    Results.Ok(service.SearchUsers(keyword, limit)));
+adminConsole.MapGet("/audits", (int? limit, AdminConsoleService service) => Results.Ok(service.ListAudits(limit)));
 
 app.Run();
 

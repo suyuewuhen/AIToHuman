@@ -139,7 +139,7 @@ docs/                             ai-planning、api/api-guidelines、architectur
 - ClamAV 走的是官方 INSTREAM 协议：连接后发 `zINSTREAM\0`，随后是「4 字节大端长度 + 数据」分块（64 KB 一块），最后发零长度块结束；clamd 回 `stream: OK` / `stream: <签名> FOUND` / `... ERROR`。**内容不落临时文件**，也不依赖任何厂商 SDK。
 - S3 兼容存储（`S3FileStorage`）：不依赖厂商 SDK，只用 `HttpClient` 加自己实现的 AWS Signature V4；路径风格请求 `{endpoint}/{bucket}/{prefix}{key}`，只签 `host`、`x-amz-content-sha256`、`x-amz-date`。上传、下载、存在性判断与删除四个操作齐全；密钥不全时按缺哪项报哪项，Bucket 不存在或密钥无权限时把 S3 的错误码翻译成可行动的说明。MinIO、阿里云 OSS、AWS S3 都能用，换服务商只改运营配置。
 - 切换 `storage.provider` **不会迁移已有文件**：从 s3 切回 local 之后，之前写进 Bucket 的凭证在本机目录里找不到，下载会 `404`。生产切换要么保持同一 provider，要么先把对象搬过去。
-- 尚未实现：图片像素级重新编码；真实的病毒库由部署方自己维护（协议已实现并验证，缺的是部署一个真实的 clamd 或用真实服务商替换 `http` 实现）。
+- 尚未实现：图片像素级重新编码；真实的病毒库由部署方自己维护（协议已实现并验证，缺的是部署一个真实的 clamd 或用真实服务商替换 `http` 实现）；运营后台的风险规则引擎与运营页面里的任务/用户检索入口。
 
 ### 订单会话（聊天）
 
@@ -393,6 +393,11 @@ netstat -ano | Select-String ':5188|:5173'
 | DELETE | `/api/v1/admin/settings/{key}` | 删除覆盖，恢复环境变量或默认值 |
 | POST | `/api/v1/admin/settings/{key}/test` | 只读自检（目录可写、服务可达） |
 | GET | `/api/v1/admin/settings/audits?limit=` | 配置变更审计，按时间倒序 |
+| GET | `/api/v1/admin/audits?limit=` | 运营操作审计（人工下架等），按时间倒序 |
+| GET | `/api/v1/admin/tasks?keyword=&status=&limit=` | 跨所有者检索任务（标题/描述/区域模糊匹配 + 状态过滤） |
+| GET | `/api/v1/admin/tasks/{id}` | 任务详情（含报名者与订单状态） |
+| POST | `/api/v1/admin/tasks/{id}/cancel` | 人工下架（必须给原因，原因进运营审计；已分配任务返回 422） |
+| GET | `/api/v1/admin/users?keyword=&limit=` | 用户检索（邮箱/昵称）；无 PostgreSQL 时返回空列表 |
 | GET/WS | `/hubs/notifications` | SignalR 主动通知；推送 `notification.created` 信封 |
 
 普通 API 错误使用 Problem Details，主要映射为 `400`、`401`、`403`、`404`、`409`、`422`、`502` 和 `504`。`409` 既用于资源冲突（例如邮箱已注册），也用于乐观并发冲突。AI SSE 在响应开始后的错误使用流内 `error` 事件。
@@ -401,7 +406,7 @@ netstat -ano | Select-String ':5188|:5173'
 
 Development + PostgreSQL 启动时改为应用 EF Core 迁移（`Database.Migrate()`），不再使用 `EnsureCreated()` 和幂等建表 SQL。生产环境由部署流程执行迁移，不在应用启动时自动迁移。
 
-迁移历史（15 个）：`AddUsers` → `AddOrders` → `AddOrderEvidence` → `AddReviews` → `AddOrderRework` → `AddConversations` → `AddTaskTables` → `AddConcurrencyTokens` → `AddNotifications` → `AddOrderMessages` → `AddTaskExecutionAddress` → `AddEvidence` → `AddSystemSettings` → `AddEvidenceScanAttempts` → `AddEvidenceMetadataRemoved`。其中 `AddTaskTables` 补上了此前只由 `EnsureCreated()` 建出、从未纳入迁移的 `tasks` 与 `task_applications` 两张核心表；`AddConcurrencyTokens` 给 `tasks`/`orders` 加 `Version` 乐观并发令牌；`AddTaskExecutionAddress` 给 `tasks` 加参与者层的精确执行地址；`AddEvidence` 建 `evidence` 表；`AddSystemSettings` 建运营配置的两张表；`AddEvidenceScanAttempts` 给 `evidence` 补上扫描尝试次数、最近一次说明与尝试时间，并为“待扫描 + 上传时间”建索引；`AddEvidenceMetadataRemoved` 补上“已移除元数据”说明，并为“上传者 + 上传时间”建索引供按人限速使用。
+迁移历史（16 个）：`AddUsers` → `AddOrders` → `AddOrderEvidence` → `AddReviews` → `AddOrderRework` → `AddConversations` → `AddTaskTables` → `AddConcurrencyTokens` → `AddNotifications` → `AddOrderMessages` → `AddTaskExecutionAddress` → `AddEvidence` → `AddSystemSettings` → `AddEvidenceScanAttempts` → `AddEvidenceMetadataRemoved` → `AddAdminAudit`。其中 `AddTaskTables` 补上了此前只由 `EnsureCreated()` 建出、从未纳入迁移的 `tasks` 与 `task_applications` 两张核心表；`AddConcurrencyTokens` 给 `tasks`/`orders` 加 `Version` 乐观并发令牌；`AddTaskExecutionAddress` 给 `tasks` 加参与者层的精确执行地址；`AddEvidence` 建 `evidence` 表；`AddSystemSettings` 建运营配置的两张表；`AddEvidenceScanAttempts` 给 `evidence` 补上扫描尝试次数、最近一次说明与尝试时间；`AddEvidenceMetadataRemoved` 补上“已移除元数据”说明与按人限速用的索引；`AddAdminAudit` 建运营操作审计表 `admin_audit_entries`（人工下架等动作只追加留痕）。
 
 早期 `EnsureCreated()` 建出的本地库没有迁移历史记录。启动逻辑会检测这种情况：先用模型对比物理表的「表名.列名」，只有结构完全对得上时，才把当时已有的迁移整体标记为已应用并打警告日志；一旦缺表或缺列就直接报错说明缺了什么，提示删除重建，避免在错误的 schema 上继续运行。基线化之后新增的迁移会正常应用——例如 `AddConcurrencyTokens` 就是在基线化之后自动补上的 `Version` 列。目标库不存在时由 `Migrate()` 负责建库。
 
@@ -582,7 +587,8 @@ npm run build
 - S3 兼容对象存储：新增 `S3FileStorage`（自研 AWS SigV4，不依赖厂商 SDK），按 `storage.s3.*` 做上传/下载/存在性/删除；`SettingsFileStorage` 按 `storage.provider` 分派 local 与 s3；配置不全、Bucket 不存在、密钥无权限都会翻译成可行动的说明；已用本机 MinIO 加独立客户端 `mc` 端到端验证（见第 11 节）。
 - 短时直连下载地址：`S3FileStorage` 实现可选的 `IPresignedFileStorage`（SigV4 查询串签名，含对象路径、有效期与附件名），新增 `GET /api/v1/evidence/{id}/download-url` 与 `evidence.downloadUrlLifetimeSeconds`（5 至 900 秒，默认 120），前端在支持时直接跳转签名地址、否则回退流式下载；篡改与过期都由对象存储自己拒绝（403），已用真实 MinIO 验证。
 - 元数据剥离与按人限速：`EvidenceContentSanitizer`（领域层，纯字节解析）处理 JPEG/PNG/WebP 的元数据段，`evidence.stripMetadata` 控制开关、剥离结果落库到 `evidence.MetadataRemoved`（迁移 `AddEvidenceMetadataRemoved`）并在接口与页面展示；`evidence.uploadsPerUserPerHour`（默认 60）按上传者限速，计数走数据库并配了 `(UploadedBy, CreatedAt)` 索引，多实例一致。
-- ClamAV 扫描器：`ClamAvEvidenceScanner` 实现官方 INSTREAM 协议（分块推送、不落临时文件、无 SDK 依赖），`SettingsEvidenceScanner` 按 `evidence.scanner.provider` 在 none/http/clamav 之间分派；新增 `evidence.scanner.clamavHost` / `clamavPort`；已用协议级 TCP 替身验证命令格式、分块载荷、OK/FOUND/ERROR 三种判定与不可用时的失败模式（见第 11 节）。
+- 运营后台（人工兜底，后端已完成）：跨所有者检索任务与用户、查看任务详情、把**尚未分配**的任务下架并强制填写原因（原因写进 `admin_audit_entries`，`GET /api/v1/admin/audits` 可查）；已产生订单的任务会被领域规则拦住（`422`，提示先处理订单）。风险规则引擎仍未实现，所以这里**没有任何自动判定**，纯粹是人工介入入口。
+- 待补：运营页面上还没有“任务/用户检索”页签（目前只有配置项与变更记录两个页签，任务下架要调接口），以及这一块的端到端联调（单元/集成测试已覆盖领域规则；`admin-e2e` 脚本首版因为混入中文被 PowerShell 5.1 按 ANSI 读而无法解析，需要改成纯 ASCII 后重跑）。
 
 ### 后续跟进（原 P1 的延伸项）
 

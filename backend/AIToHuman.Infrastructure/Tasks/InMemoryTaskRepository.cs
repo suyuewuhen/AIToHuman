@@ -1,10 +1,13 @@
 using System.Collections.Concurrent;
+using AIToHuman.Application.Admin;
 using AIToHuman.Application.Tasks;
 using AIToHuman.Domain.Tasks;
+// System.Threading.Tasks 里也有一个 TaskStatus，这里明确用领域里的那个。
+using TaskStatus = AIToHuman.Domain.Tasks.TaskStatus;
 
 namespace AIToHuman.Infrastructure.Tasks;
 
-public sealed class InMemoryTaskRepository : ITaskRepository
+public sealed class InMemoryTaskRepository : ITaskRepository, IAdminTaskQuery
 {
     private readonly ConcurrentDictionary<Guid, TaskItem> _tasks = new();
 
@@ -29,4 +32,20 @@ public sealed class InMemoryTaskRepository : ITaskRepository
     }
 
     public void Save(TaskItem task) => _tasks[task.Id] = task;
+
+    /// <summary>运营检索：跨所有者，按关键字匹配标题/描述/区域，可选状态过滤。</summary>
+    public IReadOnlyCollection<TaskItem> Search(string? keyword, TaskStatus? status, int limit)
+    {
+        var trimmed = keyword?.Trim();
+        return _tasks.Values
+            .Where(task => status is null || task.Status == status)
+            .Where(task => string.IsNullOrEmpty(trimmed)
+                || task.Title.Contains(trimmed, StringComparison.OrdinalIgnoreCase)
+                || task.Description.Contains(trimmed, StringComparison.OrdinalIgnoreCase)
+                || task.District.Contains(trimmed, StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(task => task.CreatedAt)
+            .ThenBy(task => task.Id)
+            .Take(limit)
+            .ToArray();
+    }
 }
