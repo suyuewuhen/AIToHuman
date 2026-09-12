@@ -392,6 +392,9 @@ app.MapGet("/api/v1/evidence/{id:guid}/content", async (Guid id, Guid? userId, C
     // 下载名由系统生成，不使用用户原始文件名，避免响应头注入。
     return Results.File(content, evidence.ContentType, $"evidence-{evidence.Id:N}.{OrderEvidence.ExtensionFor(evidence.ContentType)}");
 });
+// 直连下载地址：只有对象存储支持；权限与扫描状态判定和 /content 完全一致，只是把取字节的活交给浏览器。
+app.MapGet("/api/v1/evidence/{id:guid}/download-url", (Guid id, Guid? userId, ClaimsPrincipal user, IHostEnvironment environment, EvidenceService service) =>
+    Results.Ok(service.CreateDownloadUrl(id, ResolveUserId(user, userId ?? Guid.Empty, environment))));
 app.MapPost("/api/v1/orders/{id:guid}/start", (Guid id, OrderActionRequest request, ClaimsPrincipal user, IHostEnvironment environment, TaskService service) => Results.Ok(service.StartOrder(id, ResolveUserId(user, request.ActorId, environment))));
 app.MapPost("/api/v1/orders/{id:guid}/submit", (Guid id, OrderActionRequest request, ClaimsPrincipal user, IHostEnvironment environment, TaskService service) => Results.Ok(service.SubmitOrder(id, ResolveUserId(user, request.ActorId, environment), request.Note)));
 app.MapPost("/api/v1/orders/{id:guid}/approve", (Guid id, OrderActionRequest request, ClaimsPrincipal user, IHostEnvironment environment, TaskService service) => Results.Ok(service.ApproveOrder(id, ResolveUserId(user, request.ActorId, environment), request.Note)));

@@ -364,6 +364,96 @@ public sealed class EvidenceServiceTests
         Assert.Equal(EvidenceScanStatus.Pending, item.ScanStatus);
     }
 
+    [Fact]
+    public void Local_like_storage_reports_no_direct_download_and_refuses_to_sign()
+    {
+        var world = new EvidenceWorld();
+        var order = world.CreateOrder();
+        var evidence = new OrderEvidence(order.Id, order.WorkerId, "a.png", "image/png", 3, "hash", Now);
+        // 先让凭证具备下载资格，才能走到“存储不支持直连”这一层判断。
+        evidence.MarkScanned(EvidenceScanStatus.Clean, Now);
+        world.Evidence.Add(evidence);
+
+        // 列表里如实标注“不支持直连下载”，让客户端走 /content。
+        Assert.False(world.Service.List(order.Id, order.OwnerId).Single().PresignedDownloadAvailable);
+
+        var error = Assert.Throws<DomainException>(() => world.Service.CreateDownloadUrl(evidence.Id, order.OwnerId));
+        Assert.Contains("不支持短时直连下载地址", error.Message);
+    }
+
+    [Fact]
+    public void Scan_gate_is_checked_before_the_storage_capability()
+    {
+        var world = new EvidenceWorld();
+        var order = world.CreateOrder();
+        var pending = new OrderEvidence(order.Id, order.WorkerId, "a.png", "image/png", 3, "hash", Now);
+        world.Evidence.Add(pending);
+
+        // 未通过检查时先报扫描门禁，不泄露“存储是否支持直连”这类实现细节。
+        var error = Assert.Throws<UnauthorizedAccessException>(() => world.Service.CreateDownloadUrl(pending.Id, order.OwnerId));
+        Assert.Contains("尚未通过安全检查", error.Message);
+    }
+
+    [Fact]
+    public async Task Direct_download_url_needs_a_participant_and_a_clean_scan()
+    {
+        var world = new EvidenceWorld(EvidenceScanStatus.Clean, presigned: true);
+        var order = world.CreateOrder();
+        var uploaded = await world.UploadPendingAsync(order);
+        Assert.True(world.Service.SupportsDirectDownload);
+        Assert.True(world.Service.List(order.Id, order.OwnerId).Single().PresignedDownloadAvailable);
+
+        Assert.Throws<UnauthorizedAccessException>(() => world.Service.CreateDownloadUrl(uploaded.Id, Guid.NewGuid()));
+
+        var url = world.Service.CreateDownloadUrl(uploaded.Id, order.OwnerId);
+        Assert.StartsWith("https://storage.example.com/", url.Url);
+        Assert.Equal(Now.AddSeconds(EvidenceService.DefaultDownloadUrlLifetimeSeconds), url.ExpiresAt);
+        // 下载文件名由系统生成，不用用户原始文件名。
+        var request = Assert.Single(world.Presigned!.Requests);
+        Assert.EndsWith(".png", request.FileName);
+        Assert.Equal($"evidence-{uploaded.Id:N}.png", request.FileName);
+    }
+
+    [Fact]
+    public async Task Direct_download_url_is_refused_while_the_scan_has_no_verdict()
+    {
+        var world = new EvidenceWorld(EvidenceScanStatus.Pending, presigned: true);
+        var order = world.CreateOrder();
+        var uploaded = await world.UploadPendingAsync(order);
+
+        var error = Assert.Throws<UnauthorizedAccessException>(() => world.Service.CreateDownloadUrl(uploaded.Id, order.OwnerId));
+
+        Assert.Contains("尚未通过安全检查", error.Message);
+        Assert.Empty(world.Presigned!.Requests);
+    }
+
+    [Fact]
+    public async Task Direct_download_url_lifetime_comes_from_settings()
+    {
+        var world = new EvidenceWorld(EvidenceScanStatus.Clean, presigned: true, settings: new Dictionary<string, string>
+        {
+            [SettingKeys.EvidenceDownloadUrlLifetimeSeconds] = "30"
+        });
+        var order = world.CreateOrder();
+        var uploaded = await world.UploadPendingAsync(order);
+
+        Assert.Equal(Now.AddSeconds(30), world.Service.CreateDownloadUrl(uploaded.Id, order.OwnerId).ExpiresAt);
+    }
+
+    [Fact]
+    public async Task Direct_download_url_lifetime_is_clamped()
+    {
+        var world = new EvidenceWorld(EvidenceScanStatus.Clean, presigned: true, settings: new Dictionary<string, string>
+        {
+            [SettingKeys.EvidenceDownloadUrlLifetimeSeconds] = "1"
+        });
+        var order = world.CreateOrder();
+        var uploaded = await world.UploadPendingAsync(order);
+
+        // 配置写坏了也不能签出“1 秒就过期”的地址。
+        Assert.Equal(Now.AddSeconds(EvidenceService.MinDownloadUrlLifetimeSeconds), world.Service.CreateDownloadUrl(uploaded.Id, order.OwnerId).ExpiresAt);
+    }
+
     /// <summary>1x1 透明 PNG（67 字节），用于让文件签名校验通过。</summary>
     private static byte[] PngBytes() =>    [
         0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
@@ -383,19 +473,26 @@ public sealed class EvidenceServiceTests
         public EvidenceWorld(
             EvidenceScanStatus scanStatus = EvidenceScanStatus.Clean,
             Dictionary<string, string>? settings = null,
-            MutableEvidenceScanner? scanner = null)
+            MutableEvidenceScanner? scanner = null,
+            bool presigned = false)
         {
             Clock = new MutableTimeProvider(Now);
             Storage = new InMemoryFileStorage();
+            // presigned=true 时改用支持签发直连地址的替身，字节仍走同一个内存存储。
+            Presigned = presigned ? new FakePresignedFileStorage(Storage, Clock) : null;
             Evidence = new InMemoryEvidenceRepository();
             Orders = new InMemoryOrderRepository();
             Scanner = scanner ?? new MutableEvidenceScanner(scanStatus);
-            Settings = new StubSettingsProvider(settings ?? []);
-            Service = new EvidenceService(Orders, Evidence, Storage, Scanner, Settings, Clock);
+            Settings = new StubSettingsProvider(settings ?? new Dictionary<string, string>());
+            Service = new EvidenceService(Orders, Evidence, (IFileStorage?)Presigned ?? Storage, Scanner, Settings, Clock);
         }
 
         public MutableTimeProvider Clock { get; }
         public InMemoryFileStorage Storage { get; }
+
+        /// <summary>仅在 presigned=true 时存在；用于断言签发请求与有效期。</summary>
+        public FakePresignedFileStorage? Presigned { get; }
+
         public InMemoryEvidenceRepository Evidence { get; }
         public InMemoryOrderRepository Orders { get; }
         public MutableEvidenceScanner Scanner { get; }

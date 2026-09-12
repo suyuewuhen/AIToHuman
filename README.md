@@ -26,7 +26,7 @@ AIToHuman 是一个“AI 任务管家 + 真人服务任务大厅”平台。用�
 - 数据：PostgreSQL（当前开发事实来源；未配置连接串时回退内存仓储）
 - 实时通信：SignalR（订单创建、状态变化与新消息通知；持久化 Outbox + 后台派发 + 未读数收件箱，推送只是刷新提示）
 - AI：火山引擎 Ark OpenAI 兼容接口，SSE 流式多轮澄清
-- 凭证存储：本机私有目录或 S3 兼容对象存储（MinIO / 阿里云 OSS / AWS S3）可切换，签名是自研的 AWS SigV4（不依赖厂商 SDK），已用本机 MinIO 端到端验证
+- 凭证存储：本机私有目录或 S3 兼容对象存储（MinIO / 阿里云 OSS / AWS S3）可切换，签名是自研的 AWS SigV4（不依赖厂商 SDK），下载支持短时直连签名地址，已用本机 MinIO 端到端验证
 - 运营配置：设置目录（白名单）+ 加密机密 + 变更审计 + 写入即生效；管理员在顶栏“运营配置”页面即可调整模型、对象存储、内容扫描参数与凭证上传上限（见 [ADR-0003](docs/architecture/decisions/0003-operator-configurable-settings.md)）
 - 本地依赖：`compose.yaml` 定义 PostgreSQL、Redis 和 MinIO
 
@@ -34,7 +34,6 @@ AIToHuman 是一个“AI 任务管家 + 真人服务任务大厅”平台。用�
 
 - 前端 Pinia、Vue Router、Element Plus（当前是单页 `App.vue`，未引入路由和状态库）
 - Redis 缓存与分布式锁、Hangfire 后台作业
-- 对象存储的短时签名 URL（当前下载由 API 鉴权后转发）
 - Nginx 与生产环境部署编排
 
 ## 仓库结构

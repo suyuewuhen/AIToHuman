@@ -1,5 +1,6 @@
 using AIToHuman.Application.Settings;
 using AIToHuman.Contracts.Settings;
+using AIToHuman.Domain.Common;
 using AIToHuman.Infrastructure.Storage;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -152,7 +153,7 @@ public sealed class SettingsStorageProviderTests
             });
             var storage = Build(host.Provider, root);
 
-            var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            var exception = await Assert.ThrowsAsync<DomainException>(() =>
                 storage.SaveAsync("evidence.bin", new MemoryStream(new byte[] { 9 }), "application/octet-stream"));
 
             Assert.Contains("还没有配置完整", exception.Message, StringComparison.Ordinal);

@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 using AIToHuman.Application.Orders;
 using AIToHuman.Application.Settings;
+using AIToHuman.Domain.Common;
 using Microsoft.Extensions.Logging;
 
 namespace AIToHuman.Infrastructure.Storage;
@@ -24,12 +25,15 @@ public sealed class S3FileStorage(
     ISettingsProvider settings,
     HttpClient httpClient,
     TimeProvider timeProvider,
-    ILogger<S3FileStorage> logger) : IFileStorage
+    ILogger<S3FileStorage> logger) : IFileStorage, IPresignedFileStorage
 {
     /// <summary>S3 的空载荷摘要（SHA-256 of empty string）。</summary>
     private const string EmptyPayloadHash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
     private const string Algorithm = "AWS4-HMAC-SHA256";
+
+    /// <summary>预签名地址不做载荷摘要校验，SigV4 规定这里写字面量。</summary>
+    private const string UnsignedPayload = "UNSIGNED-PAYLOAD";
 
     public async Task SaveAsync(string key, Stream content, string contentType, CancellationToken cancellationToken = default)
     {
@@ -83,15 +87,59 @@ public sealed class S3FileStorage(
             throw await CreateFailureAsync("删除对象", key, response, cancellationToken);
     }
 
-    private static async Task<HttpResponseMessage> SendAsync(S3Configuration config, HttpRequestMessage request, CancellationToken cancellationToken)
+    /// <summary>对象存储支持签发直连下载地址。</summary>
+    public bool SupportsPresignedDownload => true;
+
+    /// <summary>
+    /// 签发短时直连下载地址（SigV4 查询串签名）。载荷摘要用 <c>UNSIGNED-PAYLOAD</c>，
+    /// 参与签名的头只有 <c>host</c>；有效期与“以附件形式返回”的参数都写进规范查询串，
+    /// 因此客户端改不了它们——改了签名就对不上。
+    /// </summary>
+    public PresignedDownload CreatePresignedDownload(string storageKey, TimeSpan lifetime, string? downloadFileName = null)
     {
+        var config = Configure();
+        var now = timeProvider.GetUtcNow();
+        var amzDate = now.ToString("yyyyMMdd'T'HHmmss'Z'", CultureInfo.InvariantCulture);
+        var dateStamp = now.ToString("yyyyMMdd", CultureInfo.InvariantCulture);
+        var expires = Math.Clamp((int)lifetime.TotalSeconds, 1, 604800);
+        var canonicalPath = string.Concat("/", config.Bucket, "/", config.Prefix, EscapeKey(storageKey));
+
+        var query = new SortedDictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["X-Amz-Algorithm"] = Algorithm,
+            ["X-Amz-Credential"] = $"{config.AccessKeyId}/{dateStamp}/{config.Region}/s3/aws4_request",
+            ["X-Amz-Date"] = amzDate,
+            ["X-Amz-Expires"] = expires.ToString(CultureInfo.InvariantCulture),
+            ["X-Amz-SignedHeaders"] = "host"
+        };
+        if (!string.IsNullOrWhiteSpace(downloadFileName))
+            query["response-content-disposition"] = $"attachment; filename=\"{downloadFileName}\"";
+
+        var canonicalQuery = string.Join('&', query.Select(item => $"{Uri.EscapeDataString(item.Key)}={Uri.EscapeDataString(item.Value)}"));
+        var canonicalRequest = string.Join('\n',
+            "GET",
+            canonicalPath,
+            canonicalQuery,
+            $"host:{config.Host}\n",
+            "host",
+            UnsignedPayload);
+
+        var scope = $"{dateStamp}/{config.Region}/s3/aws4_request";
+        var stringToSign = string.Join('\n', Algorithm, amzDate, scope, Sha256Hex(canonicalRequest));
+        var signingKey = DeriveSigningKey(config.SecretAccessKey, dateStamp, config.Region);
+        var signature = Convert.ToHexString(HMACSHA256.HashData(signingKey, Encoding.UTF8.GetBytes(stringToSign))).ToLowerInvariant();
+
+        return new PresignedDownload($"{config.Endpoint}{canonicalPath}?{canonicalQuery}&X-Amz-Signature={signature}", now.AddSeconds(expires));
+    }
+
+    private static async Task<HttpResponseMessage> SendAsync(S3Configuration config, HttpRequestMessage request, CancellationToken cancellationToken)    {
         try
         {
             return await config.Client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
         }
         catch (HttpRequestException exception)
         {
-            throw new InvalidOperationException($"无法连接对象存储 {config.Endpoint}：{exception.Message}", exception);
+            throw new DomainException($"无法连接对象存储 {config.Endpoint}：{exception.Message}");
         }
     }
 
@@ -131,13 +179,15 @@ public sealed class S3FileStorage(
             Algorithm,
             amzDate,
             scope,
-            Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonicalRequest))).ToLowerInvariant());
+            Sha256Hex(canonicalRequest));
 
         var signingKey = DeriveSigningKey(config.SecretAccessKey, dateStamp, config.Region);
         var signature = Convert.ToHexString(HMACSHA256.HashData(signingKey, Encoding.UTF8.GetBytes(stringToSign))).ToLowerInvariant();
 
         return $"{Algorithm} Credential={config.AccessKeyId}/{scope}, SignedHeaders={signedHeaders}, Signature={signature}";
     }
+
+    private static string Sha256Hex(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
 
     private static byte[] DeriveSigningKey(string secretAccessKey, string dateStamp, string region)
     {
@@ -151,8 +201,11 @@ public sealed class S3FileStorage(
     private static string EscapeKey(string key) =>
         string.Join('/', key.Split('/').Select(Uri.EscapeDataString));
 
-    /// <summary>把 S3 的错误响应翻译成能直接行动的说明，而不是只丢一个状态码。</summary>
-    private async Task<InvalidOperationException> CreateFailureAsync(string action, string key, HttpResponseMessage response, CancellationToken cancellationToken)
+    /// <summary>
+    /// 把 S3 的错误响应翻译成能直接行动的说明，而不是只丢一个状态码。
+    /// 用 <see cref="DomainException"/> 是为了让文案能原样返回给运营（通用异常会被 API 层的兜底文案盖掉）。
+    /// </summary>
+    private async Task<DomainException> CreateFailureAsync(string action, string key, HttpResponseMessage response, CancellationToken cancellationToken)
     {
         var detail = await response.Content.ReadAsStringAsync(cancellationToken);
         var code = ExtractXmlValue(detail, "Code");
@@ -178,7 +231,7 @@ public sealed class S3FileStorage(
             ? $"{(int)response.StatusCode} {response.ReasonPhrase}"
             : $"{(int)response.StatusCode} {code}：{message}";
 
-        return new InvalidOperationException($"对象存储{action}失败（{text}）。{hint}");
+        return new DomainException($"对象存储{action}失败（{text}）。{hint}");
     }
 
     /// <summary>S3 的错误体是 XML；这里只取需要的两个字段，不为它引入 XML 依赖。</summary>
@@ -208,7 +261,7 @@ public sealed class S3FileStorage(
         if (string.IsNullOrWhiteSpace(accessKeyId)) missing.Add(SettingKeys.StorageS3AccessKeyId);
         if (string.IsNullOrWhiteSpace(secretAccessKey)) missing.Add(SettingKeys.StorageS3SecretAccessKey);
         if (missing.Count > 0)
-            throw new InvalidOperationException($"对象存储还没有配置完整：请在运营后台补齐 {string.Join("、", missing)}。");
+            throw new DomainException($"对象存储还没有配置完整：请在运营后台补齐 {string.Join("、", missing)}。");
 
         var host = new Uri(endpoint!).Authority;
         var trimmedPrefix = prefix.Trim('/');

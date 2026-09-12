@@ -101,7 +101,9 @@ DataProtection__KeysPath
 
 命名规则：`Settings__<设置键里点号换成双下划线>` 与设置目录里的键一一对应（例如 `Settings__evidence__scanner__provider` ↔ `evidence.scanner.provider`），作用是兜底；日常调整在运营后台完成，改完立即生效。`ObjectStorage__LocalRoot` 只在 `storage.provider=local` 时生效（留空则用应用目录下的 `evidence`）。`Admin__UserIds` / `Admin__Emails` 决定谁能访问运营接口，留空等于关闭运营接口。`DataProtection__KeysPath` 指向密钥环目录，生产必须持久化并在实例间共享。
 
-对象存储：`storage.provider=s3` 之前需要先在服务端建好 Bucket 并保持私有（用 MinIO 的话 `mc mb` + `mc anonymous set none` 即可），然后填 `storage.s3.endpoint/region/bucket/accessKeyId/secretAccessKey`；本机 MinIO 的 region 用 `us-east-1`，endpoint 形如 `http://127.0.0.1:9000`。密钥填错或 Bucket 不存在时接口会返回可读错误（带上 S3 的错误码），不会退回本机目录。
+对象存储：`storage.provider=s3` 之前需要先在服务端建好 Bucket 并保持私有（用 MinIO 的话 `mc mb` + `mc anonymous set none` 即可），然后填 `storage.s3.endpoint/region/bucket/accessKeyId/secretAccessKey`；本机 MinIO 的 region 用 `us-east-1`，endpoint 形如 `http://127.0.0.1:9000`。密钥填错或 Bucket 不存在时接口会返回可读错误（`422`，带上 S3 的错误码），不会退回本机目录。`evidence.downloadUrlLifetimeSeconds` 控制直连下载地址的有效期（5 至 900 秒，默认 120）。
+
+切换存储 provider **不会迁移已有文件**：从 s3 切回 local 之后，之前写进 Bucket 的凭证在本机目录里找不到，下载会 404。本地反复切换时记得把对象搬过去，或者干脆用不同的 Bucket / 目录区分环境。
 
 生产密钥由部署平台注入。仓库只保留非敏感默认值和变量说明。
 

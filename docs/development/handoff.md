@@ -126,15 +126,17 @@ docs/                             ai-planning、api/api-guidelines、architectur
 - 只有订单服务者可以上传，且订单必须处于 `InProgress` 或 `Submitted`。份数与单份大小上限来自运营配置（`evidence.maxPerOrder` / `evidence.maxSizeBytes`，默认 10 份 / 5 MB），硬上限是 50 份 / 25 MB，运营只能收紧不能突破。
 - 扫描没给出结论时凭证保持 `Pending`（不可下载）：后台 `EvidenceRescanService` 每 60 秒重扫一批，同一条凭证退避 30 秒、最多尝试 5 次；文件已不在存储里则直接判定为 `Rejected`。用尽次数后保留待扫描状态并写明“停止自动重试”，交给人工处理，不会无声无息地永远挂着。
 - 凭证接口会返回检查次数与最近一次说明（`scanAttempts` / `lastScanNote` / `scanExhausted`），前端凭证面板直接显示，因此“为什么不可下载”对双方都是可见的。
-- 类型白名单（JPEG / PNG / WebP / PDF）**刻意不做成运营配置**：放开它等于允许上传可执行内容。
-- 类型白名单为 JPEG / PNG / WebP / PDF。服务端不信客户端声明的 MIME：先做白名单校验，再按**文件签名**核对内容（PNG 头、JPEG SOI、WebP RIFF+WEBP、`%PDF`），不一致直接拒绝。
+- 类型白名单为 JPEG / PNG / WebP / PDF，且**刻意不做成运营配置**（放开它等于允许上传可执行内容）。服务端不信客户端声明的 MIME：先做白名单校验，再按**文件签名**核对内容（PNG 头、JPEG SOI、WebP RIFF+WEBP、`%PDF`），不一致直接拒绝。
 - 声明大小必须与实际字节数一致；读取时按上限截断，防止谎报大小绕过限额；摘要为 SHA-256。
 - 存储键完全由系统生成（`{orderId:N}/{evidenceId:N}.{ext}`），原始文件名只作为展示元数据，永不参与路径拼接。
-- 文件存私有存储（Development 为本机目录 `ObjectStorage__LocalRoot`，默认应用目录下的 `evidence`），下载前重新校验当前用户与订单关系与扫描状态。
+- 文件存私有存储：`local` 写本机目录（`ObjectStorage__LocalRoot`，默认应用目录下的 `evidence`），`s3` 走对象存储。下载前都要重新校验当前用户与订单关系以及扫描状态。
+- 下载有两条路：默认 `GET /api/v1/evidence/{id}/content`（服务端鉴权后流式转发，两种存储都支持）；对象存储可用时还可以走 `GET /api/v1/evidence/{id}/download-url` 拿一条**短时直连签名地址**，浏览器直接去 Bucket 取字节，省掉一次转发。列表响应里的 `presignedDownloadAvailable` 告诉客户端该走哪条路。
+- 直连地址的有效期由 `evidence.downloadUrlLifetimeSeconds` 控制（默认 120 秒，范围 5 至 900）。有效期、对象路径、`response-content-disposition` 都参与签名，客户端改任何一项都会被对象存储拒绝（403）；权限与扫描门禁的判定和流式下载完全一致。
 - 扫描状态：`Pending`（不可下载）/`Clean`/`Rejected`，终态不可回退；被拒绝的内容不落库也不留在存储里。
 - 扫描方式与存储位置都不是写死的：`evidence.scanner.provider` 可选 `none`（显式放行并打警告日志）或 `http`（把内容 POST 给配置的扫描服务），扫描不可用时按 `failMode` 处理；`storage.provider` 可选 `local`（本机目录）或 `s3`（S3 兼容对象存储，已实现）。两者都在运营后台可改，见下面「运营可配置的三方集成参数」。
 - S3 兼容存储（`S3FileStorage`）：不依赖厂商 SDK，只用 `HttpClient` 加自己实现的 AWS Signature V4；路径风格请求 `{endpoint}/{bucket}/{prefix}{key}`，只签 `host`、`x-amz-content-sha256`、`x-amz-date`。上传、下载、存在性判断与删除四个操作齐全；密钥不全时按缺哪项报哪项，Bucket 不存在或密钥无权限时把 S3 的错误码翻译成可行动的说明。MinIO、阿里云 OSS、AWS S3 都能用，换服务商只改运营配置。
-- 尚未实现：上传限速、图片重新编码与 EXIF 去除、对象存储的短时签名 URL（当前下载仍由 API 鉴权后转发流），以及真实的病毒/内容扫描服务商接入。
+- 切换 `storage.provider` **不会迁移已有文件**：从 s3 切回 local 之后，之前写进 Bucket 的凭证在本机目录里找不到，下载会 `404`。生产切换要么保持同一 provider，要么先把对象搬过去。
+- 尚未实现：上传限速、图片重新编码与 EXIF 去除，以及真实的病毒/内容扫描服务商接入。
 
 ### 订单会话（聊天）
 
@@ -145,7 +147,7 @@ docs/                             ai-planning、api/api-guidelines、architectur
 
 ### 运营可配置的三方集成参数
 
-- 设置目录（白名单）在 `backend/AIToHuman.Application/Settings/SettingCatalog.cs`：目前 20 个键，分 AI 服务商、对象存储、凭证上传、内容扫描四组。只有登记在册的键才能被后台读写，`ConnectionStrings__Postgres`、日志、密钥环路径这类部署级配置永远不会出现在配置表里。
+- 设置目录（白名单）在 `backend/AIToHuman.Application/Settings/SettingCatalog.cs`：目前 21 个键，分 AI 服务商、对象存储、凭证上传、内容扫描四组。只有登记在册的键才能被后台读写，`ConnectionStrings__Postgres`、日志、密钥环路径这类部署级配置永远不会出现在配置表里。
 - 生效值的解析顺序固定为「数据库覆盖 → 环境变量/配置文件 → 代码默认值」。删除覆盖记录就等于恢复默认，不需要额外的启用/停用开关。
 - 运营接口（需管理员身份）：`GET /api/v1/admin/settings`、`GET /api/v1/admin/settings/{key}`、`PUT /api/v1/admin/settings/{key}`、`DELETE /api/v1/admin/settings/{key}`（恢复默认）、`POST /api/v1/admin/settings/{key}/test`（只读自检）、`GET /api/v1/admin/settings/audits`。
 - 机密（`ai.apiKey`、`storage.s3.secretAccessKey`、`evidence.scanner.apiKey`）用 Data Protection 加密后落库，密文带 `dp1:` 前缀；接口只返回 `****末四位` 与指纹，审计记录同样只留掩码与指纹，明文只在服务端内存里出现。
@@ -376,6 +378,7 @@ netstat -ano | Select-String ':5188|:5173'
 | GET | `/api/v1/orders/{id}/evidence?userId=...` | 执行凭证列表；仅参与者 |
 | POST | `/api/v1/orders/{id}/evidence` | multipart 上传凭证；仅订单服务者 |
 | GET | `/api/v1/evidence/{id}/content?userId=...` | 鉴权后流式下载；仅参与者且扫描通过 |
+| GET | `/api/v1/evidence/{id}/download-url?userId=...` | 短时直连下载地址（仅对象存储；本机目录返回 `422` 与可读原因） |
 | GET | `/api/v1/orders/{id}/reviews` | 参与者读取双向评价 |
 | POST | `/api/v1/orders/{id}/reviews` | Approved 后提交评价 |
 | GET | `/api/v1/users/{id}/review-summary` | 用户公开评价摘要 |
@@ -405,7 +408,7 @@ Development + PostgreSQL 启动时改为应用 EF Core 迁移（`Database.Migrat
 
 任务隐私分层：`tasks.District` 是公开层（大厅展示）；`tasks.ExecutionAddress`（≤200 字，可空）属于参与者层，只在订单成立后按角色披露，且从不进入大厅列表与公开详情。精确地址的访问审计尚未实现。
 
-凭证存储：元数据在 `evidence` 表（`StorageKey` 唯一索引、`ScanStatus` 为字符串），文件内容在私有存储里。`IFileStorage` 是可插拔抽象，由 `SettingsFileStorage` 按 `storage.provider` 分派：`local` 用本机目录（路径解析限制在根目录内），`s3` 用 `S3FileStorage`（自研 SigV4 签名、路径风格、无 SDK 依赖）。切到 `s3` 时如果关键参数没填全会直接报错，不会静默退回本机目录；Bucket 需要事先创建且保持私有。`IEvidenceScanner` 由 `HttpEvidenceScanner` 实现，按 `evidence.scanner.provider` 在“显式放行”与“调用外部扫描服务”之间切换。
+凭证存储：元数据在 `evidence` 表（`StorageKey` 唯一索引、`ScanStatus` 为字符串），文件内容在私有存储里。`IFileStorage` 是可插拔抽象，由 `SettingsFileStorage` 按 `storage.provider` 分派：`local` 用本机目录（路径解析限制在根目录内），`s3` 用 `S3FileStorage`（自研 SigV4 签名、路径风格、无 SDK 依赖）。切到 `s3` 时如果关键参数没填全会直接报错（`422` 且写明缺哪一项），不会静默退回本机目录；Bucket 需要事先创建且保持私有。`S3FileStorage` 另外实现了可选的 `IPresignedFileStorage`（签发短时直连下载地址），本机目录没有这个能力，因此客户端要靠 `presignedDownloadAvailable` 判断。`IEvidenceScanner` 由 `HttpEvidenceScanner` 实现，按 `evidence.scanner.provider` 在“显式放行”与“调用外部扫描服务”之间切换。
 
 运营配置数据：`system_settings` 一行就是“某个设置键被后台覆盖过”，主键是配置键，`Version` 是乐观并发令牌；`system_setting_audits` 只追加，记录键、动作、脱敏前后的值与操作人。机密值在 `system_settings.Value` 里是 Data Protection 密文（`dp1:` 前缀），加密密钥环由部署环境提供（`DataProtection__KeysPath`），不入库；管理员名单来自部署配置 `Admin__UserIds`/`Admin__Emails`。审计按发生时间倒序返回，同一时刻写入的多条记录之间的先后顺序不做保证。
 
@@ -489,7 +492,7 @@ Order: Accepted → InProgress → Submitted → Approved
 
 - 扫描闭环端到端（真实 PostgreSQL + 真实 HTTP + 本地 TCP 扫描替身）：上传 67 字节 PNG 时替身返回 `pending` → 接口 `200`、`scanStatus=Pending`、`scanAttempts=1`、`isDownloadable=false`、下载 `403`；把替身改成 `clean` 后，后台重扫在 60 秒那一轮把它变为 `Clean`（`scanAttempts=2`、说明“重新扫描通过。”），需求方再下载拿到完全一致的 67 字节。替身日志显示两次调用依次是 `pending`、`clean`。
 - 可配置上传上限生效：把 `evidence.maxSizeBytes` 改成 1024 后上传 2048 字节返回 `413 凭证大小不能超过 1 KB。`，且磁盘上不留文件；`DELETE` 该配置后回到默认 5242880（`source=default`）。
-- 运营配置目录此时共 20 个键、四个分组：AI 服务商 / 对象存储 / 凭证上传 / 内容扫描。
+- 运营配置目录当时共 20 个键、四个分组：AI 服务商 / 对象存储 / 凭证上传 / 内容扫描（现在 21 个，凭证上传组多了直连下载有效期）。
 - 全新数据库：同一轮启动时 `Migrate()` 从零建库并应用全部 14 个迁移，随后在该库上完成上面的用例。
 
 本轮（S3 兼容对象存储）新增验证：
@@ -497,10 +500,14 @@ Order: Accepted → InProgress → Submitted → Approved
 - 对象存储端到端（真实 PostgreSQL + 本机 MinIO `127.0.0.1:9000` + 独立客户端 `mc.exe` 交叉核对）：`storage.provider=s3` 下通过 API 上传 67 字节 PNG → `200`、`scanStatus=Clean`、SHA-256 `ebf4f635…9d2a`；`mc ls --recursive` 看到对象落在 `evidence/<orderId:N>/<evidenceId:N>.png`、大小 67 B、Bucket 保持 private；`mc stat` 与 `mc cp` 拉回的字节哈希与上传完全一致；API 的鉴权下载同样返回 67 字节且哈希一致；整个过程本机目录里 **0 个文件**（确认没有静默退回 local）。
 - 删除路径：把扫描方式切成 `http` 并指向一个返回 `rejected` 的本地替身 → 上传返回 `422 凭证未通过安全检查，已拒绝保存。`，`mc ls` 的对象数量 **前后不变**（被拒绝的对象确实从 MinIO 删掉了），替身日志显示恰好一次扫描调用。
 - 签名正确性说明：AWS SigV4 是自研实现（不依赖 SDK），因此“签名是否被真实服务接受”只能由真实服务回答——上面的 `200` 与对象落桶就是 MinIO 独立校验通过的结果；单元测试另外固定了请求形态（`Credential=minioadmin/<日期>/us-east-1/s3/aws4_request`、`SignedHeaders=host;x-amz-content-sha256;x-amz-date`、载荷摘要、固定时钟下签名可复现、换密钥签名变化、403/404 映射、缺配置不发请求）。
+- 短时直连下载地址端到端（真实 MinIO）：`GET /evidence/{id}/download-url` 返回带 `X-Amz-Signature` 的地址（`expiresAt` = 签发时刻 + 120 秒）；用**不带任何鉴权头的普通 HTTP GET**（等价于浏览器直接用这条地址）取回 67 字节且哈希与上传一致，响应头是 `Content-Disposition: attachment; filename="evidence-<id>.png"`（签名里的附件名参数生效）。
+- 防篡改与有效期（真实 MinIO 自己判定）：把签名末位改掉 → `403`；把路径里的对象 ID 换掉 → `403`（说明路径也在签名覆盖内）；把有效期配成 5 秒，签发后立刻取 → `200`，8 秒后再取 → `403`。非订单参与者申请地址 → `403`。
+- 不支持时的表现：把 `storage.provider` 切回 `local` 后，列表里 `presignedDownloadAvailable=false`，申请地址返回 `422 当前是本机目录存储，不能签发短时直连下载地址：请改用鉴权后的 /content 接口下载，或把 storage.provider 切到 s3。`（顺带修掉了“存储类错误文案被通用兜底吃掉”的问题，见下方修复）。
 
 本轮修复：
 
 - 运营管理员名单的读取顺序有缺陷：`appsettings` 里写成数组（`Admin:Emails:0`）时，优先级更高的环境变量标量 `Admin__Emails` 会被数组子项盖掉，表现为“明明配了管理员却仍然 403”。现在标量优先、数组兜底，并补了对应测试。这个缺陷是端到端联调时才暴露的，纯单元测试用的是干净的配置源，覆盖不到。
+- 存储类的用户可见错误原本用 `InvalidOperationException`，而 API 的兜底映射不会把它的文案返回给调用方，运营只会看到“请求暂时无法处理。”。现在对象存储缺配置 / 不可达 / 被拒绝、以及“本机存储不支持直连下载”都改用 `DomainException`（`422` 且原样返回中文原因），例如“对象存储还没有配置完整：请在运营后台补齐 storage.s3.bucket、storage.s3.secretAccessKey。”。
 
 本轮修复：
 
@@ -527,7 +534,7 @@ npm run build
 测试现状：
 
 - 领域单元测试 91 个（`AIToHuman.Domain.Tests`）：任务加价、禁止自己报名、禁止重复报名、选择服务者、订单参与者权限、履约状态流、返工闭环与批准后关单、执行地址校验；对话回合不变量、历史窗口与截断；通知字段校验与标记幂等；订单会话消息校验与未读语义；执行凭证的类型/大小/签名校验、扫描状态机与扫描尝试记账、上传限额边界；配置键形状、取值上限、版本自增与审计脱敏。
-- 集成测试 188 个（`AIToHuman.IntegrationTests`）：AI 多轮协议、输出严格校验与可控重试、SSE 线格式、会话用例、`IUnitOfWork` 事务边界、通知骨干、订单会话、评价盲期、大厅分页筛选与地址披露、执行凭证（上传/下载/权限/扫描门禁/上限/重扫闭环）、S3 兼容存储（请求形态、签名确定性、403/404 映射、缺配置不发请求）、EF 模型快照，以及运营配置（设置目录校验、解析顺序、加密与脱敏、审计、并发冲突、自检、HTTP 扫描器、存储 provider 选择、管理员名单判定与优先级、AI 配置热更新）。全部走上游替身与内存仓储，不需要网络和数据库。
+- 集成测试 197 个（`AIToHuman.IntegrationTests`）：AI 多轮协议、输出严格校验与可控重试、SSE 线格式、会话用例、`IUnitOfWork` 事务边界、通知骨干、订单会话、评价盲期、大厅分页筛选与地址披露、执行凭证（上传/下载/权限/扫描门禁/上限/重扫闭环/直连地址签发），S3 兼容存储（请求形态、签名确定性、预签名参数与有效期、403/404 映射、缺配置不发请求）、EF 模型快照，以及运营配置（设置目录校验、解析顺序、加密与脱敏、审计、并发冲突、自检、HTTP 扫描器、存储 provider 选择、管理员名单判定与优先级、AI 配置热更新）。全部走上游替身与内存仓储，不需要网络和数据库。
 - 尚缺：认证与授权、PostgreSQL 仓储的自动化测试（目前只有手工端到端验证）、SignalR 重连与派发失败重试、上传限速与并发上传、运营后台的其余能力，以及主机级端到端测试——本机 NuGet 无法还原 `Microsoft.AspNetCore.Mvc.Testing`，所以没有 `WebApplicationFactory` 用例；网络可用后补该包，就能把本节的手工联调步骤逐步自动化。
 
 ## 12. 完成状态与后续顺序
@@ -558,15 +565,16 @@ npm run build
 
 本轮追加（运营可配置三方集成参数）：
 
-- 配置骨架：新增 `system_settings`（覆盖值 + `Version` 并发令牌）与 `system_setting_audits`（只追加、脱敏）两张表（迁移 `AddSystemSettings`）、设置目录（白名单 + 类型校验 + 兼容的环境变量名，现为 20 个键）、固定的解析顺序（数据库 → 环境变量 → 默认值）、Data Protection 加密的机密、写入即刷新的内存快照与 15 秒后台轮询、运营接口与“测试连接”自检、管理员名单策略；决策见 [ADR-0003](../architecture/decisions/0003-operator-configurable-settings.md)。
+- 配置骨架：新增 `system_settings`（覆盖值 + `Version` 并发令牌）与 `system_setting_audits`（只追加、脱敏）两张表（迁移 `AddSystemSettings`）、设置目录（白名单 + 类型校验 + 兼容的环境变量名，现为 21 个键）、固定的解析顺序（数据库 → 环境变量 → 默认值）、Data Protection 加密的机密、写入即刷新的内存快照与 15 秒后台轮询、运营接口与“测试连接”自检、管理员名单策略；决策见 [ADR-0003](../architecture/decisions/0003-operator-configurable-settings.md)。
 - 消费方接线：AI 服务商（地址、密钥、模型、无活动超时）、对象存储 provider、内容扫描 provider 都改为从配置读取；写死的 `NoOpEvidenceScanner`（该类型已删除）换成按配置工作的 `HttpEvidenceScanner`，`LocalFileStorage` 的根目录也改为运行时解析。
 - 运营配置页面：顶栏入口（仅管理员）、按分组列出配置项与来源徽标、机密脱敏输入、保存（带版本冲突提示）、恢复默认、测试连接、变更记录；见第 3 节。
 - 凭证扫描闭环与可配置上传上限：`evidence` 表新增扫描尝试次数、最近说明与尝试时间（迁移 `AddEvidenceScanAttempts`）；`EvidenceRescanService` 每 60 秒按 30 秒退避重扫 `Pending` 凭证、最多 5 次，文件缺失直接判定 `Rejected`，用尽次数后保留说明交给人工；`evidence.maxSizeBytes` / `evidence.maxPerOrder` 纳入设置目录（硬上限 25 MB / 50 份），凭证接口与页面展示检查次数与说明；见第 3、10 节。
 - S3 兼容对象存储：新增 `S3FileStorage`（自研 AWS SigV4，不依赖厂商 SDK），按 `storage.s3.*` 做上传/下载/存在性/删除；`SettingsFileStorage` 按 `storage.provider` 分派 local 与 s3；配置不全、Bucket 不存在、密钥无权限都会翻译成可行动的说明；已用本机 MinIO 加独立客户端 `mc` 端到端验证（见第 11 节）。
+- 短时直连下载地址：`S3FileStorage` 实现可选的 `IPresignedFileStorage`（SigV4 查询串签名，含对象路径、有效期与附件名），新增 `GET /api/v1/evidence/{id}/download-url` 与 `evidence.downloadUrlLifetimeSeconds`（5 至 900 秒，默认 120），前端在支持时直接跳转签名地址、否则回退流式下载；篡改与过期都由对象存储自己拒绝（403），已用真实 MinIO 验证。
 
 ### 后续跟进（原 P1 的延伸项）
 
-- 对象存储的短时签名 URL（当前下载走 API 鉴权后转发）；补齐后可以让浏览器直连 Bucket，省掉一次转发。
+- 对象存储的短时签名 URL 已实现（见第 3、11 节）；如果以后要让前端完全绕开后端，需要补 CORS 配置与审计补偿。
 - 选定病毒/内容扫描服务后把 `evidence.scanner.provider` 切成 `http` + `failMode=closed`（重扫闭环已经就绪，只差真实服务商）。
 - 运营后台的其余部分：任务/用户/订单检索、风险记录与高风险任务人工复核、争议处理看板。上传大小与份数上限已经进了设置目录；凭证类型白名单**故意不进**（放开等于允许上传可执行内容）。
 - 通知的更多事件类型（报名、评价公开、任务过期）与推送渠道（短信、邮件）。
@@ -599,16 +607,17 @@ npm run build
 - [ ] 以服务者上传一张小于当前上限（默认 5 MB）的 PNG 凭证：列表出现、可下载；把文本文件改名成 `.png` 上传应被 `422` 拒绝，超过当前上限返回 `413`。
 - [ ] 大厅能按区域与悬赏区间筛选，并能“加载更多”翻页；大厅与公开详情的响应里不含精确地址文本。
 - [ ] 用一个全新空库启动 API：`Database.Migrate()` 一次应用全部迁移；用早期 `EnsureCreated` 建出的旧库启动会打印基线化警告后正常工作。
-- [ ] 在部署配置里设置 `Admin__UserIds` 或 `Admin__Emails`，用它登录后访问 `/api/v1/admin/settings`：非管理员应拿到 `401/403`，管理员拿到 20 个配置项。
+- [ ] 在部署配置里设置 `Admin__UserIds` 或 `Admin__Emails`，用它登录后访问 `/api/v1/admin/settings`：非管理员应拿到 `401/403`，管理员拿到 21 个配置项。
 - [ ] 通过运营接口把 `ai.apiKey` 换成新密钥：响应只显示 `****末四位`；接着发起一轮 AI 对话应立刻用新密钥，不需要重启进程。
 - [ ] 把 `evidence.scanner.provider` 改成 `http` 但不填扫描地址，服务者上传凭证应返回“待扫描、不可下载”，文件不被删除也不放行。
 - [ ] 重启进程后重新读取运营配置：机密仍能解密（说明 `DataProtection__KeysPath` 指向了持久目录，而不是临时目录）。
-- [ ] 用管理员账户登录后打开顶栏“运营配置”：能看到 20 个配置项、四个分组与来源徽标；普通服务者账户看不到这个入口。
+- [ ] 用管理员账户登录后打开顶栏“运营配置”：能看到 21 个配置项、四个分组与来源徽标；普通服务者账户看不到这个入口。
 - [ ] 在页面上改一个机密项并保存：列表立刻显示新的掩码与“后台已改”，点“测试连接”能看到自检结果，切到“变更记录”能看到这次修改；把某条改坏（例如把超时填成 1）保存应看到可读的校验提示。
 - [ ] 把 `evidence.maxSizeBytes` 调成 1024 后上传一张 2 KB 的图片：应返回“凭证大小不能超过 1 KB”，恢复默认后能正常上传。
 - [ ] 把 `evidence.scanner.provider` 改成 `http` 并把扫描地址清空（或指向不可用地址），上传凭证：状态应是“检查中 / 不可下载”并写明原因；扫描服务恢复后，一分钟内后台重扫会把状态改成“已通过检查”。
 - [ ] 在对象存储里建好私有 Bucket，运营配置里把 `storage.provider` 换成 `s3` 并填好 endpoint/region/bucket/密钥：上传凭证后应在 Bucket 里看到 `<prefix>/<orderId>/<evidenceId>.png`，且本机目录不再新增文件。
 - [ ] 故意把 `storage.s3.secretAccessKey` 改错：上传应返回可读的错误（提到密钥或权限、并带上 S3 的错误码），而不是 500 或静默写本机。
+- [ ] 对象存储模式下点凭证“下载”：地址是带 `X-Amz-Signature` 的短时链接，浏览器直接拿到文件；把 `evidence.downloadUrlLifetimeSeconds` 改成 5 秒后重新下载，等 8 秒再点应被对象存储拒绝（403）。
 - [ ] 新功能先补 Contract、领域规则和测试，再扩展页面。
 
 ## 14. 相关文档

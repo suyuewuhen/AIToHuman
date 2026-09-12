@@ -2,6 +2,7 @@ using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using AIToHuman.Application.Settings;
+using AIToHuman.Domain.Common;
 using AIToHuman.Infrastructure.Storage;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -111,7 +112,7 @@ public sealed class S3FileStorageTests
         const string body = "<Error><Code>SignatureDoesNotMatch</Code><Message>The request signature we calculated does not match.</Message></Error>";
         var recorder = new S3RequestRecorder(_ => new HttpResponseMessage(HttpStatusCode.Forbidden) { Content = new StringContent(body, Encoding.UTF8, "application/xml") });
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+        var error = await Assert.ThrowsAsync<DomainException>(() =>
             Build(recorder).SaveAsync("a.png", new MemoryStream(Payload), "image/png"));
 
         Assert.Contains("SignatureDoesNotMatch", error.Message);
@@ -127,7 +128,7 @@ public sealed class S3FileStorageTests
             [SettingKeys.StorageS3Endpoint] = "http://127.0.0.1:9000"
         });
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+        var error = await Assert.ThrowsAsync<DomainException>(() =>
             storage.SaveAsync("a.png", new MemoryStream(Payload), "image/png"));
 
         Assert.Contains("还没有配置完整", error.Message);
@@ -141,11 +142,62 @@ public sealed class S3FileStorageTests
     {
         var recorder = new S3RequestRecorder(_ => throw new HttpRequestException("connection refused"));
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+        var error = await Assert.ThrowsAsync<DomainException>(() =>
             Build(recorder).SaveAsync("a.png", new MemoryStream(Payload), "image/png"));
 
         Assert.Contains("无法连接对象存储 http://127.0.0.1:9000", error.Message);
     }
+
+    [Fact]
+    public void Presigned_url_carries_the_signed_query_parameters()
+    {
+        var download = Build(new S3RequestRecorder(_ => new HttpResponseMessage(HttpStatusCode.OK)))
+            .CreatePresignedDownload("order/file.png", TimeSpan.FromSeconds(120), "evidence-abc.png");
+
+        Assert.StartsWith("http://127.0.0.1:9000/aitohuman-evidence/evidence/order/file.png?", download.Url);
+        Assert.Contains("X-Amz-Algorithm=AWS4-HMAC-SHA256", download.Url);
+        Assert.Contains("X-Amz-Credential=minioadmin%2F20260912%2Fus-east-1%2Fs3%2Faws4_request", download.Url);
+        Assert.Contains("X-Amz-Date=20260912T080000Z", download.Url);
+        Assert.Contains("X-Amz-Expires=120", download.Url);
+        Assert.Contains("X-Amz-SignedHeaders=host", download.Url);
+        Assert.Matches("X-Amz-Signature=[0-9a-f]{64}$", download.Url);
+        // 另存为附件的响应头参数也要参与签名，客户端改不掉。
+        Assert.Contains("response-content-disposition=attachment%3B%20filename%3D%22evidence-abc.png%22", download.Url);
+        Assert.Equal(Now.AddSeconds(120), download.ExpiresAt);
+    }
+
+    [Fact]
+    public void Presigned_signature_is_deterministic_and_covers_the_parameters()
+    {
+        var storage = Build(new S3RequestRecorder(_ => new HttpResponseMessage(HttpStatusCode.OK)));
+
+        var first = storage.CreatePresignedDownload("a.png", TimeSpan.FromSeconds(60));
+        var again = storage.CreatePresignedDownload("a.png", TimeSpan.FromSeconds(60));
+        var longerLifetime = storage.CreatePresignedDownload("a.png", TimeSpan.FromSeconds(600));
+        var withName = storage.CreatePresignedDownload("a.png", TimeSpan.FromSeconds(60), "evidence-a.png");
+        var otherKey = storage.CreatePresignedDownload("b.png", TimeSpan.FromSeconds(60));
+
+        Assert.Equal(Signature(first.Url), Signature(again.Url));
+        // 有效期、附件名、对象键都进了签名：改任何一项签名都会变。
+        Assert.NotEqual(Signature(first.Url), Signature(longerLifetime.Url));
+        Assert.NotEqual(Signature(first.Url), Signature(withName.Url));
+        Assert.NotEqual(Signature(first.Url), Signature(otherKey.Url));
+    }
+
+    [Fact]
+    public void Presigned_download_requires_complete_configuration()
+    {
+        var storage = Build(
+            new S3RequestRecorder(_ => new HttpResponseMessage(HttpStatusCode.OK)),
+            new Dictionary<string, string> { [SettingKeys.StorageS3Endpoint] = "http://127.0.0.1:9000" });
+
+        var error = Assert.Throws<DomainException>(() => storage.CreatePresignedDownload("a.png", TimeSpan.FromSeconds(60)));
+
+        Assert.Contains("还没有配置完整", error.Message);
+    }
+
+    private static string? Signature(string url) =>
+        url.Split("X-Amz-Signature=")[^1];
 
     private static Dictionary<string, string> Configuration() => new()
     {

@@ -28,6 +28,16 @@ public sealed class EvidenceService(
     /// <summary>一轮后台重扫最多处理多少条。</summary>
     public const int RescanBatchSize = 20;
 
+    /// <summary>直连下载地址的默认有效期（秒）；运营可以用 <c>evidence.downloadUrlLifetimeSeconds</c> 调整。</summary>
+    public const int DefaultDownloadUrlLifetimeSeconds = 120;
+
+    /// <summary>有效期允许的范围：太短会让大文件下载一半就失效，太长等于把凭证长时间暴露在 URL 里。</summary>
+    public const int MinDownloadUrlLifetimeSeconds = 5;
+    public const int MaxDownloadUrlLifetimeSeconds = 900;
+
+    /// <summary>当前存储是否支持短时直连下载（本机目录不支持）。</summary>
+    public bool SupportsDirectDownload => storage is IPresignedFileStorage { SupportsPresignedDownload: true };
+
     /// <summary>
     /// 当前生效的上传限额。运营填的值会被裁剪到领域硬上限之内：
     /// 写坏一个数字不该让上传彻底不可用，但也不允许突破硬上限。
@@ -107,6 +117,29 @@ public sealed class EvidenceService(
         var content = await storage.OpenReadAsync(evidence.StorageKey, cancellationToken)
             ?? throw new KeyNotFoundException("凭证文件不存在。");
         return (Map(evidence), content);
+    }
+
+    /// <summary>
+    /// 签发短时直连下载地址。权限与扫描状态的判定和流式下载完全一致：
+    /// 只有订单参与者、且凭证已通过检查才能拿到地址；地址本身在有效期内可被持有者直接访问，
+    /// 因此有效期由运营配置控制，默认 120 秒。
+    /// </summary>
+    public EvidenceDownloadUrlResponse CreateDownloadUrl(Guid evidenceId, Guid viewerId)
+    {
+        var evidence = evidenceRepository.Get(evidenceId) ?? throw new KeyNotFoundException("凭证不存在。");
+        EnsureParticipant(evidence.OrderId, viewerId);
+        if (!evidence.IsDownloadable) throw new UnauthorizedAccessException("凭证尚未通过安全检查，暂不可下载。");
+        if (storage is not IPresignedFileStorage presigned)
+            throw new DomainException("当前存储不支持短时直连下载地址：请改用鉴权后的 /content 接口下载。");
+
+        var seconds = Math.Clamp(
+            settings.GetInt(SettingKeys.EvidenceDownloadUrlLifetimeSeconds) ?? DefaultDownloadUrlLifetimeSeconds,
+            MinDownloadUrlLifetimeSeconds,
+            MaxDownloadUrlLifetimeSeconds);
+
+        var fileName = $"evidence-{evidence.Id:N}.{OrderEvidence.ExtensionFor(evidence.ContentType)}";
+        var download = presigned.CreatePresignedDownload(evidence.StorageKey, TimeSpan.FromSeconds(seconds), fileName);
+        return new EvidenceDownloadUrlResponse(download.Url, download.ExpiresAt);
     }
 
     /// <summary>
@@ -195,7 +228,7 @@ public sealed class EvidenceService(
         return (bytes, Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant());
     }
 
-    private static EvidenceResponse Map(OrderEvidence evidence) => new(
+    private EvidenceResponse Map(OrderEvidence evidence) => new(
         evidence.Id,
         evidence.OrderId,
         evidence.UploadedBy,
@@ -209,5 +242,6 @@ public sealed class EvidenceService(
         evidence.IsDownloadable,
         evidence.ScanAttempts,
         evidence.LastScanNote,
-        evidence.ScanExhausted);
+        evidence.ScanExhausted,
+        SupportsDirectDownload);
 }

@@ -14,4 +14,9 @@ public sealed record EvidenceResponse(
     bool IsDownloadable,
     int ScanAttempts,
     string? LastScanNote,
-    bool ScanExhausted);
+    bool ScanExhausted,
+    // 当前存储是否支持短时直连下载地址；为 false 时客户端走鉴权后的 /content 下载。
+    bool PresignedDownloadAvailable);
+
+/// <summary>短时直连下载地址；有效期由运营配置决定，过期后需要重新申请。</summary>
+public sealed record EvidenceDownloadUrlResponse(string Url, DateTimeOffset ExpiresAt);

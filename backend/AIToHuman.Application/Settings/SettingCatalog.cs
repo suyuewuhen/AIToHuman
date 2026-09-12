@@ -28,6 +28,7 @@ public static class SettingKeys
 
     public const string EvidenceMaxSizeBytes = "evidence.maxSizeBytes";
     public const string EvidenceMaxPerOrder = "evidence.maxPerOrder";
+    public const string EvidenceDownloadUrlLifetimeSeconds = "evidence.downloadUrlLifetimeSeconds";
 }
 
 /// <summary>
@@ -58,6 +59,7 @@ public static class SettingCatalog
 
         new(SettingKeys.EvidenceMaxSizeBytes, "凭证上传", "单份上限（字节）", $"单份凭证的最大字节数，硬上限 {OrderEvidence.AbsoluteMaxSizeBytes / 1024 / 1024} MB：只能往里收紧，不能突破。", SettingValueKind.Int, OrderEvidence.MaxSizeBytes.ToString(CultureInfo.InvariantCulture), "Settings:evidence:maxSizeBytes", MinInt: (int)EvidenceLimits.MinSizeBytes, MaxInt: (int)OrderEvidence.AbsoluteMaxSizeBytes),
         new(SettingKeys.EvidenceMaxPerOrder, "凭证上传", "每单份数上限", $"每个订单最多几份凭证，硬上限 {OrderEvidence.AbsoluteMaxPerOrder} 份。", SettingValueKind.Int, OrderEvidence.MaxPerOrder.ToString(CultureInfo.InvariantCulture), "Settings:evidence:maxPerOrder", MinInt: 1, MaxInt: OrderEvidence.AbsoluteMaxPerOrder),
+        new(SettingKeys.EvidenceDownloadUrlLifetimeSeconds, "凭证上传", "直连下载有效期（秒）", "对象存储直连下载地址的有效期：越短越安全，但下载大文件或网络慢时容易过期。本机目录存储不使用这个配置。", SettingValueKind.Int, "120", "Settings:evidence:downloadUrlLifetimeSeconds", MinInt: 5, MaxInt: 900),
 
         new(SettingKeys.EvidenceScannerProvider, "内容扫描", "扫描方式", "none 表示未接入扫描（显式放行并打警告日志），http 表示调用下面配置的扫描服务。", SettingValueKind.Choice, "none", "Settings:evidence:scanner:provider", Choices: ["none", "http"]),
         new(SettingKeys.EvidenceScannerEndpoint, "内容扫描", "扫描服务地址", "接收凭证内容并返回判定结果的服务地址；留空等于停用。", SettingValueKind.Url, SettingCatalog.Empty, "Settings:evidence:scanner:endpoint"),

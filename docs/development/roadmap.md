@@ -18,14 +18,14 @@
 - ✅ 系统架构、领域状态机和 API 约定。
 - ✅ Vue 与 .NET 项目骨架。
 - ✅ PostgreSQL、Redis、MinIO 的本地开发环境定义（`compose.yaml`）。
-- ⚠️ CI、格式和测试基线：`.github/workflows/ci.yml` 已执行后端 `restore/build/test` 和前端 `npm ci/build`，并有 `.editorconfig` 与 91 个领域单元测试、188 个集成测试；尚无 Lint、Markdown 检查、OpenAPI 兼容性检查和技术文档生成。
+- ⚠️ CI、格式和测试基线：`.github/workflows/ci.yml` 已执行后端 `restore/build/test` 和前端 `npm ci/build`，并有 `.editorconfig` 与 91 个领域单元测试、197 个集成测试；尚无 Lint、Markdown 检查、OpenAPI 兼容性检查和技术文档生成。
 - ✅ 配置分层与运营可配置项：部署级配置（连接串、Redis、日志、密钥环路径）只走环境变量；三方集成参数（模型服务、对象存储、内容扫描）与凭证上传上限登记在设置目录里，可通过管理员接口与顶栏“运营配置”页面修改，机密加密落库并留审计，改完立即生效（见 [ADR-0003](../architecture/decisions/0003-operator-configurable-settings.md)）。运营后台的其余能力（任务/用户检索、风险复核、争议处理）仍未实现。
 - ⛔ 秘密扫描与依赖更新自动化。
 
 遗留项：
 
 - ✅ 数据库结构已收敛为 EF Core Migration 单一来源：14 个迁移覆盖 users、orders、order_evidence、reviews、tasks、task_applications、conversations、conversation_messages、notifications、order_messages、evidence（含扫描尝试记账）、system_settings、system_setting_audits 等表，Development 启动执行 `Database.Migrate()`，早期 `EnsureCreated()` 建出的旧库会自动基线化（见 `handoff.md` 第 10 节）。
-- ⚠️ Redis 和 MinIO 仍只在 `compose.yaml` 中定义：缓存与实时扩展（SignalR backplane）没有接入。S3 兼容对象存储的实现已经有了（`S3FileStorage`，自研 SigV4，已用本机 MinIO 端到端验证），默认仍写本机私有目录，切到 `storage.provider=s3` 即可。
+- ⚠️ Redis 和 MinIO 仍只在 `compose.yaml` 中定义：缓存与实时扩展（SignalR backplane）没有接入。S3 兼容对象存储的实现已经有了（`S3FileStorage`，自研 SigV4，含短时直连下载地址，已用本机 MinIO 端到端验证），默认仍写本机私有目录，切到 `storage.provider=s3` 即可。
 
 退出条件：团队确认首发城市、任务分类、AI 建议价冷启动方式和身份/支付策略；开发环境可复现。开发环境可复现已基本达成，产品决策项仍未确认。
 
@@ -56,7 +56,7 @@
 交付：
 
 - ⚠️ 订单消息和 SignalR 更新：订单内消息、会话未读数与状态变更事件已实现（统一走持久化通知 + SignalR 推送，客户端按 REST 重新拉取事实状态）；消息分页、撤回与编辑未实现。
-- ⚠️ 文件上传、扫描、凭证关联和验收：验收与驳回已实现（驳回必须填原因），凭证文件上传与鉴权下载已实现（类型白名单 + 文件签名校验 + 大小与摘要校验 + 扫描状态机 + 待扫描凭证的退避重扫），存储位置可在本机目录与 S3 兼容对象存储之间切换，扫描方式与上传上限也都可在运营后台调整；短时签名 URL、真实病毒/内容扫描服务、上传限速与“凭证关联到具体验收项”未实现。
+- ⚠️ 文件上传、扫描、凭证关联和验收：验收与驳回已实现（驳回必须填原因），凭证文件上传与鉴权下载已实现（类型白名单 + 文件签名校验 + 大小与摘要校验 + 扫描状态机 + 待扫描凭证的退避重扫），存储位置可在本机目录与 S3 兼容对象存储之间切换，下载也支持短时直连签名地址，扫描方式与上传上限都可在运营后台调整；真实病毒/内容扫描服务、上传限速与“凭证关联到具体验收项”未实现。
 - ⚠️ 取消、超时、争议、双向评价盲期/公开和运营处理：评价盲期与公开规则（双方提交或 7 天后）已实现；取消、超时和争议未实现，运营处理缺失。
 - ⛔ 完整可观测性、备份和恢复演练。
 

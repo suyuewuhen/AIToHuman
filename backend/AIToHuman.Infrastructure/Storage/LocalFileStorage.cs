@@ -1,5 +1,6 @@
 using AIToHuman.Application.Orders;
 using AIToHuman.Application.Settings;
+using AIToHuman.Domain.Common;
 using Microsoft.Extensions.Logging;
 
 namespace AIToHuman.Infrastructure.Storage;
@@ -84,7 +85,7 @@ public sealed class LocalFileStorage : IFileStorage
 public sealed class SettingsFileStorage(
     ISettingsProvider settings,
     LocalFileStorage local,
-    S3FileStorage s3) : IFileStorage
+    S3FileStorage s3) : IFileStorage, IPresignedFileStorage
 {
     public Task SaveAsync(string key, Stream content, string contentType, CancellationToken cancellationToken = default) =>
         Active().SaveAsync(key, content, contentType, cancellationToken);
@@ -97,6 +98,31 @@ public sealed class SettingsFileStorage(
 
     public Task DeleteAsync(string key, CancellationToken cancellationToken = default) =>
         Active().DeleteAsync(key, cancellationToken);
+
+    /// <summary>
+    /// 只有支持直连下载的存储才算支持；配置写坏（例如 s3 缺参数）时返回 false，
+    /// 让列表接口照常工作，真正发起下载时再报出具体缺哪一项。
+    /// </summary>
+    public bool SupportsPresignedDownload
+    {
+        get
+        {
+            try
+            {
+                return Active() is IPresignedFileStorage { SupportsPresignedDownload: true };
+            }
+            catch (InvalidOperationException)
+            {
+                return false;
+            }
+        }
+    }
+
+    /// <summary>按当前 provider 转发预签名请求；本机目录存储不支持，给出可行动的提示。</summary>
+    public PresignedDownload CreatePresignedDownload(string storageKey, TimeSpan lifetime, string? downloadFileName = null) =>
+        Active() is IPresignedFileStorage presigned
+            ? presigned.CreatePresignedDownload(storageKey, lifetime, downloadFileName)
+            : throw new DomainException("当前是本机目录存储，不能签发短时直连下载地址：请改用鉴权后的 /content 接口下载，或把 storage.provider 切到 s3。");
 
     /// <summary>
     /// 当前生效的实现。配置成 s3 时如果关键参数没填全，会由 <see cref="S3FileStorage"/> 直接报错，

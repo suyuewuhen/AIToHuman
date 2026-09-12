@@ -126,8 +126,7 @@ internal sealed class MutableTimeProvider(DateTimeOffset now) : TimeProvider
 
 /// <summary>内存文件存储替身：只保留字节，便于断言"被拒绝的文件没有留下"。</summary>
 internal sealed class InMemoryFileStorage : AIToHuman.Application.Orders.IFileStorage
-{
-    public Dictionary<string, byte[]> Files { get; } = [];
+{    public Dictionary<string, byte[]> Files { get; } = [];
 
     public Task SaveAsync(string key, Stream content, string contentType, CancellationToken cancellationToken = default)
     {
@@ -146,6 +145,40 @@ internal sealed class InMemoryFileStorage : AIToHuman.Application.Orders.IFileSt
     {
         Files.Remove(key);
         return Task.CompletedTask;
+    }
+}
+
+/// <summary>
+/// 支持签发直连下载地址的存储替身：包住同一个内存存储，因此字节仍从 <see cref="Inner"/> 读写，
+/// 只有“能不能签地址”这一项不同，用来验证服务端的权限与扫描状态判定。
+/// </summary>
+internal sealed class FakePresignedFileStorage(InMemoryFileStorage inner, TimeProvider clock)
+    : AIToHuman.Application.Orders.IFileStorage, AIToHuman.Application.Orders.IPresignedFileStorage
+{
+    public InMemoryFileStorage Inner { get; } = inner;
+
+    public bool SupportsPresignedDownload => true;
+
+    public List<(string Key, TimeSpan Lifetime, string? FileName)> Requests { get; } = [];
+
+    public Task SaveAsync(string key, Stream content, string contentType, CancellationToken cancellationToken = default) =>
+        Inner.SaveAsync(key, content, contentType, cancellationToken);
+
+    public Task<Stream?> OpenReadAsync(string key, CancellationToken cancellationToken = default) =>
+        Inner.OpenReadAsync(key, cancellationToken);
+
+    public Task<bool> ExistsAsync(string key, CancellationToken cancellationToken = default) =>
+        Inner.ExistsAsync(key, cancellationToken);
+
+    public Task DeleteAsync(string key, CancellationToken cancellationToken = default) =>
+        Inner.DeleteAsync(key, cancellationToken);
+
+    public AIToHuman.Application.Orders.PresignedDownload CreatePresignedDownload(string storageKey, TimeSpan lifetime, string? downloadFileName = null)
+    {
+        Requests.Add((storageKey, lifetime, downloadFileName));
+        return new AIToHuman.Application.Orders.PresignedDownload(
+            $"https://storage.example.com/{storageKey}?X-Amz-Expires={(int)lifetime.TotalSeconds}&sig=fake",
+            clock.GetUtcNow().Add(lifetime));
     }
 }
 

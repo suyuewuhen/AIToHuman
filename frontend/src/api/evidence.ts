@@ -18,6 +18,14 @@ export interface EvidenceItem {
   lastScanNote: string | null
   /** 一直是待扫描但自动重试已用尽：需要人工处理。 */
   scanExhausted: boolean
+  /** 当前存储是否支持短时直连下载地址；false 时走鉴权后的 /content 流式下载。 */
+  presignedDownloadAvailable: boolean
+}
+
+/** 短时直连下载地址；有效期由服务端运营配置决定，过期后需要重新申请。 */
+export interface EvidenceDownloadUrl {
+  url: string
+  expiresAt: string
 }
 
 export const allowedEvidenceTypes = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf']
@@ -56,8 +64,26 @@ export async function uploadOrderEvidence(orderId: string, userId: string, file:
   }))
 }
 
-/** 下载走带鉴权头的请求，再用 Blob URL 触发保存，避免把令牌放进 URL。 */
+/** 申请短时直连下载地址；只有对象存储支持，本机目录会返回可读错误。 */
+export async function getEvidenceDownloadUrl(item: EvidenceItem, userId: string): Promise<EvidenceDownloadUrl> {
+  return parseResponse<EvidenceDownloadUrl>(await fetch(`/api/v1/evidence/${item.id}/download-url?userId=${encodeURIComponent(userId)}`, { headers: authHeaders() }))
+}
+
+/**
+ * 下载凭证：对象存储可用时直接用服务端签发的短时地址（浏览器自己去取字节），
+ * 否则回退到带鉴权头的流式下载再用 Blob URL 保存。
+ */
 export async function downloadEvidence(item: EvidenceItem, userId: string): Promise<void> {
+  if (item.presignedDownloadAvailable) {
+    const { url } = await getEvidenceDownloadUrl(item, userId)
+    const link = document.createElement('a')
+    link.href = url
+    link.rel = 'noopener'
+    // 下载名由地址里的 response-content-disposition 决定（该参数也参与签名）。
+    link.click()
+    return
+  }
+
   const response = await fetch(`/api/v1/evidence/${item.id}/content?userId=${encodeURIComponent(userId)}`, { headers: authHeaders() })
   if (!response.ok) {
     const problem = await response.json().catch(() => null) as { detail?: string } | null
