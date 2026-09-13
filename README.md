@@ -22,6 +22,7 @@ AIToHuman 是一个“AI 任务管家 + 真人服务任务大厅”平台。用�
 
 - 前端：Vue 3、TypeScript、Vite（严格模式，`npm run typecheck`）
 - 后端：ASP.NET Core 10 Minimal API、C#、Entity Framework Core
+- 接口幂等：已认证的写请求可以带 `Idempotency-Key`，服务端按「用户 + 键」回放上一次的响应（回放时返回 `Idempotency-Replayed: true`），超时重试不会把加价、报名、选人、状态转换做两遍
 - 架构：前后端分离的模块化单体，依赖方向 `Api → Application → Domain`
 - 数据：PostgreSQL（当前开发事实来源；未配置连接串时回退内存仓储）
 - 实时通信：SignalR（订单创建、状态变化、订单取消、任务过期、报名撤回、争议与争议处置、新消息通知；持久化 Outbox + 后台派发 + 未读数收件箱，推送只是刷新提示；多实例通过 Redis 扇出投递，运营可开关，见 [ADR-0004](docs/architecture/decisions/0004-notification-fanout.md)）

@@ -20,6 +20,9 @@ using AIToHuman.Api;
 using AIToHuman.Api.Notifications;
 using AIToHuman.Api.Orders;
 using AIToHuman.Api.Settings;
+using AIToHuman.Api.Idempotency;
+using AIToHuman.Application.Idempotency;
+using AIToHuman.Infrastructure.Idempotency;
 using AIToHuman.Api.Tasks;
 using AIToHuman.Application.Admin;
 using AIToHuman.Application.Settings;
@@ -81,6 +84,7 @@ if (usePostgres)
     builder.Services.AddScoped<IAdminOrderQuery, EfAdminOrderQuery>();
     builder.Services.AddScoped<IUserDirectory, EfUserDirectory>();
     builder.Services.AddScoped<IAdminAuditRepository, EfAdminAuditRepository>();
+    builder.Services.AddScoped<IIdempotencyStore, EfIdempotencyStore>();
     builder.Services.AddScoped<IUnitOfWork, EfUnitOfWork>();
     builder.Services.AddScoped<AuthService>();
 }
@@ -104,6 +108,7 @@ else
     builder.Services.AddSingleton<ISystemSettingsRepository, InMemorySystemSettingRepository>();
     builder.Services.AddSingleton<IUserDirectory, EmptyUserDirectory>();
     builder.Services.AddSingleton<IAdminAuditRepository, InMemoryAdminAuditRepository>();
+    builder.Services.AddSingleton<IIdempotencyStore, InMemoryIdempotencyStore>();
     builder.Services.AddSingleton<IUnitOfWork, InMemoryUnitOfWork>();
 }
 builder.Services.AddSingleton(TimeProvider.System);
@@ -235,6 +240,8 @@ app.UseExceptionHandler(errorApp => errorApp.Run(async context =>
 if (app.Environment.IsDevelopment()) app.UseCors("development");
 app.UseAuthentication();
 app.UseAuthorization();
+// 写接口的幂等键：带 Idempotency-Key 的请求会回放上次的响应，避免重试把动作做两遍。
+app.UseMiddleware<IdempotencyMiddleware>();
 app.MapHub<NotificationsHub>("/hubs/notifications");
 
 app.MapGet("/health", () => Results.Ok(new { status = "healthy", service = "AIToHuman.Api", utc = DateTimeOffset.UtcNow }));

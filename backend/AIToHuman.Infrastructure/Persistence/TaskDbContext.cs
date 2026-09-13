@@ -1,4 +1,5 @@
 using AIToHuman.Domain.Admin;
+using AIToHuman.Domain.Idempotency;
 using AIToHuman.Domain.Orders;
 using AIToHuman.Domain.Risk;
 using AIToHuman.Domain.Settings;
@@ -23,6 +24,7 @@ public sealed class TaskDbContext(DbContextOptions<TaskDbContext> options) : DbC
     public DbSet<SettingsAuditRecord> SettingsAudits => Set<SettingsAuditRecord>();
     public DbSet<AdminAuditRecord> AdminAudits => Set<AdminAuditRecord>();
     public DbSet<TaskRevisionRecord> TaskRevisions => Set<TaskRevisionRecord>();
+    public DbSet<IdempotencyRecord> IdempotencyEntries => Set<IdempotencyRecord>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -194,8 +196,7 @@ public sealed class TaskDbContext(DbContextOptions<TaskDbContext> options) : DbC
         });
 
         modelBuilder.Entity<TaskRevisionRecord>(entity =>
-        {
-            entity.ToTable("task_draft_revisions");
+        {            entity.ToTable("task_draft_revisions");
             entity.HasKey(item => item.Id);
             // 同一任务的版本号唯一：并发编辑时后写入者会撞唯一索引，是并发保护的兜底（第一道是 tasks.Version）。
             entity.HasIndex(item => new { item.TaskId, item.Revision }).IsUnique();
@@ -209,6 +210,18 @@ public sealed class TaskDbContext(DbContextOptions<TaskDbContext> options) : DbC
             entity.Property(item => item.RiskVerdict).HasConversion<string>().HasMaxLength(16).IsRequired();
             entity.Property(item => item.RiskRuleCode).HasMaxLength(80);
             entity.Property(item => item.ChangeSummary).HasMaxLength(200).IsRequired();
+        });
+
+        modelBuilder.Entity<IdempotencyRecord>(entity =>
+        {
+            entity.ToTable("idempotency_entries");
+            // 主键就是"谁 + 哪个键"：并发请求里只有一个能占到位，另一个撞唯一约束。
+            entity.HasKey(item => new { item.UserId, item.Key });
+            entity.Property(item => item.Key).HasMaxLength(IdempotencyEntry.MaxKeyLength).IsRequired();
+            entity.Property(item => item.RequestHash).HasMaxLength(IdempotencyEntry.MaxRequestHashLength).IsRequired();
+            entity.Property(item => item.ResponseBody).HasMaxLength(IdempotencyEntry.MaxResponseBodyLength);
+            entity.Property(item => item.ContentType).HasMaxLength(120);
+            entity.HasIndex(item => item.StartedAt);
         });
     }
 }
@@ -439,6 +452,19 @@ public sealed class TaskRevisionRecord
     public Guid EditedBy { get; set; }
     public string ChangeSummary { get; set; } = "";
     public DateTimeOffset CreatedAt { get; set; }
+}
+
+/// <summary>幂等记录：一次带 Idempotency-Key 的写请求一行，主键是 (UserId, Key)。</summary>
+public sealed class IdempotencyRecord
+{
+    public Guid UserId { get; set; }
+    public string Key { get; set; } = "";
+    public string RequestHash { get; set; } = "";
+    public int? StatusCode { get; set; }
+    public string? ResponseBody { get; set; }
+    public string? ContentType { get; set; }
+    public DateTimeOffset StartedAt { get; set; }
+    public DateTimeOffset? CompletedAt { get; set; }
 }
 
 /// <summary>配置变更审计，只追加；取值已由应用层脱敏。</summary>

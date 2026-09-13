@@ -148,7 +148,7 @@ Conversation Orchestrator
 - 写操作接受 `Idempotency-Key`，服务端缓存或持久化处理结果。
 - 支付接入后，以支付方回调和内部账本为准，不相信前端结果。
 
-> 实现现状：`tasks`/`orders` 的 `Version` 乐观并发令牌、`IUnitOfWork` 显式事务（选人建单、验收关单）与 Outbox 通知都已落地，冲突返回 `409`；`Idempotency-Key` 尚未实现（见 `docs/development/handoff.md` 第 10 节）。
+> 实现现状：`tasks`/`orders` 的 `Version` 乐观并发令牌、`IUnitOfWork` 显式事务（选人建单、验收关单）与 Outbox 通知都已落地，冲突返回 `409`；写接口的 `Idempotency-Key` 也已实现——已认证的 `/api/v1` 写请求可带该请求头，命中时回放上一次的响应（带 `Idempotency-Replayed: true`），同键不同请求体或并发占位返回 `409`，`5xx` 与业务异常不缓存；**仍未实现**的是 ETag/版本字段返回与旧幂等记录的清理（见 `docs/development/handoff.md` 第 10 节）。
 
 ## 9. 可观测性
 

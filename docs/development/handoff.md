@@ -33,7 +33,7 @@ AI 多轮澄清（每轮一个问题）
 
 ## 2. 当前工作区状态
 
-工作区状态：`main` 与 `origin/main` 同步；本轮的「草稿版本号与编辑历史」随本轮提交一起进入 `main`（`git log -1` 可见）。上一版交接文档描述的“多轮 AI 未提交实现”已经全部提交，本文不再区分“基线 / 未提交”两种状态。
+工作区状态：`main` 与 `origin/main` 同步；本轮的「写接口幂等键」随本轮提交一起进入 `main`（`git log -1` 可见）。上一版交接文档描述的“多轮 AI 未提交实现”已经全部提交，本文不再区分“基线 / 未提交”两种状态。
 
 从上一版基线 `f196850` 到当前 `e45da76` 的主要变化：
 
@@ -396,7 +396,7 @@ netstat -ano | Select-String ':5188|:5173'
 
 ## 9. API 与 Hub 清单
 
-所有业务 JSON 使用 camelCase。
+所有业务 JSON 使用 camelCase。已认证的写请求可以带 `Idempotency-Key` 请求头做重试去重（命中时回放原响应并带 `Idempotency-Replayed: true`，详见第 10 节）。
 
 | 方法 | 路径 | 认证/说明 |
 | --- | --- | --- |
@@ -471,7 +471,7 @@ netstat -ano | Select-String ':5188|:5173'
 
 Development + PostgreSQL 启动时改为应用 EF Core 迁移（`Database.Migrate()`），不再使用 `EnsureCreated()` 和幂等建表 SQL。生产环境由部署流程执行迁移，不在应用启动时自动迁移。
 
-迁移历史（21 个）：`AddUsers` → `AddOrders` → `AddOrderEvidence` → `AddReviews` → `AddOrderRework` → `AddConversations` → `AddTaskTables` → `AddConcurrencyTokens` → `AddNotifications` → `AddOrderMessages` → `AddTaskExecutionAddress` → `AddEvidence` → `AddSystemSettings` → `AddEvidenceScanAttempts` → `AddEvidenceMetadataRemoved` → `AddAdminAudit` → `AddOrderCancellationAndTaskExpiry` → `AddApplicationDeadline` → `AddOrderDispute` → `AddTaskRiskAssessment` → `AddTaskDraftRevisions`。其中 `AddTaskTables` 补上了此前只由 `EnsureCreated()` 建出、从未纳入迁移的 `tasks` 与 `task_applications` 两张核心表；`AddConcurrencyTokens` 给 `tasks`/`orders` 加 `Version` 乐观并发令牌；`AddTaskExecutionAddress` 给 `tasks` 加参与者层的精确执行地址；`AddEvidence` 建 `evidence` 表；`AddSystemSettings` 建运营配置的两张表；`AddEvidenceScanAttempts` 给 `evidence` 补上扫描尝试次数、最近一次说明与尝试时间；`AddEvidenceMetadataRemoved` 补上“已移除元数据”说明与按人限速用的索引；`AddAdminAudit` 建运营操作审计表 `admin_audit_entries`（人工下架等动作只追加留痕）；`AddOrderCancellationAndTaskExpiry` 给 `orders` 加取消三列、给 `tasks` 加 `ExpiredAt`/`CancelledAt`/`CancellationReason`；`AddApplicationDeadline` 给 `tasks` 加可选的报名截止时间；`AddOrderDispute` 给 `orders` 加争议六列并补 `(Status, CreatedAt)` 索引供运营按状态检索；`AddTaskRiskAssessment` 给 `tasks` 加风险判定的 10 列并补 `(RiskReviewStatus, CreatedAt)` 索引供复核队列扫描——存量行用数据库默认值 `Allowed`/`NotRequired` 回填，读取时对未知取值也做防御性解析（历史行不会因为枚举名不认识而读不出来）；`AddTaskDraftRevisions` 建草稿历史表 `task_draft_revisions`（一行一个版本的完整快照 + `ChangeSummary` + 当版风险结论）并给 `(TaskId, Revision)` 建唯一索引。
+迁移历史（22 个）：`AddUsers` → `AddOrders` → `AddOrderEvidence` → `AddReviews` → `AddOrderRework` → `AddConversations` → `AddTaskTables` → `AddConcurrencyTokens` → `AddNotifications` → `AddOrderMessages` → `AddTaskExecutionAddress` → `AddEvidence` → `AddSystemSettings` → `AddEvidenceScanAttempts` → `AddEvidenceMetadataRemoved` → `AddAdminAudit` → `AddOrderCancellationAndTaskExpiry` → `AddApplicationDeadline` → `AddOrderDispute` → `AddTaskRiskAssessment` → `AddTaskDraftRevisions` → `AddIdempotencyEntries`。其中 `AddTaskTables` 补上了此前只由 `EnsureCreated()` 建出、从未纳入迁移的 `tasks` 与 `task_applications` 两张核心表；`AddConcurrencyTokens` 给 `tasks`/`orders` 加 `Version` 乐观并发令牌；`AddTaskExecutionAddress` 给 `tasks` 加参与者层的精确执行地址；`AddEvidence` 建 `evidence` 表；`AddSystemSettings` 建运营配置的两张表；`AddEvidenceScanAttempts` 给 `evidence` 补上扫描尝试次数、最近一次说明与尝试时间；`AddEvidenceMetadataRemoved` 补上“已移除元数据”说明与按人限速用的索引；`AddAdminAudit` 建运营操作审计表 `admin_audit_entries`（人工下架等动作只追加留痕）；`AddOrderCancellationAndTaskExpiry` 给 `orders` 加取消三列、给 `tasks` 加 `ExpiredAt`/`CancelledAt`/`CancellationReason`；`AddApplicationDeadline` 给 `tasks` 加可选的报名截止时间；`AddOrderDispute` 给 `orders` 加争议六列并补 `(Status, CreatedAt)` 索引供运营按状态检索；`AddTaskRiskAssessment` 给 `tasks` 加风险判定的 10 列并补 `(RiskReviewStatus, CreatedAt)` 索引供复核队列扫描——存量行用数据库默认值 `Allowed`/`NotRequired` 回填，读取时对未知取值也做防御性解析（历史行不会因为枚举名不认识而读不出来）；`AddTaskDraftRevisions` 建草稿历史表 `task_draft_revisions`（一行一个版本的完整快照 + `ChangeSummary` + 当版风险结论）并给 `(TaskId, Revision)` 建唯一索引；`AddIdempotencyEntries` 建幂等记录表 `idempotency_entries`（主键 `(UserId, Key)` + `StartedAt` 索引）。
 
 早期 `EnsureCreated()` 建出的本地库没有迁移历史记录。启动逻辑会检测这种情况：先用模型对比物理表的「表名.列名」，只有结构完全对得上时，才把当时已有的迁移整体标记为已应用并打警告日志；一旦缺表或缺列就直接报错说明缺了什么，提示删除重建，避免在错误的 schema 上继续运行。基线化之后新增的迁移会正常应用——例如 `AddConcurrencyTokens` 就是在基线化之后自动补上的 `Version` 列。目标库不存在时由 `Migrate()` 负责建库。
 
@@ -506,6 +506,16 @@ Development + PostgreSQL 启动时改为应用 EF Core 迁移（`Database.Migrat
 - `notifications` 一张表同时承担持久化通知与 Outbox：`DispatchedAt` 为空即待推送，`ReadAt` 为空即未读，`EventId` 上有唯一索引作为幂等兜底。
 - 写入发生在业务事务内（`IUnitOfWork`），所以不会出现“状态变了但通知没落库”；派发由 `NotificationDispatcher`（`BackgroundService`）完成，失败自动重试。后续如果引入 Hangfire，可以直接把派发换成作业而不是自建轮询。
 - 幂等判断用的是「先查 EventId 再插入」；并发下极小概率撞到唯一索引会让该业务事务失败，用户重试即可。
+
+写接口的幂等键：
+
+- 已登录用户在 `/api/v1` 下的写请求（POST/PUT/PATCH/DELETE）可以带请求头 `Idempotency-Key`，服务端按「用户 + 键」记录并**回放上一次的响应**：客户端超时重试不会把加价、报名、选人、提交、状态转换这类动作做两遍。**不带该头时行为完全不变**，所以是可选能力。
+- 回放命中时返回原来的状态码与响应体，并加响应头 `Idempotency-Replayed: true`。实测：发布接口第一次 `200 Published`，同一个键重试依旧是 `200 Published`（带回放头），而**换一个键**重试会拿到 `422 任务当前状态 Published 不允许该操作`——这正是幂等键要解决的问题。
+- 同一个键配**不同请求体**返回 `409`（请求指纹 = 方法 + 路径 + 查询串 + 请求体 的 SHA-256）：客户端复用键是错误，不能拿旧响应糊过去。
+- 主键是 `(UserId, Key)`，并发请求里只有一个能占位，另一个若发现记录尚未完成返回 `409`「正在处理中」；占位后 2 分钟仍未完成（上次执行中途挂了）视为过期，允许重试真正执行；键按用户隔离，不同用户可以用相同的键。
+- 不缓存的情形：`5xx`（服务端出错时重试应当真的重跑）、响应体超过 32000 字符、非 JSON 响应（例如文件下载）以及业务抛异常——这些情况下占位会被清掉，重试会重新执行。
+- 不参与幂等的请求：匿名请求（`/api/v1/auth/*`、`/api/v1/session/*`）与 SSE 流 `/api/v1/ai/plan/stream`（长连接，回放没有意义）。
+- 存储是 `idempotency_entries`（迁移 22），中间件在认证/授权之后执行。**尚未实现**：旧记录的清理任务（记录会一直留着）、ETag/版本字段返回，以及前端「自动生成并复用幂等键」的改造（目前前端按钮是置灰防重复点击，没有真正用上这个头）。
 
 ```text
 Task:  ReadyToPublish → Published → Assigned → Closed
@@ -708,6 +718,14 @@ npm run build
 - 顺带补的字段上限（创建与编辑共用）：描述 ≤4000 字、公开区域 ≤120 字、验收标准 ≤12 条且每条 ≤200 字；这些也是历史快照的列宽依据。
 - 顺带的测试维护：`TaskService` 构造新增 `ITaskRevisionRepository`，仓库里 10 个手工构造 `TaskService` 的测试文件同步补参数；`TaskServiceUnitOfWorkTests` 里两处“Select 恰好一次工作单元”的断言改成相对基线（创建草稿现在自己就用掉一次事务边界）。
 
+本轮（写接口幂等键）新增验证：
+
+- 编译与测试：`dotnet build AIToHuman.sln --no-restore` 0 警告 0 错误；领域 244 + 集成 **289** = **533** 个用例全通过（新增 9 个中间件用例 + 1 个真库用例）。
+- 中间件用例（`IdempotencyMiddlewareTests`，用 `DefaultHttpContext` 直接驱动中间件，不需要起主机）：同一个键重试只执行一次且返回同一响应与回放头；不同键各自执行；同键不同请求体 `409`；不带键行为不变；只覆盖写方法（GET 不参与）；匿名请求与 `/ai/plan/stream` 不参与；`5xx` 不缓存、重试能真正重跑；占位过期后可以重试；占位未完成时第二个请求 `409`。
+- 真机 HTTP 端到端（真实 PostgreSQL + 真实 HTTP）：同一个键连续提交 4 次创建任务 → HTTP 全是 `201`、**唯一任务 id 数 = 1、回放 3 次、库里实际只有 1 条**；三个不同键 → 3 条任务（总计 4 条）；同键配不同请求体 → `409`「这个幂等键已经用于另一个请求…」；不带键两次 → 2 条任务；发布用同一个键重试回放 `200 Published` 且带 `Idempotency-Replayed: true`，换一个键则 `422 任务当前状态 Published 不允许该操作`。
+- 真库用例（`PostgresRegressionTests`）：记录跨作用域（等价于跨请求/跨实例）可读回并保留响应体与状态码；同一用户同一键只能占一次并交回已有记录；不同用户可以用相同的键——验证了 `(UserId, Key)` 主键与迁移 22。
+- 顺带记录一个由测试当场抓到的自身缺陷：`TryResolveKey` 忘了把请求头的值赋给输出参数 `key`，导致键恒为空、领域层抛「幂等键长度必须在 1 到 120 个字符之间」。这正是把中间件也纳入自动化测试的价值——这类错误只有真正走一遍请求才会暴露。
+
 ## 12. 完成状态与后续顺序
 
 ### P0
@@ -801,8 +819,15 @@ npm run build
 - 接口与前端：`GET /api/v1/tasks/{id}/revisions`（仅所有者）+“我的任务”里的“修改记录”展开面板（`styles.css` 的 `.draft-history*`）。
 - 顺带：创建/编辑共用更严的字段上限（描述 4000、区域 120、验收标准 ≤12 条且每条 ≤200），既是产品约束也是历史快照的列宽依据。
 
+本轮追加（写接口幂等键）：
+
+- 领域：`IdempotencyEntry`（占位 → 完成两段式，`Matches` 校验请求指纹、`IsStale` 处理"上次执行中途挂了"、响应体超长不缓存）。
+- 应用/基础设施：`IIdempotencyStore`（`TryStart` 靠 `(UserId, Key)` 唯一约束挡并发）+ `EfIdempotencyStore`/`InMemoryIdempotencyStore`；`idempotency_entries` 表与迁移 22。
+- API：`IdempotencyMiddleware` 在认证/授权之后执行，覆盖已登录用户的 `/api/v1` 写请求；回放带 `Idempotency-Replayed: true`；`5xx`、非 JSON、超长响应与业务异常都不缓存。
+
 ### 后续跟进（原 P1 的延伸项）
 
+- 幂等键的收尾：`idempotency_entries` 没有清理任务（记录会一直留着，需要按 `StartedAt` 定期归档）；没有 ETag/版本字段返回；前端还没有"自动生成并复用幂等键"，目前只靠按钮置灰防重复点击（见第 10 节）。
 - 对象存储的短时签名 URL 已实现（见第 3、11 节）；如果以后要让前端完全绕开后端，需要补 CORS 配置与审计补偿。
 - 选定病毒/内容扫描服务后把 `evidence.scanner.provider` 切成 `http` + `failMode=closed`（重扫闭环已经就绪，只差真实服务商）。
 - 运营后台的其余部分：误拦申诉与客服工单、争议的责任判定与赔付/退款、争议申诉与处理时限。风险复核队列与人工下架都已实现；风险规则目录本身还不能后台编辑（改规则要发版并提升版本号）。上传大小与份数上限已经进了设置目录；凭证类型白名单**故意不进**（放开等于允许上传可执行内容）。
@@ -867,6 +892,7 @@ npm run build
 - [ ] 用敏感草稿验证防绕过：先由运营放行 → 再编辑草稿 → 复核状态应回到“待复核”、复核人与依据清空、重新出现在“风险复核”队列、发布被 `422` 拦住；再次放行后可以发布。
 - [ ] 跑一次 `dotnet test AIToHuman.sln --no-build --no-restore`：确认 `PostgresRegressionTests` 是**通过**而不是**跳过**（跳过说明本机没连上测试库，见第 7 节“真实数据库回归测试”）；再把 `AITOHUMAN_TEST_POSTGRES` 指向不可达端口确认它们变成跳过而不是失败。
 - [ ] 用两个账号跑一遍双向信用：服务者完成一单且双方互评后，需求方在自己的任务“查看报名”里应看到该服务者的公开评分与条数，且与 `GET /api/v1/users/{id}/review-summary` 一致；只有单方评价（盲期内）时列表里应为 0 分 / 0 条。
+- [ ] 幂等键：对同一个写接口用同一个 `Idempotency-Key` 连发两次，第二次应返回与第一次相同的状态码和响应体，并带 `Idempotency-Replayed: true`；把请求体改掉再用同一个键，应返回 `409`；不带这个头时行为应和以前完全一样。
 - [ ] 新功能先补 Contract、领域规则和测试，再扩展页面。
 
 ## 14. 相关文档

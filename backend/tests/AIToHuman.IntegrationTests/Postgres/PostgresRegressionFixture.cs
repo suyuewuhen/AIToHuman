@@ -1,6 +1,7 @@
 using AIToHuman.Application.Admin;
 using AIToHuman.Application.Common;
 using AIToHuman.Application.Conversations;
+using AIToHuman.Application.Idempotency;
 using AIToHuman.Application.Notifications;
 using AIToHuman.Application.Orders;
 using AIToHuman.Application.Settings;
@@ -9,6 +10,7 @@ using AIToHuman.Contracts.Tasks;
 using AIToHuman.Domain.Tasks;
 using AIToHuman.Infrastructure.Admin;
 using AIToHuman.Infrastructure.Conversations;
+using AIToHuman.Infrastructure.Idempotency;
 using AIToHuman.Infrastructure.Notifications;
 using AIToHuman.Infrastructure.Orders;
 using AIToHuman.Infrastructure.Persistence;
@@ -137,6 +139,7 @@ public sealed class PostgresWorld : IDisposable
         services.AddScoped<IAdminOrderQuery, EfAdminOrderQuery>();
         services.AddScoped<IUserDirectory, EfUserDirectory>();
         services.AddScoped<IAdminAuditRepository, EfAdminAuditRepository>();
+        services.AddScoped<IIdempotencyStore, EfIdempotencyStore>();
         services.AddScoped<IUnitOfWork, EfUnitOfWork>();
         services.AddSingleton<TimeProvider>(Clock);
         services.AddScoped<NotificationService>();

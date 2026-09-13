@@ -27,7 +27,7 @@
 | `AuditEvent` | ⚠️ | 没有通用业务审计表；运营侧有 `admin_audit_entries`（人工下架与争议处置的三种动作）与配置审计 `system_setting_audits`，其它关键操作仍只体现为实体上的时间戳 |
 | 领域事件 | ⚠️ | 领域层仍无事件类型；通知事件由应用层显式入队到 `notifications`（兼作 Outbox），由后台任务派发 |
 | 并发控制 | ⚠️ | `tasks`、`orders` 已有 `Version` 乐观并发令牌（冲突返回 `409`），选人与验收使用显式事务；报名行、会话与评价仍无令牌 |
-| 幂等 | ⛔ | 未处理 `Idempotency-Key` 或等价防重机制 |
+| 幂等 | ✅ | 已认证的写请求（`/api/v1` 下的 POST/PUT/PATCH/DELETE）支持可选的 `Idempotency-Key`：按「用户 + 键」回放原响应（带 `Idempotency-Replayed` 头），同键不同请求体或并发占位返回 `409`，`5xx` 与非 JSON 响应不缓存；键按用户隔离。仍缺 ETag/版本字段与旧记录清理 |
 
 ## 1. 聚合与核心实体
 

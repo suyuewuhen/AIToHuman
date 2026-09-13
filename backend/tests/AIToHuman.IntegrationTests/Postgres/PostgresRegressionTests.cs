@@ -1,7 +1,10 @@
+using AIToHuman.Application.Idempotency;
 using AIToHuman.Contracts.Tasks;
 using AIToHuman.Domain.Common;
+using AIToHuman.Domain.Idempotency;
 using AIToHuman.Domain.Orders;
 using AIToHuman.Domain.Tasks;
+using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 // System.Threading.Tasks 里也有一个 TaskStatus，这里明确指向领域里的那个。
@@ -238,6 +241,44 @@ public sealed class PostgresRegressionTests(PostgresRegressionFixture fixture) :
         Assert.DoesNotContain(revisions, item => item.Title == "这次改动不该留下痕迹");
         // 唯一索引 (TaskId, Revision) 也在这条链路上被真实写入验证过。
         Assert.Equal(3, revisions.Count);
+    }
+
+    /// <summary>
+    /// 幂等记录在真库上的行为：主键是 (UserId, Key)，跨作用域（等价于跨请求/跨实例）能读回并回放，
+    /// 同一用户同一键只能占一次，不同用户可以用相同的键。
+    /// </summary>
+    [PostgresFact]
+    public async Task Idempotency_records_are_shared_across_scopes_and_keyed_per_user()
+    {
+        using var world = new PostgresWorld(fixture.ConnectionString, Now);
+        var user = Guid.NewGuid();
+        var other = Guid.NewGuid();
+
+        using (var scope = world.NewScope())
+        {
+            var store = scope.ServiceProvider.GetRequiredService<IIdempotencyStore>();
+            var entry = IdempotencyEntry.Start(user, "retry-1", new string('a', 64), Now);
+            Assert.True(store.TryStart(entry, out _));
+            store.Complete(entry, StatusCodes.Status201Created, """{"id":"task-1"}""", "application/json; charset=utf-8", Now);
+        }
+
+        using (var freshScope = world.NewScope())
+        {
+            var store = freshScope.ServiceProvider.GetRequiredService<IIdempotencyStore>();
+            var found = store.Find(user, "retry-1");
+
+            Assert.NotNull(found);
+            Assert.True(found!.IsCompleted);
+            Assert.Equal(StatusCodes.Status201Created, found.StatusCode);
+            Assert.Equal("""{"id":"task-1"}""", found.ResponseBody);
+
+            // 同一个用户再占一次会被挡住，并交回已有记录。
+            Assert.False(store.TryStart(IdempotencyEntry.Start(user, "retry-1", new string('a', 64), Now), out var existing));
+            Assert.Equal(StatusCodes.Status201Created, existing!.StatusCode);
+
+            // 键是按用户隔离的：另一个用户用同样的键不受影响。
+            Assert.True(store.TryStart(IdempotencyEntry.Start(other, "retry-1", new string('b', 64), Now), out _));
+        }
     }
 
     /// <summary>带时区偏移的截止时间与中文文本在真库上的往返：领域层统一归一化成 UTC，文本原样保存。</summary>
