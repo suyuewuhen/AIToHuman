@@ -1,9 +1,12 @@
 namespace AIToHuman.Domain.Risk;
 
 /// <summary>
-/// 一条确定性风险规则。规则是代码里的固定目录（<see cref="RiskRuleCatalog"/>），不是可以随手改的数据：
-/// 规则一旦上线就要有稳定的 <see cref="Code"/>（原因代码）与 <see cref="Version"/>，
-/// 这样任何一条拦截结论都能回溯到“当时用的是哪条规则、哪一版”。
+/// 一条确定性风险规则。规则不再只来自代码：内置目录（<see cref="RiskRuleCatalog.BuiltIn"/>）仍然是硬底线，
+/// 运营可以在后台改出一份覆盖目录，每一版都以只追加的快照落库（见 <see cref="RiskRuleCatalogRevision"/>）。
+///
+/// 无论规则从哪来，<see cref="Code"/>（原因代码）都是稳定契约：
+/// 它跟着判定结论一起记在任务上，所以任何一条拦截结论都能回溯到“当时用的是哪条规则、哪一版”。
+/// 规则被删除或改名不会改动历史记录上的代码，历史结论按当时的目录留档。
 /// </summary>
 public sealed class RiskRule
 {

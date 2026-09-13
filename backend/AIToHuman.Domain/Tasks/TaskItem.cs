@@ -25,7 +25,8 @@ public sealed class TaskItem
         IEnumerable<string> acceptanceCriteria,
         DateTimeOffset createdAt,
         string? executionAddress = null,
-        DateTimeOffset? applicationDeadline = null)
+        DateTimeOffset? applicationDeadline = null,
+        RiskRuleCatalog? riskRules = null)
     {
         var criteria = NormalizeCriteria(acceptanceCriteria);
 
@@ -47,7 +48,8 @@ public sealed class TaskItem
 
         // 风险判定发生在创建草稿时：被禁止的类别从一开始就锁死，转人工的类别直接进复核队列。
         // 草稿仍然创建出来（用户能看到自己写的内容和原因），但发布这一关过不去。
-        AssessRisk(CreatedAt);
+        // riskRules 是"当下生效的那一版目录"（可能是内置目录，也可能是运营在后台改出来的版本）。
+        AssessRisk(CreatedAt, riskRules);
     }
 
     /// <summary>执行地址属于订单参与者层信息，最长 200 字。</summary>
@@ -97,9 +99,10 @@ public sealed class TaskItem
         IEnumerable<string> acceptanceCriteria,
         string? executionAddress,
         DateTimeOffset? applicationDeadline,
-        DateTimeOffset now)
+        DateTimeOffset now,
+        RiskRuleCatalog? riskRules = null)
     {
-        return ApplyDraft(title, description, district, deadline, reward, acceptanceCriteria, executionAddress, applicationDeadline, now);
+        return ApplyDraft(title, description, district, deadline, reward, acceptanceCriteria, executionAddress, applicationDeadline, now, riskRules);
     }
 
     /// <summary>
@@ -109,7 +112,7 @@ public sealed class TaskItem
     /// 这是有意的：回滚不是"绕过校验的后门"，如果那一版的截止时间已经过去，就应当像编辑时一样被拒绝，
     /// 而不是悄悄造出一个永远发布不了的草稿。
     /// </summary>
-    public IReadOnlyCollection<string> RestoreDraft(TaskDraftRevision revision, DateTimeOffset now)
+    public IReadOnlyCollection<string> RestoreDraft(TaskDraftRevision revision, DateTimeOffset now, RiskRuleCatalog? riskRules = null)
     {
         if (revision.TaskId != Id) throw new DomainException("这一版不属于当前任务。");
 
@@ -122,7 +125,8 @@ public sealed class TaskItem
             revision.AcceptanceCriteria,
             revision.ExecutionAddress,
             revision.ApplicationDeadline,
-            now);
+            now,
+            riskRules);
     }
 
     /// <summary>
@@ -138,7 +142,8 @@ public sealed class TaskItem
         IEnumerable<string> acceptanceCriteria,
         string? executionAddress,
         DateTimeOffset? applicationDeadline,
-        DateTimeOffset now)
+        DateTimeOffset now,
+        RiskRuleCatalog? riskRules)
     {
         EnsureStatus(TaskStatus.ReadyToPublish);
 
@@ -171,7 +176,7 @@ public sealed class TaskItem
         ExecutionAddress = normalizedAddress;
         ApplicationDeadline = normalizedApplicationDeadline;
 
-        AssessRisk(normalizedNow, resetHumanDecision: true);
+        AssessRisk(normalizedNow, riskRules, resetHumanDecision: true);
 
         // 正文变了，原来的申诉就不再针对同一份材料：连同申诉结论一起作废，需要的话重新提交。
         RiskAppealStatus = RiskAppealStatus.None;
@@ -390,13 +395,14 @@ public sealed class TaskItem
         return string.IsNullOrEmpty(trimmed) ? null : trimmed;
     }
 
-    public void Publish(DateTimeOffset now)
+    public void Publish(DateTimeOffset now, RiskRuleCatalog? riskRules = null)
     {
         EnsureStatus(TaskStatus.ReadyToPublish);
 
         // 发布前重新判定一次：悬赏与截止时间在草稿阶段会变（加价到高金额、改到深夜），
         // 判定结果与原因代码都要跟当前字段一致，再决定这一关过不过。
-        AssessRisk(now);
+        // 这里用的是"发布这一刻生效的目录"：运营在草稿创建之后收紧了规则，发布同样会被拦住。
+        AssessRisk(now, riskRules);
         EnsurePublishableByRisk();
 
         if (Deadline <= now) throw new DomainException("已过截止时间的任务不能发布。");
@@ -567,8 +573,12 @@ public sealed class TaskItem
     /// 运营驳回过的任务不会因为后续字段变化又变回可发布。
     /// <paramref name="resetHumanDecision"/> 用于“文本被改过”的场景：审核针对的是某一版文本，
     /// 文本一变就作废，重新按新文本判定。
+    ///
+    /// <paramref name="riskRules"/> 是这次判定该用的目录（见 <see cref="RiskRuleCatalog"/>）：
+    /// 应用层每次写入都传入"当下生效的那一版"，判定结束后把它的版本号一起记在任务上。
+    /// 不传时退回内置目录——领域层因此始终有确定行为，但生产路径永远不会用默认值。
     /// </summary>
-    private void AssessRisk(DateTimeOffset now, bool resetHumanDecision = false)
+    private void AssessRisk(DateTimeOffset now, RiskRuleCatalog? riskRules = null, bool resetHumanDecision = false)
     {
         if (resetHumanDecision)
         {
@@ -577,7 +587,8 @@ public sealed class TaskItem
             RiskReviewNote = null;
         }
 
-        var assessment = RiskRuleCatalog.Evaluate(Title, Description, AcceptanceCriteria, ExecutionAddress, Reward.Amount, Deadline);
+        var catalog = riskRules ?? RiskRuleCatalog.BuiltIn;
+        var assessment = catalog.Evaluate(Title, Description, AcceptanceCriteria, ExecutionAddress, Reward.Amount, Deadline);
         var humanDecisionExists = !resetHumanDecision && RiskReviewStatus is RiskReviewStatus.Approved or RiskReviewStatus.Rejected;
 
         RiskVerdict = assessment.Verdict;

@@ -18,7 +18,7 @@ public sealed class RiskRuleCatalogTests
         DateTimeOffset? deadline = null,
         IEnumerable<string>? criteria = null,
         string? executionAddress = null) =>
-        RiskRuleCatalog.Evaluate(title, description, criteria ?? ["按时送达"], executionAddress, reward, deadline ?? new DateTimeOffset(2026, 9, 14, 9, 0, 0, ChinaOffset));
+        RiskRuleCatalog.BuiltIn.Evaluate(title, description, criteria ?? ["按时送达"], executionAddress, reward, deadline ?? new DateTimeOffset(2026, 9, 14, 9, 0, 0, ChinaOffset));
 
     [Theory]
     // 代考与冒名（PRD 第 10 节的验收场景）
@@ -50,7 +50,7 @@ public sealed class RiskRuleCatalogTests
 
         Assert.Equal(RiskVerdict.Blocked, assessment.Verdict);
         Assert.Equal(expectedCode, assessment.RuleCode);
-        Assert.Equal(RiskRuleCatalog.Version, assessment.RuleVersion);
+        Assert.Equal(RiskRuleCatalog.BuiltIn.Version, assessment.RuleVersion);
         Assert.False(string.IsNullOrWhiteSpace(assessment.Category));
         Assert.False(string.IsNullOrWhiteSpace(assessment.Description));
     }
@@ -114,8 +114,8 @@ public sealed class RiskRuleCatalogTests
     [Fact]
     public void Execution_address_and_acceptance_criteria_are_also_scanned()
     {
-        var byAddress = RiskRuleCatalog.Evaluate("取一份材料", "按门牌号送到", ["放在前台"], "某某医院住院部", 50, new DateTimeOffset(2026, 9, 14, 9, 0, 0, ChinaOffset));
-        var byCriteria = RiskRuleCatalog.Evaluate("取一份材料", "送到公司", ["必须把身份证原件交到本人手上"], null, 50, new DateTimeOffset(2026, 9, 14, 9, 0, 0, ChinaOffset));
+        var byAddress = RiskRuleCatalog.BuiltIn.Evaluate("取一份材料", "按门牌号送到", ["放在前台"], "某某医院住院部", 50, new DateTimeOffset(2026, 9, 14, 9, 0, 0, ChinaOffset));
+        var byCriteria = RiskRuleCatalog.BuiltIn.Evaluate("取一份材料", "送到公司", ["必须把身份证原件交到本人手上"], null, 50, new DateTimeOffset(2026, 9, 14, 9, 0, 0, ChinaOffset));
 
         Assert.Equal(RiskVerdict.NeedsReview, byAddress.Verdict);
         Assert.Equal("review.restricted_venue", byAddress.RuleCode);
@@ -126,17 +126,17 @@ public sealed class RiskRuleCatalogTests
     [Fact]
     public void A_high_reward_goes_to_review()
     {
-        var assessment = Evaluate("帮我取一份文件", reward: RiskRuleCatalog.HighRewardThreshold + 1);
+        var assessment = Evaluate("帮我取一份文件", reward: RiskRuleCatalog.BuiltIn.HighRewardThreshold + 1);
 
         Assert.Equal(RiskVerdict.NeedsReview, assessment.Verdict);
         Assert.Equal("review.high_reward", assessment.RuleCode);
-        Assert.Contains($"{RiskRuleCatalog.HighRewardThreshold:0}", assessment.Description);
+        Assert.Contains($"{RiskRuleCatalog.BuiltIn.HighRewardThreshold:0}", assessment.Description);
     }
 
     [Fact]
     public void The_threshold_itself_is_still_allowed()
     {
-        Assert.Equal(RiskVerdict.Allowed, Evaluate("帮我取一份文件", reward: RiskRuleCatalog.HighRewardThreshold).Verdict);
+        Assert.Equal(RiskVerdict.Allowed, Evaluate("帮我取一份文件", reward: RiskRuleCatalog.BuiltIn.HighRewardThreshold).Verdict);
     }
 
     [Fact]
@@ -169,20 +169,20 @@ public sealed class RiskRuleCatalogTests
     [Fact]
     public void The_catalog_is_versioned_and_well_formed()
     {
-        Assert.True(RiskRuleCatalog.Version >= 1);
+        Assert.True(RiskRuleCatalog.BuiltIn.Version >= 1);
         // 规则目录里只允许放“禁止”和“转人工”两类；放行是默认结果，不需要规则。
-        Assert.All(RiskRuleCatalog.Rules, rule => Assert.NotEqual(RiskVerdict.Allowed, rule.Verdict));
-        Assert.All(RiskRuleCatalog.Rules, rule => Assert.NotEmpty(rule.Keywords));
+        Assert.All(RiskRuleCatalog.BuiltIn.Rules, rule => Assert.NotEqual(RiskVerdict.Allowed, rule.Verdict));
+        Assert.All(RiskRuleCatalog.BuiltIn.Rules, rule => Assert.NotEmpty(rule.Keywords));
         // 原因代码必须唯一，否则事后无法区分是哪条规则拦的。
-        Assert.Equal(RiskRuleCatalog.Rules.Count, RiskRuleCatalog.Rules.Select(rule => rule.Code).Distinct(StringComparer.Ordinal).Count());
+        Assert.Equal(RiskRuleCatalog.BuiltIn.Rules.Count, RiskRuleCatalog.BuiltIn.Rules.Select(rule => rule.Code).Distinct(StringComparer.Ordinal).Count());
         // 禁止类别的规则必须至少有一条，否则“禁止任务拦截”名存实亡。
-        Assert.Contains(RiskRuleCatalog.Rules, rule => rule.Verdict == RiskVerdict.Blocked);
+        Assert.Contains(RiskRuleCatalog.BuiltIn.Rules, rule => rule.Verdict == RiskVerdict.Blocked);
     }
 
     [Fact]
     public void Match_words_never_single_characters_that_would_catch_ordinary_errands()
     {
         // 单字匹配（例如“代”）会把“代取”“代送”这类正常任务全部误伤，这里锁死这个约束。
-        Assert.All(RiskRuleCatalog.Rules, rule => Assert.All(rule.Keywords, keyword => Assert.True(keyword.Length >= 2, $"匹配词“{keyword}”太短，容易误伤正常任务")));
+        Assert.All(RiskRuleCatalog.BuiltIn.Rules, rule => Assert.All(rule.Keywords, keyword => Assert.True(keyword.Length >= 2, $"匹配词“{keyword}”太短，容易误伤正常任务")));
     }
 }

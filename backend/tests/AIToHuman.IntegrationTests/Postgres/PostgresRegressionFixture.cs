@@ -15,6 +15,7 @@ using AIToHuman.Infrastructure.Idempotency;
 using AIToHuman.Infrastructure.Notifications;
 using AIToHuman.Infrastructure.Orders;
 using AIToHuman.Infrastructure.Persistence;
+using AIToHuman.Infrastructure.Risk;
 using AIToHuman.Infrastructure.Settings;
 using AIToHuman.Infrastructure.Tasks;
 using Microsoft.EntityFrameworkCore;
@@ -141,12 +142,15 @@ public sealed class PostgresWorld : IDisposable
         services.AddScoped<IUserDirectory, EfUserDirectory>();
         services.AddScoped<IAdminAuditRepository, EfAdminAuditRepository>();
         services.AddScoped<IIdempotencyStore, EfIdempotencyStore>();
+        services.AddScoped<IRiskRuleCatalogStore, EfRiskRuleCatalogStore>();
+        services.AddScoped<IRiskRuleCatalogProvider, RiskRuleCatalogStoreProvider>();
         services.AddScoped<IUnitOfWork, EfUnitOfWork>();
         services.AddSingleton<TimeProvider>(Clock);
         services.AddScoped<NotificationService>();
         services.AddScoped<TaskService>();
         services.AddScoped<AdminConsoleService>();
         services.AddScoped<RiskAppealService>();
+        services.AddScoped<RiskRuleCatalogService>();
 
         provider = services.BuildServiceProvider();
         scope = provider.CreateScope();
@@ -161,6 +165,8 @@ public sealed class PostgresWorld : IDisposable
     public TaskService Service => Services.GetRequiredService<TaskService>();
     public AdminConsoleService Admin => Services.GetRequiredService<AdminConsoleService>();
     public RiskAppealService Appeals => Services.GetRequiredService<RiskAppealService>();
+    public RiskRuleCatalogService RiskRules => Services.GetRequiredService<RiskRuleCatalogService>();
+    public IRiskRuleCatalogStore RuleStore => Services.GetRequiredService<IRiskRuleCatalogStore>();
     public NotificationService Notifications => Services.GetRequiredService<NotificationService>();
     public ITaskRepository Tasks => Services.GetRequiredService<ITaskRepository>();
     public IOrderRepository Orders => Services.GetRequiredService<IOrderRepository>();
@@ -169,6 +175,8 @@ public sealed class PostgresWorld : IDisposable
     public IServiceScope NewScope() => provider.CreateScope();
 
     public TaskService ServiceIn(IServiceScope other) => other.ServiceProvider.GetRequiredService<TaskService>();
+
+    public RiskRuleCatalogService RiskRulesIn(IServiceScope other) => other.ServiceProvider.GetRequiredService<RiskRuleCatalogService>();
 
     public CreateTaskRequest DraftRequest(
         string title,

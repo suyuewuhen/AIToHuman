@@ -156,3 +156,53 @@ public sealed record AdminRiskAppealDecisionRequest(string Decision, string Note
 public sealed record RiskRuleResponse(string Code, string Category, string Verdict, string Description, int KeywordCount);
 
 public sealed record RiskRuleCatalogResponse(int Version, decimal HighRewardThreshold, IReadOnlyList<RiskRuleResponse> Rules);
+
+/// <summary>规则明细：连匹配词一起给出来，只对运营开放（普通接口只给词的数量，避免用户逐字试探绕过）。</summary>
+public sealed record RiskRuleDetailResponse(string Code, string Category, string Verdict, string Description, IReadOnlyList<string> Keywords);
+
+/// <summary>
+/// 当前生效的规则目录明细。<c>IsBuiltIn</c> 为真表示还没有任何运营覆盖（用的就是代码里的内置目录，版本 1）；
+/// <c>ChangeSummary</c>/<c>ChangeReason</c>/<c>UpdatedBy</c>/<c>UpdatedAt</c> 描述最近一版改动的来龙去脉。
+/// </summary>
+public sealed record RiskRuleCatalogDetailResponse(
+    int Version,
+    bool IsBuiltIn,
+    decimal HighRewardThreshold,
+    string NightWindowStart,
+    string NightWindowEnd,
+    IReadOnlyList<RiskRuleDetailResponse> Rules,
+    string? ChangeSummary,
+    string? ChangeReason,
+    Guid? UpdatedBy,
+    string? UpdatedByName,
+    DateTimeOffset? UpdatedAt);
+
+/// <summary>编辑一版规则：整份目录替换（规则 + 阈值 + 时段）。<c>ExpectedVersion</c> 用来挡住“拿着旧目录覆盖别人刚改的内容”。</summary>
+public sealed record UpdateRiskRuleCatalogRequest(
+    int? ExpectedVersion,
+    string Reason,
+    decimal HighRewardThreshold,
+    string NightWindowStart,
+    string NightWindowEnd,
+    IReadOnlyList<RiskRuleDetailRequest> Rules);
+
+public sealed record RiskRuleDetailRequest(string Code, string Category, string Verdict, string Description, IReadOnlyList<string> Keywords);
+
+/// <summary>把目录恢复到代码内置的那一版（同样是追加一版新版本，历史不丢）。依据必填。</summary>
+public sealed record ResetRiskRuleCatalogRequest(int? ExpectedVersion, string Reason);
+
+/// <summary>版本历史里的一条：只看改动摘要与依据，不看当时的完整词表（要看某一版就查那一版明细）。</summary>
+public sealed record RiskRuleCatalogVersionResponse(
+    int Version,
+    string ChangeSummary,
+    string ChangeReason,
+    Guid UpdatedBy,
+    string? UpdatedByName,
+    DateTimeOffset CreatedAt,
+    int RuleCount,
+    int BlockedRuleCount,
+    decimal HighRewardThreshold,
+    string NightWindowStart,
+    string NightWindowEnd);
+
+public sealed record RiskRuleCatalogVersionListResponse(IReadOnlyList<RiskRuleCatalogVersionResponse> Items, int Limit);

@@ -20,14 +20,14 @@
 | `Task` | ✅ | `TaskItem` 已实现，含所有者、截止时间、公开区域和验收标准校验；可选的报名截止时间 `ApplicationDeadline` 到点后只关闭新报名；`Expired`（后台扫描超期未分配任务）与 `Cancelled`（所有者撤销、运营下架）都有落库时间戳与原因 |
 | `Application` | ⚠️ | `TaskApplication` 已实现；服务者可撤回自己仍处于 `Pending` 的报名（`Withdrawn`，之后可重新报名），订单取消把选中的报名置为 `Rejected`、任务过期把 `Pending` 置为 `Expired`；报名列表内联该服务者的公开评价摘要（`WorkerAverageRating`/`WorkerReviewCount`，只统计已公开评价）；仍无预计到达时间，也没有选人时固化的报名快照 |
 | `Order` | ✅ | `Order` 已实现，含参与者校验、状态机、取消（`Cancelled` + 取消人、取消时间、取消原因）与争议（`Disputed` + 发起人、原因、发起时间、处置结果、处置依据与处置时间） |
-| 风险模型（`RiskRule`/`RiskAssessment`/`RiskAppealStatus`） | ⚠️ | 代码内版本化规则目录（`RiskRuleCatalog`，版本 1、12 个原因代码）已实现，并接入创建草稿与发布两个门禁，`RiskReviewStatus` 记录人工复核结论，`RiskAppealStatus` 记录误拦申诉（禁止类别的申诉成立也不放行）；缺模型辅助分类、申诉次数限制与追加式决策历史，见第 10 节 |
+| 风险模型（`RiskRule`/`RiskAssessment`/`RiskAppealStatus`） | ⚠️ | 规则目录已是**实例类型**：代码内置目录 `RiskRuleCatalog.BuiltIn`（版本 1、12 个原因代码）是硬底线，运营可在后台编辑出覆盖版本（只追加的版本快照 + 依据必填 + 运营审计 + 可恢复内置）；判定接入创建草稿、编辑草稿、回滚与发布四个门禁，都传当下生效的那一版目录。`RiskReviewStatus` 记录人工复核结论，`RiskAppealStatus` 记录误拦申诉（禁止类别的申诉成立也不放行）；缺模型辅助分类、申诉次数限制、追加式决策历史、规则命中统计与规则目录编辑的双人复核，见第 10 节 |
 | `Evidence` | ⚠️ | `OrderEvidence` + `evidence` 表已实现：类型白名单与文件签名校验、扫描状态机与退避重扫、上传时元数据剥离、按人小时配额，存储走 `IFileStorage`（本机目录或 S3 兼容对象存储，支持短时直连下载地址）；订单上的 `EvidenceNote` 仍作为“完成说明”文本框与凭证文件并存。仍缺图片像素级重编码与“凭证关联到具体验收项” |
 | `Review` | ⚠️ | `Review` 已实现；无状态字段（盲期按时间动态判定），单一评分维度 |
 | `Dispute` | ✅ | 已接入但不单独建表：争议状态与处置信息记在 `orders` 上（`DisputeReason`/`DisputeOpenedBy`/`DisputeOpenedAt`/`DisputeResolution`/`DisputeResolutionNote`/`DisputeResolvedAt`）；参与者按阶段发起，运营三种处置，见第 4 节 |
 | `AuditEvent` | ⚠️ | 没有通用业务审计表；运营侧有 `admin_audit_entries`（人工下架与争议处置的三种动作）与配置审计 `system_setting_audits`，其它关键操作仍只体现为实体上的时间戳 |
 | 领域事件 | ⚠️ | 领域层仍无事件类型；通知事件由应用层显式入队到 `notifications`（兼作 Outbox），由后台任务派发 |
 | 并发控制 | ⚠️ | `tasks`、`orders` 已有 `Version` 乐观并发令牌（冲突返回 `409`），选人与验收使用显式事务；报名行、会话与评价仍无令牌 |
-| 幂等 | ✅ | 已认证的写请求（`/api/v1` 下的 POST/PUT/PATCH/DELETE）支持可选的 `Idempotency-Key`：按「用户 + 键」回放原响应（带 `Idempotency-Replayed` 头），同键不同请求体或并发占位返回 `409`，`5xx` 与非 JSON 响应不缓存；键按用户隔离。仍缺 ETag/版本字段与旧记录清理 |
+| 幂等 | ✅ | 已认证的写请求（`/api/v1` 下的 POST/PUT/PATCH/DELETE）支持可选的 `Idempotency-Key`：按「用户 + 键」回放原响应（带 `Idempotency-Replayed` 头），同键不同请求体或并发占位返回 `409`，`5xx` 与非 JSON 响应不缓存；键按用户隔离。仍缺 ETag/版本字段返回（旧幂等记录的清理已有后台任务） |
 
 ## 1. 聚合与核心实体
 
@@ -185,7 +185,8 @@ Disputed
 - ✅ Task 必须有所有者、截止时间、地点范围和至少一项验收标准。`TaskItem` 构造函数已校验，草稿编辑（`UpdateDraft`）复用同一套校验，因此创建与编辑不会出现两套规则；但“地点范围”目前只是 `District` 字符串，没有坐标、范围或披露策略模型。
 - ✅ 草稿字段创建后可编辑，但只限 `ReadyToPublish`，且编辑会重跑风险判定并作废原有的人工复核结论。人工结论绑定的是**当时那份文本**：否则“先提干净文案过审、再改成禁止内容”就是现成的绕过路径；反向也成立——被运营驳回的草稿只要改掉敏感内容，就会拿到新一轮判定，而不是被永久钉死。**回滚到历史版本走的是同一条写入路径**（领域层唯一的 `ApplyDraft`），因此同样重跑风险判定、同样作废人工复核结论与申诉状态；历史只追加：编辑与回滚都会新增一版，**不会覆盖或删除**已有版本。
 - ✅ 报名截止时间（可选）必须晚于创建时间且不晚于任务截止时间。`TaskItem` 构造函数已校验；到点只关闭新报名（`AcceptingApplications(now)` 为 false），已有报名仍可被选中，因此任务仍停留在 `Published`；报名截止时间已过的任务不能发布。
-- ⚠️ Published Task 必须具有通过的风险决策版本。已实现的是：创建草稿与每次发布都用当前规则目录判定一次，任务上保存结论、原因代码与 `RiskRuleVersion`，禁止类别不能发布（人工也无权放行），判成需人工复核的必须先被运营放行；**误拦申诉不改变这条红线**——被禁止类别命中的任务即使申诉成立（记为规则误伤），也拿不到发布许可，只有“转人工后被驳回”的那一档才能靠申诉成立放行；仍没有独立的“风险决策”实体与版本表，任务行上只保留最新一条结论（见第 10 节）。`ReadyToPublish` 任务仍只有所有者可以发布。
+- ⚠️ Published Task 必须具有通过的风险决策版本。已实现的是：创建草稿、编辑草稿、回滚草稿与每次发布都用**当下生效的那一版规则目录**判定一次（运营在后台收紧规则后，已存在的草稿在发布时同样会被重新判定），任务上保存结论、原因代码与 `RiskRuleVersion`（记的是判定当时的版本号，历史判定不会被后续改规则改写），禁止类别不能发布（人工也无权放行），判成需人工复核的必须先被运营放行；**误拦申诉不改变这条红线**——被禁止类别命中的任务即使申诉成立（记为规则误伤），也拿不到发布许可，只有“转人工后被驳回”的那一档才能靠申诉成立放行；仍没有独立的“风险决策”实体与版本表，任务行上只保留最新一条结论（见第 10 节）。`ReadyToPublish` 任务仍只有所有者可以发布。
+- ✅ 风险规则目录不会被删到失控，也不会读不出来就换一副面孔。目录构造时要求至少保留一条禁止类规则（禁止类别是平台的硬门禁，一次误操作删光就补不回来），`review.high_reward`/`review.night_window` 两个阈值规则的保留代码不能被普通规则顶替；一版目录只能整份替换并以新版本号追加，快照读不出来时判定直接抛错、**绝不静默降级**——宁可让写入失败，也不能拿另一套规则去判定。
 - ⚠️ 同一 Task 最多一个非终态 Order。现在由任务行的乐观并发令牌（并发的第二个选人会拿到 `409`）、`orders.TaskId` 唯一索引和“任务进入 `Assigned` 后不再接受报名”共同保证；仍没有按“非终态订单”查询的显式校验。
 - ✅ Application 的服务者不能是 Task 所有者，报名中不得包含价格。领域层已校验，`ApplyForTaskRequest` 没有价格字段。
 - ⚠️ 已发布 Task 的悬赏只能在分配前提高。`IncreaseReward` 已校验“仅 `Published` 状态、同币种、金额只能提高”，并受任务行并发令牌保护；`TaskRewardIncreased` 事件仍未实现，加价也不通知已报名者。
@@ -265,18 +266,20 @@ Money(amount, currency)
 
 ## 10. 风险规则与人工复核
 
-平台禁止的类别必须由确定性规则判定，不能只依赖模型自由文本：规则目录固定在代码里，任何一次拦截都要能回答“用的是哪条规则、哪一版”，因此原因代码一旦上线就保持稳定，规则改动必须提升目录版本号。规则只有两种结论——`Blocked`（一律不能发布）与 `NeedsReview`（进人工队列，等运营放行）。
+平台禁止的类别必须由确定性规则判定，不能只依赖模型自由文本：规则目录分两层——代码内置目录（`RiskRuleCatalog.BuiltIn`）是任何部署都自带的硬底线，运营可以在后台编辑出覆盖版本；任何一次拦截都要能回答“用的是哪条规则、哪一版”，因此原因代码一旦上线就保持稳定，规则改动一律以**只追加的新版本快照**落库并提升目录版本号。规则只有两种结论——`Blocked`（一律不能发布）与 `NeedsReview`（进人工队列，等运营放行）。
 
-> 实现现状（⚠️）：领域层已实现 `RiskVerdict`（`Allowed`/`NeedsReview`/`Blocked`）、`RiskReviewStatus`（`NotRequired`/`Pending`/`Approved`/`Rejected`）、`RiskRule`、`RiskAssessment` 与 `RiskRuleCatalog`（`Version = 1`）。
+> 实现现状（⚠️）：领域层已实现 `RiskVerdict`（`Allowed`/`NeedsReview`/`Blocked`）、`RiskReviewStatus`（`NotRequired`/`Pending`/`Approved`/`Rejected`）、`RiskRule`、`RiskAssessment`、`RiskRuleCatalog`（实例目录，内置版本 `BuiltInVersion = 1`）、`RiskRuleCatalogRevision` 与落库形态 `RiskRuleCatalogSnapshot`/`RiskRuleSnapshot`。
 >
-> - 规则目录：10 条词表规则（6 条 `prohibited.*` + 4 条 `review.*`）加 2 条阈值规则（`review.high_reward`：悬赏 > 5000 元；`review.night_window`：截止时间落在北京时间 00:00–06:00），共 12 个原因代码；匹配词表里刻意不用单字，避免“代取”“代送”这类正常跑腿任务被误伤。
+> - 内置目录（`RiskRuleCatalog.BuiltIn`）：10 条词表规则（6 条 `prohibited.*` + 4 条 `review.*`）加 2 条阈值规则（`review.high_reward`：悬赏 > 5000 元；`review.night_window`：截止时间落在北京时间 00:00–06:00），共 12 个原因代码；匹配词表里刻意不用单字，避免“代取”“代送”这类正常跑腿任务被误伤。它是任何部署都自带的硬底线：`risk_rule_catalog_revisions` 一条都没有时，生效目录就是它（版本 1），因此运营第一次编辑是版本 2。
+> - 目录是**实例类型**而不是静态类：`RiskRuleCatalog` 由版本号、规则集合、高金额阈值与深夜时段构成，构造时一并校验——版本号 ≥ 1、至少一条禁止类规则、原因代码唯一、结论只能是 `Blocked`/`NeedsReview`、匹配词每词 2–20 字、规则 ≤ 50 条、每规则匹配词 ≤ 400 个、`review.high_reward`/`review.night_window` 是保留代码不能顶替、阈值 > 0 且 ≤ 1000000、深夜时段是向前区间且在 0–24 小时内。`ToJson()`/`FromJson(json)` 让一版目录能完整序列化成 JSON 快照并还原，**快照读不出来时直接抛错、绝不静默降级**——读不到规则时宁可让写入失败，也不能换一套规则去判定。
+> - 运营可编辑出覆盖版本：整份替换规则 + 阈值 + 时段，版本号自动 +1。`RiskRuleCatalogRevision`（只追加）记 Id、完整快照 `CatalogJson`、自动生成的 `ChangeSummary`、运营必填的 `ChangeReason`（≤200 字）、`UpdatedBy`、`CreatedAt`；`Record(...)` 要求版本号正好比上一版 +1 且内容真的变了（否则 `422`「风险规则内容没有变化，无需更新。」），并支持显式摘要（用于“恢复内置目录”）。落到 `risk_rule_catalog_revisions`（迁移 24 `AddRiskRuleCatalogRevisions`，`Version` 唯一索引 + `CreatedAt` 索引），读取取版本号最大的一版。
 > - 判定输入只有用户填写的字段（标题、描述、验收标准、执行地址）；顺序是先禁止类、再转人工类、最后两条阈值规则，都不命中才是 `Allowed`。说明文本（`RiskSummary`）刻意不含命中的具体词，避免被逐字试探绕过。
-> - 门禁位置：`TaskItem` 构造（创建草稿）时判定一次，`Publish` 前再判定一次（悬赏与截止时间在草稿阶段会变），草稿编辑（`UpdateDraft`）后再判定一次。禁止类别一律 `422` 且人工无权放行；判成 `NeedsReview` 的任务进入队列，运营 `Approve` 后才能发布，`Reject` 是终态（规则之后不再命中也不会变回可发布）。
+> - 门禁位置与判定入口：`TaskItem` 构造（创建草稿）、`UpdateDraft`（编辑草稿）、恢复历史版本（回滚走的是同一条 `ApplyDraft` 路径）与 `Publish` 前各判定一次（悬赏与截止时间在草稿阶段会变），四处用的都是**当下生效的那一版目录**（`IRiskRuleCatalogProvider.GetEffective()`，没有运营覆盖时回退到内置目录），因此运营收紧规则后已存在的草稿在发布时同样会被重新判定；任务上记的 `RiskRuleVersion` 是判定当时的版本号，历史判定不会被后续改规则改写。禁止类别一律 `422` 且人工无权放行；判成 `NeedsReview` 的任务进入队列，运营 `Approve` 后才能发布，`Reject` 是终态（规则之后不再命中也不会变回可发布）。
 > - 编辑草稿会让判定重跑并清空人工结论：`UpdateDraft` 以 `resetHumanDecision: true` 调用判定，`RiskReviewedBy`/`RiskReviewedAt`/`RiskReviewNote` 一并置空，状态按新文本重新判定（需要复核的回到 `Pending`，会重新出现在运营队列里）。审核针对的是某一版文本，文本一变结论即作废；`Reject` 只是当时那份文本的终态，不是对任务的永久封禁。同一次编辑还会向 `task_draft_revisions` 追加一版快照并记下该版的判定结论（`RiskVerdict`/`RiskRuleCode`/`RiskRuleVersion`），所以事后能对上是哪一版文本被判成什么、用的是哪一版规则。**回滚到历史版本同样如此**：它走的是同一条 `ApplyDraft` 路径，因此也会重跑判定、作废人工复核结论与申诉状态，并追加一版“回滚自第 N 版”的快照。
 > - 落库字段：`RiskVerdict`、`RiskRuleCode`、`RiskCategory`、`RiskSummary`、`RiskRuleVersion`、`RiskAssessedAt`、`RiskReviewStatus`、`RiskReviewedBy`、`RiskReviewedAt`、`RiskReviewNote`（复核依据必填、≤200 字）。
-> - 人工复核走管理员接口：队列 `GET /api/v1/admin/risk/reviews` 按创建时间升序（先来先处理），`POST /api/v1/admin/risk/reviews/{taskId}/decide` 放行或驳回并把依据写进 `admin_audit_entries`（动作 `task.risk.approve`/`task.risk.reject`），`GET /api/v1/admin/risk/rules` 是规则目录自述（版本、阈值、规则清单与匹配词数量，不返回词本身）；非管理员 `403`。
+> - 运营接口（匿名 `401`、非管理员 `403`）：复核队列 `GET /api/v1/admin/risk/reviews` 按创建时间升序（先来先处理），`POST /api/v1/admin/risk/reviews/{taskId}/decide` 放行或驳回并把依据写进 `admin_audit_entries`（动作 `task.risk.approve`/`task.risk.reject`）。规则目录方面：`GET /api/v1/admin/risk/rules` 是概述（版本、高金额阈值、规则条数与匹配词数量，**刻意不给词本身**）、`GET /api/v1/admin/risk/rules/detail` 是明细（含匹配词、`isBuiltIn` 与最近一次改动的摘要/依据/操作人）、`GET /api/v1/admin/risk/rules/versions?limit=` 是版本历史（倒序，含当版规则条数/禁止条数/阈值/时段）、`POST /api/v1/admin/risk/rules` 整份替换（版本号自动 +1、依据必填，写审计动作 `task.risk.rules.update`）、`POST /api/v1/admin/risk/rules/reset` 恢复内置目录（同样是追加一版，历史里被恢复掉的版本仍然保留，审计动作 `task.risk.rules.reset`）。
 > - 通知：复核结论通过 `task.riskReviewed` 走既有 Outbox + SignalR 链路；任务响应里的 `riskPublishBlocked` 由服务端判定，客户端不要自己按 `riskVerdict`/`riskReviewStatus` 推算。
-> - 缺失：模型辅助分类与语义判断（现在只有字面词表匹配，改写过的表述可能漏过）；申诉的次数与频率限制（只有“同一版内容一次”）、申诉的历史留档与客服工单；规则目录不能后台编辑（改规则要发版并提升 `Version`）；决策只保留最新一条（记在任务行上），没有追加式的决策历史表，也没有独立的风险事件流。
+> - 缺失：模型辅助分类与语义判断（现在只有字面词表匹配，改写过的表述可能漏过）；申诉的次数与频率限制（只有“同一版内容一次”）、申诉的历史留档与客服工单；规则目录编辑的双人复核/审批流、灰度或 A/B 与按规则维度的报表，以及规则命中统计/看板（目录本身已有只追加的版本历史，但“哪条规则命中过多少次”没有统计）；决策只保留最新一条（记在任务行上），没有追加式的决策历史表，也没有独立的风险事件流。**另有一个已记录的缺口**：已发布任务的 `IncreaseReward` 不会重跑风险判定，加价到高金额不会重新进人工复核队列，属于后续工作。
 
 ### 误拦申诉（`RiskAppealStatus`）
 

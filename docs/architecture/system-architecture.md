@@ -84,7 +84,7 @@ Domain 不引用 EF Core、HTTP、AI SDK 或对象存储 SDK。
 - Identity：账户、角色、登录、刷新令牌和服务者资料。
 - Conversations：对话、消息和 AI 运行记录。
 - Tasks：草稿、任务、步骤、位置摘要、发布和取消。
-- Risk：规则检查、AI 辅助分类、审核队列和决策记录。
+- Risk：规则检查、AI 辅助分类、审核队列和决策记录。（现状：确定性规则检查、运营可编辑的规则目录（版本历史/明细/编辑/恢复内置）与人工审核队列已实现；AI 辅助分类、追加式决策历史与规则命中统计仍未实现。）
 - Applications：按固定悬赏报名、撤回、选择和并发控制，不承载服务者价格。
 - Orders：交易快照、状态机、执行事件和验收。
 - Messaging：订单会话、消息和实时推送。
@@ -101,6 +101,8 @@ Domain 不引用 EF Core、HTTP、AI SDK 或对象存储 SDK。
 ### PostgreSQL
 
 作为事实来源，保存业务状态、事件、审计、对话元数据和文件元数据。敏感字段按等级加密或令牌化。
+
+> 实现现状（✅）：表结构由 EF Core Migration 单一来源维护，当前 24 个迁移覆盖 users、orders、tasks、task_applications、conversations、conversation_messages、notifications、order_messages、evidence、system_settings、system_setting_audits、admin_audit_entries、task_draft_revisions、idempotency_entries、risk_rule_catalog_revisions 等表；Development 启动执行 `Database.Migrate()`，早期 `EnsureCreated()` 建出的旧库会自动基线化。运营可编辑的风险规则目录以**只追加的版本快照**落在 `risk_rule_catalog_revisions`（第 24 个迁移 `AddRiskRuleCatalogRevisions`：`Version` 唯一索引 + `CreatedAt` 索引，读取取版本号最大的一版），数据库里还没有覆盖版本时判定回退到代码内置目录（版本 1），每次判定把当时的版本号记在 `tasks.RiskRuleVersion` 上，因此任何一次拦截都能回溯到具体哪一版规则。
 
 ### Redis
 
@@ -148,7 +150,7 @@ Conversation Orchestrator
 - 写操作接受 `Idempotency-Key`，服务端缓存或持久化处理结果。
 - 支付接入后，以支付方回调和内部账本为准，不相信前端结果。
 
-> 实现现状：`tasks`/`orders` 的 `Version` 乐观并发令牌、`IUnitOfWork` 显式事务（选人建单、验收关单）与 Outbox 通知都已落地，冲突返回 `409`；写接口的 `Idempotency-Key` 也已实现——已认证的 `/api/v1` 写请求可带该请求头，命中时回放上一次的响应（带 `Idempotency-Replayed: true`），同键不同请求体或并发占位返回 `409`，`5xx` 与业务异常不缓存；**仍未实现**的是 ETag/版本字段返回与旧幂等记录的清理（见 `docs/development/handoff.md` 第 10 节）。
+> 实现现状：`tasks`/`orders` 的 `Version` 乐观并发令牌、`IUnitOfWork` 显式事务（选人建单、验收关单）与 Outbox 通知都已落地，冲突返回 `409`；写接口的 `Idempotency-Key` 也已实现——已认证的 `/api/v1` 写请求可带该请求头，命中时回放上一次的响应（带 `Idempotency-Replayed: true`），同键不同请求体或并发占位返回 `409`，`5xx` 与业务异常不缓存；**仍未实现**的是 ETag/版本字段返回（旧幂等记录的清理已有后台任务：每小时删除已完成超过 24 小时的记录与超时占位，见 [API 设计约定](../api/api-guidelines.md) 第 7 节）。
 
 ## 9. 可观测性
 

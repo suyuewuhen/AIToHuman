@@ -52,7 +52,7 @@ public sealed class TaskDraftRevisionTests
         Assert.Equal("CNY", revision.RewardCurrency);
         Assert.Equal(["按时送达"], revision.AcceptanceCriteria);
         Assert.Equal(nameof(RiskVerdict.Allowed), revision.RiskVerdict);
-        Assert.Equal(RiskRuleCatalog.Version, revision.RiskRuleVersion);
+        Assert.Equal(RiskRuleCatalog.BuiltIn.Version, revision.RiskRuleVersion);
         Assert.Equal(Now, revision.CreatedAt);
     }
 
@@ -85,7 +85,7 @@ public sealed class TaskDraftRevisionTests
         // 历史要能对上"第 2 版被判成禁止、用的是第 1 版规则"。
         Assert.Equal(nameof(RiskVerdict.Blocked), revision.RiskVerdict);
         Assert.Equal("prohibited.exam_impersonation", revision.RiskRuleCode);
-        Assert.Equal(RiskRuleCatalog.Version, revision.RiskRuleVersion);
+        Assert.Equal(RiskRuleCatalog.BuiltIn.Version, revision.RiskRuleVersion);
         Assert.Equal("标题、描述", revision.ChangeSummary);
     }
 

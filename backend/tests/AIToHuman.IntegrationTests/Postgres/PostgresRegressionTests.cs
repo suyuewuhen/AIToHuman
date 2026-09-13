@@ -1,8 +1,11 @@
 using AIToHuman.Application.Idempotency;
+using AIToHuman.Application.Risk;
+using AIToHuman.Contracts.Admin;
 using AIToHuman.Contracts.Tasks;
 using AIToHuman.Domain.Common;
 using AIToHuman.Domain.Idempotency;
 using AIToHuman.Domain.Orders;
+using AIToHuman.Domain.Risk;
 using AIToHuman.Domain.Tasks;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
@@ -399,6 +402,125 @@ public sealed class PostgresRegressionTests(PostgresRegressionFixture fixture) :
         Assert.StartsWith("回滚自第 1 版", revisions[2].ChangeSummary);
         Assert.Equal("明天下午帮我去前台取一份文件", revisions[2].Title);
     }
+
+    /// <summary>
+    /// 风险规则目录在真库上的往返：只追加、版本号唯一、读取取最新一版，
+    /// 而且**新版本立刻对后续判定生效**（任务上记的规则版本号跟着变，老任务仍然停在它当时的版本）。
+    /// 这类"目录改了但判定还按老规则"的缺陷内存替身同样测不出来——两边共用的都是同一个对象。
+    /// </summary>
+    [PostgresFact]
+    public async Task A_new_rule_catalog_version_is_persisted_and_applies_to_later_tasks()
+    {
+        using var world = new PostgresWorld(fixture.ConnectionString, Now);
+
+        // 改规则之前先建一条草稿：它的判定应当停在 v1，不会被后来的版本追溯改写。
+        var earlyTaskId = world.CreateDraft("明天下午帮我去前台取一份文件");
+
+        var before = world.RiskRules.GetDetail();
+        Assert.True(before.IsBuiltIn);
+        Assert.Equal(RiskRuleCatalog.BuiltInVersion, before.Version);
+
+        var updated = Update(world, before, "新增一类禁止任务：有偿代占考试座位", 8000m,
+            new RiskRuleDetailRequest("prohibited.exam_seat_reservation", "有偿代占考试座位", "Blocked",
+                "任务涉及有偿代抢或代占考试座位，属于平台禁止的考试作弊协助。", ["代抢座位", "代占座位"]));
+
+        Assert.Equal(2, updated.Version);
+        Assert.False(updated.IsBuiltIn);
+        Assert.Equal(world.AdminId, updated.UpdatedBy);
+        Assert.Equal("新增一类禁止任务：有偿代占考试座位", updated.ChangeReason);
+        Assert.Contains("新增规则 1 条", updated.ChangeSummary);
+        Assert.Contains("高金额阈值 5000 → 8000 元", updated.ChangeSummary);
+
+        // 换一个作用域（另一个请求）读：确认新版本真的落库了，而不是只活在当前上下文里。
+        using (var freshScope = world.NewScope())
+        {
+            var reloaded = world.RiskRulesIn(freshScope).GetDetail();
+            Assert.Equal(2, reloaded.Version);
+            Assert.Contains(reloaded.Rules, rule => rule.Code == "prohibited.exam_seat_reservation" && rule.Keywords.Contains("代占座位"));
+        }
+
+        // 新规则对后续写入立刻生效：命中新规则的草稿被拦，且记的是 v2。
+        var blocked = world.Service.Get(world.CreateDraft("帮我去学校代占座位"))!;
+        Assert.Equal("Blocked", blocked.RiskVerdict);
+        Assert.Equal("prohibited.exam_seat_reservation", blocked.RiskRuleCode);
+        Assert.Equal(2, blocked.RiskRuleVersion);
+
+        // 阈值也换成了新值：6000 元在 v1 下会转人工，阈值抬到 8000 之后不再转（但记录里写的是 v2），
+        // 9000 元仍然转人工。
+        var midPrice = world.Service.Get(world.CreateDraft("帮我取一份文件", reward: 6000))!;
+        Assert.Equal("Allowed", midPrice.RiskVerdict);
+        Assert.Equal(2, midPrice.RiskRuleVersion);
+
+        var pricey = world.Service.Get(world.CreateDraft("帮我取一份文件", reward: 9000))!;
+        Assert.Equal("NeedsReview", pricey.RiskVerdict);
+        Assert.Equal(RiskRuleCatalog.HighRewardRuleCode, pricey.RiskRuleCode);
+        Assert.Equal(2, pricey.RiskRuleVersion);
+
+        // 早先那条草稿的判定留在 v1：规则升级不该改写历史结论。
+        Assert.Equal(RiskRuleCatalog.BuiltInVersion, world.Service.Get(earlyTaskId)!.RiskRuleVersion);
+
+        await using var context = fixture.CreateContext();
+        var rows = await context.RiskRuleCatalogRevisions.AsNoTracking().ToListAsync();
+        var row = Assert.Single(rows);
+        Assert.Equal(2, row.Version);
+        Assert.Equal(world.AdminId, row.UpdatedBy);
+        Assert.Contains("prohibited.exam_seat_reservation", row.CatalogJson);
+
+        // 版本号是唯一索引：再怎么并发写也不该出现两行 v2。
+        using (var scope = world.NewScope())
+        {
+            var store = scope.ServiceProvider.GetRequiredService<IRiskRuleCatalogStore>();
+            var duplicate = RiskRuleCatalogRevision.Rehydrate(
+                Guid.NewGuid(), row.CatalogJson, row.ChangeSummary, row.ChangeReason, row.UpdatedBy, Now);
+            Assert.Throws<DbUpdateException>(() => store.Append(duplicate));
+        }
+    }
+
+    /// <summary>
+    /// 发布这一关用的是"发布那一刻生效的规则"：草稿创建之后运营收紧了词表，同一条草稿就发不出去了。
+    /// 这正是"改规则要能真的拦住"的端到端证据（而不是只在后台看到版本号变了）。
+    /// </summary>
+    [PostgresFact]
+    public void Tightening_the_rules_after_a_draft_exists_blocks_publishing_it()
+    {
+        using var world = new PostgresWorld(fixture.ConnectionString, Now);
+        var taskId = world.CreateDraft("帮我去实验楼取一份材料");
+        Assert.Equal("Allowed", world.Service.Get(taskId)!.RiskVerdict);
+
+        Update(world, world.RiskRules.GetDetail(), "把实验楼列入禁止进入的场所", 5000m,
+            new RiskRuleDetailRequest("prohibited.lab_break_in", "擅自进入实验场所", "Blocked",
+                "任务涉及未经许可进入实验室等受控场所。", ["实验楼", "实验室"]));
+
+        var exception = Assert.Throws<DomainException>(() => world.Service.Publish(taskId, world.Owner));
+        Assert.Contains("平台禁止的类别", exception.Message);
+
+        // 换一个作用域从库里读回来：这次发布整体没有产生任何写入，任务仍是草稿。
+        using (var freshScope = world.NewScope())
+        {
+            var reloaded = world.ServiceIn(freshScope).Get(taskId)!;
+            Assert.Equal("ReadyToPublish", reloaded.Status);
+        }
+    }
+
+    /// <summary>用给定的规则清单（内置目录 + 一条新规则）替换整份目录，省掉每个用例重复抄模板。</summary>
+    private static RiskRuleCatalogDetailResponse Update(
+        PostgresWorld world,
+        RiskRuleCatalogDetailResponse current,
+        string reason,
+        decimal highRewardThreshold,
+        RiskRuleDetailRequest extraRule) =>
+        world.RiskRules.Update(
+            new UpdateRiskRuleCatalogRequest(
+                current.Version,
+                reason,
+                highRewardThreshold,
+                current.NightWindowStart,
+                current.NightWindowEnd,
+                [
+                    .. current.Rules.Select(rule => new RiskRuleDetailRequest(rule.Code, rule.Category, rule.Verdict, rule.Description, rule.Keywords)),
+                    extraRule
+                ]),
+            world.AdminId);
 
     /// <summary>带时区偏移的截止时间与中文文本在真库上的往返：领域层统一归一化成 UTC，文本原样保存。</summary>
     [PostgresFact]

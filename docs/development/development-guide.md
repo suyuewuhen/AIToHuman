@@ -20,6 +20,17 @@
 - 机密（API Key、访问密钥）在配置表里是 Data Protection 密文，接口与审计只出现掩码与指纹。密钥环默认落在运行账户的配置目录里，容器或分布式部署请用 `DataProtection__KeysPath` 指到持久卷并让所有实例共享，否则重启或换实例后解不开已保存的密钥。
 - 本地秘密使用 .NET User Secrets 或环境变量。
 - 本地联调可使用 `GET /api/v1/session/dev` 获取合成开发会话；该接口仅在 Development 环境开放，不能替代正式登录或授权。
+- **Windows PowerShell 5.1 联调要额外注意正文编码**：`Invoke-RestMethod -Body $json` 传**字符串**时按非 UTF-8 发送，正文里的中文会变成 `?`（本轮真机联调就是这样把一版风险规则目录写成了乱码，也顺带证明了“恢复内置目录”这条退路的必要）。正确做法是把 JSON 编成 UTF-8 **字节**再作为 `-Body` 传入，并显式带上 `charset=utf-8`：
+
+  ```powershell
+  $json = @{ reason = '试点期收紧词表'; highRewardThreshold = 8000; nightWindowStart = '00:00'; nightWindowEnd = '06:00'; rules = @(...) } | ConvertTo-Json -Depth 6
+  Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:5188/api/v1/admin/risk/rules' `
+    -Headers @{ Authorization = "Bearer $token" } `
+    -ContentType 'application/json; charset=utf-8' `
+    -Body ([Text.Encoding]::UTF8.GetBytes($json))
+  ```
+
+  提交后回读一次（例如 `GET /api/v1/admin/risk/rules/detail`）核对中文没有变成 `?`，再用 `curl.exe` 或 Postman 交叉验证一次；PowerShell 7 也建议显式写 `charset=utf-8`，不要依赖默认编码。
 - 数据库结构只通过 EF Core Migration 演进。
 - 早期 `EnsureCreated()` 生成的本地开发库没有迁移历史；Development 启动时会检测并按情况处理：表与当前模型一致时把已有迁移整体标记为已应用（打警告日志），表不齐时直接报错并提示重建，避免在错误的 schema 上运行。
 - 示例数据必须为合成数据。
@@ -51,7 +62,7 @@
   - `PostgresTestEnvironment` 负责解析测试库连接串，顺序是环境变量 `AITOHUMAN_TEST_POSTGRES` → 本机 `backend/AIToHuman.Api/appsettings.Development.json` 的 `ConnectionStrings:Postgres`（该文件被 Git 忽略，凭据不进仓库），启动时用 3 秒超时探测一次连通性；连不上或没配置就判定为不可用。
   - 用例用 `[PostgresFact]` 标注：数据库不可用时**标记为跳过而不是失败**，所以没装数据库的机器和默认 CI 仍能跑完其余测试。
   - `PostgresRegressionFixture` 在一次测试运行里共用一个随机命名的空库（`aitohuman_regression_<随机>`），用 `Database.Migrate()` 从零建库并应用全部迁移（顺带验证“空库能不能起来”），每个用例前 `TRUNCATE` 所有表，运行结束尽力删库；`PostgresWorld` 按 API 的注册方式搭一套 EF 仓储 + 应用服务，代表“一次请求作用域”，`NewScope()` 用来模拟并发请求（共用一个 `DbContext` 是测不出并发问题的）。
-  - 这组用例专门覆盖**内存替身测不出来**的缺陷类型：空库迁移、草稿编辑后每一列真的落库、乐观并发令牌真的生效（后写入者拿到 `DbUpdateConcurrencyException`）、12 路并发选人只产生一个订单、取消订单在 `orders`/`tasks`/`task_applications` 三张表上的连带效果、争议冻结落库、风险复核队列与“放行→编辑→重新排队”的防绕过链路、带 `+08:00` 偏移的截止时间归一化为 UTC。
+  - 这组用例专门覆盖**内存替身测不出来**的缺陷类型：空库迁移、草稿编辑后每一列真的落库、乐观并发令牌真的生效（后写入者拿到 `DbUpdateConcurrencyException`）、12 路并发选人只产生一个订单、取消订单在 `orders`/`tasks`/`task_applications` 三张表上的连带效果、争议冻结落库、风险复核队列与“放行→编辑→重新排队”的防绕过链路、规则目录版本快照在真库上的写入与还原（`risk_rule_catalog_revisions` 往返 + 版本号唯一索引）、带 `+08:00` 偏移的截止时间归一化为 UTC。
   - 真实 **Redis**（通知扇出）与 **S3 兼容对象存储**（MinIO / OSS / S3）的回归测试也已建立，位于 `backend/tests/AIToHuman.IntegrationTests/External/`：
     - `ExternalTestEnvironment` 解析并探测两类依赖。Redis 用环境变量 `AITOHUMAN_TEST_REDIS`（默认 `127.0.0.1:6379`）；对象存储用 `AITOHUMAN_TEST_S3_ENDPOINT` / `_REGION` / `_BUCKET` / `_ACCESS_KEY` / `_SECRET_KEY`（默认 `http://127.0.0.1:9000`、`us-east-1`、桶 `aitohuman-evidence`、`minioadmin/minioadmin`——默认凭据只是**本机开发**兜底，其他环境请用环境变量注入）。对象存储的探测方式是**真的写一条探针对象再删掉**：桶不存在、密钥不对、服务没起来都会在这里就暴露出来。
     - 用例用 `[RedisFact]` / `[MinioFact]` 标注，依赖不可用时**标记为跳过而不是失败**（与 `[PostgresFact]` 同一套取舍）。

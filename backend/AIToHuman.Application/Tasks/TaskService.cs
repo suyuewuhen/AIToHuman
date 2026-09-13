@@ -3,23 +3,32 @@ using AIToHuman.Domain.Tasks;
 using System.Text;
 using AIToHuman.Application.Common;
 using AIToHuman.Application.Orders;
+using AIToHuman.Application.Risk;
 using AIToHuman.Domain.Orders;
 using AIToHuman.Domain.Common;
+using AIToHuman.Domain.Risk;
 using AIToHuman.Application.Notifications;
 // System.Threading.Tasks 里也有一个 TaskStatus，这里明确指向领域里的那个。
 using DomainTaskStatus = AIToHuman.Domain.Tasks.TaskStatus;
 
 namespace AIToHuman.Application.Tasks;
 
-public sealed class TaskService(ITaskRepository repository, IOrderRepository orderRepository, IReviewRepository reviewRepository, ITaskRevisionRepository revisionRepository, AIToHuman.Application.Admin.IUserDirectory userDirectory, TimeProvider timeProvider, NotificationService notifications, IUnitOfWork unitOfWork)
+public sealed class TaskService(ITaskRepository repository, IOrderRepository orderRepository, IReviewRepository reviewRepository, ITaskRevisionRepository revisionRepository, AIToHuman.Application.Admin.IUserDirectory userDirectory, TimeProvider timeProvider, NotificationService notifications, IUnitOfWork unitOfWork, IRiskRuleCatalogProvider? riskRuleCatalog = null)
 {
+    /// <summary>
+    /// 这次写入该用哪一版风险规则：运营在后台改过就是最新那一版，否则是代码里的内置目录。
+    /// 每次写入都重新取一次（目录是"一条很小、按版本倒序取一行"的查询），
+    /// 换来的是"运营收紧规则后，下一笔写入立刻按新规则判定"，不会因为进程内的缓存而滞后。
+    /// </summary>
+    private RiskRuleCatalog RiskRules => riskRuleCatalog?.GetEffective() ?? RiskRuleCatalog.BuiltIn;
+
     /// <summary>创建草稿：落库的同时记下第 1 版快照（谁建的、当时是什么内容、风险结论如何）。</summary>
     public TaskResponse Create(CreateTaskRequest request)
     {
         var now = timeProvider.GetUtcNow();
         var task = new TaskItem(
             request.OwnerId, request.Title, request.Description, request.District, request.Deadline, new Money(request.Reward),
-            request.AcceptanceCriteria, now, request.ExecutionAddress, request.ApplicationDeadline);
+            request.AcceptanceCriteria, now, request.ExecutionAddress, request.ApplicationDeadline, RiskRules);
 
         unitOfWork.Execute(() =>
         {
@@ -33,7 +42,7 @@ public sealed class TaskService(ITaskRepository repository, IOrderRepository ord
     public TaskResponse Publish(Guid id, Guid ownerId)
     {
         var task = GetOwned(id, ownerId);
-        task.Publish(timeProvider.GetUtcNow());
+        task.Publish(timeProvider.GetUtcNow(), RiskRules);
         repository.Save(task);
         return Map(task);
     }
@@ -56,7 +65,8 @@ public sealed class TaskService(ITaskRepository repository, IOrderRepository ord
             request.AcceptanceCriteria,
             request.ExecutionAddress,
             request.ApplicationDeadline,
-            now);
+            now,
+            RiskRules);
 
         unitOfWork.Execute(() =>
         {
@@ -98,7 +108,7 @@ public sealed class TaskService(ITaskRepository repository, IOrderRepository ord
             ?? throw new KeyNotFoundException($"任务没有第 {revision} 版草稿。");
 
         var now = timeProvider.GetUtcNow();
-        var changedFields = task.RestoreDraft(target, now);
+        var changedFields = task.RestoreDraft(target, now, RiskRules);
 
         unitOfWork.Execute(() =>
         {

@@ -25,6 +25,7 @@ public sealed class TaskDbContext(DbContextOptions<TaskDbContext> options) : DbC
     public DbSet<AdminAuditRecord> AdminAudits => Set<AdminAuditRecord>();
     public DbSet<TaskRevisionRecord> TaskRevisions => Set<TaskRevisionRecord>();
     public DbSet<IdempotencyRecord> IdempotencyEntries => Set<IdempotencyRecord>();
+    public DbSet<RiskRuleCatalogRevisionRecord> RiskRuleCatalogRevisions => Set<RiskRuleCatalogRevisionRecord>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -227,6 +228,19 @@ public sealed class TaskDbContext(DbContextOptions<TaskDbContext> options) : DbC
             entity.Property(item => item.ResponseBody).HasMaxLength(IdempotencyEntry.MaxResponseBodyLength);
             entity.Property(item => item.ContentType).HasMaxLength(120);
             entity.HasIndex(item => item.StartedAt);
+        });
+
+        modelBuilder.Entity<RiskRuleCatalogRevisionRecord>(entity =>
+        {
+            entity.ToTable("risk_rule_catalog_revisions");
+            entity.HasKey(item => item.Id);
+            // 版本号唯一：并发编辑同一个版本时后写入者会撞唯一索引（第一道是应用层的 ExpectedVersion 比对）。
+            entity.HasIndex(item => item.Version).IsUnique();
+            entity.HasIndex(item => item.CreatedAt);
+            entity.Property(item => item.ChangeSummary).HasMaxLength(RiskRuleCatalogRevision.MaxSummaryLength).IsRequired();
+            entity.Property(item => item.ChangeReason).HasMaxLength(RiskRuleCatalogRevision.MaxReasonLength).IsRequired();
+            // 完整目录快照（JSON）：不设长度上限，改成 text。
+            entity.Property(item => item.CatalogJson).IsRequired();
         });
     }
 }
@@ -489,4 +503,19 @@ public sealed class SettingsAuditRecord{
     public string NewValue { get; set; } = "";
     public Guid ActorId { get; set; }
     public DateTimeOffset OccurredAt { get; set; }
+}
+
+/// <summary>风险规则目录的历史版本：一行一个完整快照，只追加。任务上记的规则版本号指的就是这里的 Version。</summary>
+public sealed class RiskRuleCatalogRevisionRecord
+{
+    public Guid Id { get; set; }
+
+    /// <summary>与任务上的 <c>RiskRuleVersion</c> 同一套编号；内置目录是 1，运营改出来的第一版是 2。</summary>
+    public int Version { get; set; }
+
+    public string CatalogJson { get; set; } = "";
+    public string ChangeSummary { get; set; } = "";
+    public string ChangeReason { get; set; } = "";
+    public Guid UpdatedBy { get; set; }
+    public DateTimeOffset CreatedAt { get; set; }
 }

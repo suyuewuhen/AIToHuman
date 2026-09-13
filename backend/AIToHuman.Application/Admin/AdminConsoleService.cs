@@ -16,8 +16,9 @@ namespace AIToHuman.Application.Admin;
 /// <summary>
 /// 运营后台：跨所有者检索任务与用户、查看任务详情、把尚未分配的任务下架并留审计，
 /// 以及处置风险复核队列（放行或驳回）。
-/// 风险判定本身是领域层的确定性规则（<see cref="RiskRuleCatalog"/>）；这里只做人能做的事：
-/// 对“需要人工复核”的任务给出结论。被禁止的类别不会进队列，人工也无权放行。
+/// 风险判定本身是领域层的确定性规则（<see cref="RiskRuleCatalog"/>，规则目录的查看与编辑见
+/// <c>RiskRuleCatalogService</c>）；这里只做人能做的事：对“需要人工复核”的任务给出结论。
+/// 被禁止的类别不会进队列，人工也无权放行。
 /// </summary>
 public sealed class AdminConsoleService(
     IAdminTaskQuery taskQuery,
@@ -194,14 +195,6 @@ public sealed class AdminConsoleService(
         var owners = userDirectory.FindMany([task.OwnerId]);
         return MapRiskReview(task, owners);
     }
-
-    /// <summary>风险规则目录：让运营后台能回答“现在按什么规则拦、哪一版”，但不暴露匹配词。</summary>
-    public static RiskRuleCatalogResponse DescribeRiskRules() => new(
-        RiskRuleCatalog.Version,
-        RiskRuleCatalog.HighRewardThreshold,
-        RiskRuleCatalog.Rules
-            .Select(rule => new RiskRuleResponse(rule.Code, rule.Category, rule.Verdict.ToString(), rule.Description, rule.Keywords.Count))
-            .ToArray());
 
     public IReadOnlyCollection<AdminAuditResponse> ListAudits(int? limit) =>
         auditRepository.List(Clamp(limit))

@@ -350,6 +350,12 @@ h1 em { color: var(--acid); font-style: normal; }
 .draft-edit-field input,
 .draft-edit-field textarea { width: 100%; padding: 8px 10px; border: 1px solid var(--line); background: #fff; color: var(--ink); font-size: 11px; font-family: inherit; }
 .draft-edit-field textarea { resize: vertical; }
+
+/* 风险规则目录编辑器：一行一条规则，匹配词用多行文本框（一行一个，服务端按空白/逗号切分）。 */
+.rule-draft { align-items: flex-start; }
+.rule-draft > div:first-child { flex: 1 1 420px; min-width: 260px; }
+.rule-draft textarea { width: 100%; margin-top: 6px; padding: 8px 10px; border: 1px solid var(--line); background: #fffdf7; color: var(--ink); font-size: 11px; font-family: inherit; resize: vertical; }
+.rule-draft input { width: 100%; margin-top: 6px; }
 .draft-edit .cancel-error { color: #9a321f; font-size: 11px; }
 .draft-edit-notice { color: #4b6b4b; font-size: 11px; }
 

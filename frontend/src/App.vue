@@ -8,7 +8,7 @@ import { listOrderMessages, markOrderMessagesRead, sendOrderMessage, type OrderM
 import { absoluteMaxEvidenceBytes, allowedEvidenceTypes, downloadEvidence, listOrderEvidence, uploadOrderEvidence, type EvidenceItem } from './api/evidence'
 import { continueTaskConversation, type AiTaskPlan } from './api/ai'
 import { createConversation, getConversation, type Conversation } from './api/conversations'
-import { adminOrderStatusLabel, adminTaskStatusLabel, cancelAdminTask, decideRiskAppeal, decideRiskReview, disputeResolutionLabel, getRiskRules, listAdminAudits, listDisputedOrders, listRiskAppeals, listRiskReviews, resolveDispute, riskAppealStatusLabel, riskReviewStatusLabel, riskVerdictLabel, searchAdminTasks, searchAdminUsers, type AdminAuditItem, type AdminOrderItem, type AdminRiskAppealItem, type AdminRiskReviewItem, type AdminTaskItem, type AdminUserItem, type DisputeDecision, type RiskAppealDecision, type RiskReviewDecision, type RiskRuleCatalog } from './api/admin'
+import { adminOrderStatusLabel, adminTaskStatusLabel, cancelAdminTask, decideRiskAppeal, decideRiskReview, disputeResolutionLabel, getRiskRuleDetail, getRiskRules, listAdminAudits, listDisputedOrders, listRiskAppeals, listRiskReviews, listRiskRuleVersions, resetRiskRules, resolveDispute, riskAppealStatusLabel, riskReviewStatusLabel, riskVerdictLabel, searchAdminTasks, searchAdminUsers, updateRiskRules, type AdminAuditItem, type AdminOrderItem, type AdminRiskAppealItem, type AdminRiskReviewItem, type AdminTaskItem, type AdminUserItem, type DisputeDecision, type RiskAppealDecision, type RiskReviewDecision, type RiskRuleCatalog, type RiskRuleCatalogDetail, type RiskRuleCatalogVersion } from './api/admin'
 import { listSettingAudits, listSettings, resetSetting, settingChoiceLabel, settingSourceLabel, testSetting, updateSetting, type AdminSetting, type SettingAudit, type SettingTestResult } from './api/settings'
 
 type Step = { label: string; done: boolean }
@@ -180,7 +180,7 @@ function evidenceStatusLabel(status: string) {
 
 // 运营配置：入口只对管理员展示，真正的授权在服务端（/api/v1/admin/settings 需要管理员身份）。
 const settingsOpen = ref(false)
-const settingsTab = ref<'values' | 'audits' | 'tasks' | 'users' | 'disputes' | 'risk' | 'appeals'>('values')
+const settingsTab = ref<'values' | 'audits' | 'tasks' | 'users' | 'disputes' | 'risk' | 'appeals' | 'rules'>('values')
 const settingsLoading = ref(false)
 const settingsError = ref('')
 const settingsNotice = ref('')
@@ -217,6 +217,29 @@ const adminRiskNote = ref('')
 const adminRiskAppeals = ref<AdminRiskAppealItem[]>([])
 const adminAppealDecisionId = ref('')
 const adminAppealNote = ref('')
+// 规则目录：查看当前生效的规则（连匹配词）+ 版本历史，并整份替换出一版新目录。
+// 编辑态单独放一份草稿（匹配词在界面上是一行一个的文本框），点“保存为新版本”才提交。
+const adminRuleDetail = ref<RiskRuleCatalogDetail | null>(null)
+const adminRuleVersions = ref<RiskRuleCatalogVersion[]>([])
+const adminRuleDrafts = ref<RuleDraft[]>([])
+const adminRuleThreshold = ref(5000)
+const adminRuleNightStart = ref('00:00')
+const adminRuleNightEnd = ref('06:00')
+const adminRuleReason = ref('')
+const adminRuleEditing = ref(false)
+const adminRuleResetting = ref(false)
+const adminRuleResetNote = ref('')
+const adminRuleBusy = ref(false)
+const adminRuleError = ref('')
+const adminRuleNotice = ref('')
+
+interface RuleDraft {
+  code: string
+  category: string
+  verdict: string
+  description: string
+  keywordsText: string
+}
 
 const isAdmin = computed(() => authUser.value?.isAdmin === true)
 const settingsGroups = computed(() => {
@@ -532,6 +555,119 @@ async function confirmAdminAppealDecision(item: AdminRiskAppealItem, decision: R
     adminTaskError.value = error instanceof Error ? error.message : '处置申诉失败'
   } finally {
     adminTaskBusy.value = false
+  }
+}
+
+// 规则目录：读取当前生效的一版 + 版本历史，编辑后整份提交（服务端把版本号 +1 并写运营审计）。
+async function loadRiskRuleCatalog() {
+  settingsTab.value = 'rules'
+  adminRuleBusy.value = true
+  adminRuleError.value = ''
+  adminRuleNotice.value = ''
+  try {
+    const [detail, versions] = await Promise.all([getRiskRuleDetail(), listRiskRuleVersions(20)])
+    adminRuleDetail.value = detail
+    adminRuleVersions.value = versions.items
+    resetRuleDrafts()
+  } catch (error) {
+    adminRuleError.value = error instanceof Error ? error.message : '读取风险规则目录失败'
+  } finally {
+    adminRuleBusy.value = false
+  }
+}
+
+/** 把服务端下发的目录抄进编辑草稿：匹配词在界面上是一行一个的文本框。 */
+function resetRuleDrafts() {
+  const detail = adminRuleDetail.value
+  if (!detail) return
+  adminRuleThreshold.value = detail.highRewardThreshold
+  adminRuleNightStart.value = detail.nightWindowStart
+  adminRuleNightEnd.value = detail.nightWindowEnd
+  adminRuleDrafts.value = detail.rules.map((rule) => ({
+    code: rule.code,
+    category: rule.category,
+    verdict: rule.verdict === 'Blocked' ? 'Blocked' : 'NeedsReview',
+    description: rule.description,
+    keywordsText: rule.keywords.join('\n'),
+  }))
+  adminRuleReason.value = ''
+  adminRuleEditing.value = false
+}
+
+function addRuleDraft() {
+  adminRuleDrafts.value = [...adminRuleDrafts.value, { code: '', category: '', verdict: 'Blocked', description: '', keywordsText: '' }]
+}
+
+function removeRuleDraft(index: number) {
+  adminRuleDrafts.value = adminRuleDrafts.value.filter((_, position) => position !== index)
+}
+
+/** 匹配词允许用换行、逗号或空格分隔；去掉空白与重复项后再提交。 */
+function parseRuleKeywords(text: string): string[] {
+  const seen: string[] = []
+  for (const item of text.split(/[\s,，、;；]+/)) {
+    const keyword = item.trim()
+    if (keyword && !seen.includes(keyword)) seen.push(keyword)
+  }
+  return seen
+}
+
+async function saveRiskRules() {
+  const detail = adminRuleDetail.value
+  if (!detail) return
+  adminRuleBusy.value = true
+  adminRuleError.value = ''
+  adminRuleNotice.value = ''
+  try {
+    const updated = await updateRiskRules({
+      expectedVersion: detail.version,
+      reason: adminRuleReason.value.trim(),
+      highRewardThreshold: Number(adminRuleThreshold.value),
+      nightWindowStart: adminRuleNightStart.value.trim(),
+      nightWindowEnd: adminRuleNightEnd.value.trim(),
+      rules: adminRuleDrafts.value.map((rule) => ({
+        code: rule.code.trim(),
+        category: rule.category.trim(),
+        verdict: rule.verdict,
+        description: rule.description.trim(),
+        keywords: parseRuleKeywords(rule.keywordsText),
+      })),
+    })
+
+    adminRuleDetail.value = updated
+    adminRiskRules.value = await getRiskRules()
+    adminRuleVersions.value = (await listRiskRuleVersions(20)).items
+    // 保存成功才退出编辑态；失败时保留草稿，运营可以直接改完再交。
+    resetRuleDrafts()
+    adminRuleNotice.value = `已保存为第 ${updated.version} 版：${updated.changeSummary ?? '目录已更新'}。后续写入按这一版判定，历史结论不会被改写。`
+  } catch (error) {
+    // 409（别人刚改过）与 422（内容不合法）都带可读说明，直接展示给运营。
+    adminRuleError.value = error instanceof Error ? error.message : '保存风险规则失败'
+  } finally {
+    adminRuleBusy.value = false
+  }
+}
+
+/** 恢复到代码内置目录：改坏了要有退路；同样是追加一版，历史里的旧版本仍然看得到。 */
+async function confirmResetRiskRules() {
+  const detail = adminRuleDetail.value
+  if (!detail) return
+  adminRuleBusy.value = true
+  adminRuleError.value = ''
+  adminRuleNotice.value = ''
+  try {
+    const restored = await resetRiskRules(detail.version, adminRuleResetNote.value.trim())
+    adminRuleDetail.value = restored
+    adminRiskRules.value = await getRiskRules()
+    adminRuleVersions.value = (await listRiskRuleVersions(20)).items
+    resetRuleDrafts()
+    adminRuleResetting.value = false
+    adminRuleResetNote.value = ''
+    adminRuleNotice.value = `已恢复内置目录（第 ${restored.version} 版）：${restored.changeSummary ?? ''}`
+  } catch (error) {
+    adminRuleError.value = error instanceof Error ? error.message : '恢复内置目录失败'
+  } finally {
+    adminRuleBusy.value = false
   }
 }
 
@@ -2012,7 +2148,8 @@ onMounted(async () => {
           <button type="button" :class="{ selected: settingsTab === 'disputes' }" @click="settingsTab = 'disputes'; loadAdminOrders()">争议处置 <b>{{ adminOrders.length }}</b></button>
           <button type="button" :class="{ selected: settingsTab === 'risk' }" @click="loadAdminRiskReviews()">风险复核 <b>{{ adminRiskReviews.length }}</b></button>
           <button type="button" :class="{ selected: settingsTab === 'appeals' }" @click="loadAdminRiskAppeals()">误拦申诉 <b>{{ adminRiskAppeals.length }}</b></button>
-          <button type="button" class="settings-refresh" :disabled="settingsLoading || adminTaskBusy" @click="settingsTab === 'audits' ? loadAdminAudits() : (settingsTab === 'tasks' ? loadAdminTasks() : (settingsTab === 'users' ? loadAdminUsers() : (settingsTab === 'disputes' ? loadAdminOrders() : (settingsTab === 'risk' ? loadAdminRiskReviews() : (settingsTab === 'appeals' ? loadAdminRiskAppeals() : loadSettings())))))">{{ settingsLoading || adminTaskBusy ? '读取中…' : '刷新 ↻' }}</button>
+          <button type="button" :class="{ selected: settingsTab === 'rules' }" @click="loadRiskRuleCatalog()">规则目录 <b>v{{ adminRuleDetail?.version ?? 1 }}</b></button>
+          <button type="button" class="settings-refresh" :disabled="settingsLoading || adminTaskBusy" @click="settingsTab === 'audits' ? loadAdminAudits() : (settingsTab === 'tasks' ? loadAdminTasks() : (settingsTab === 'users' ? loadAdminUsers() : (settingsTab === 'disputes' ? loadAdminOrders() : (settingsTab === 'risk' ? loadAdminRiskReviews() : (settingsTab === 'appeals' ? loadAdminRiskAppeals() : (settingsTab === 'rules' ? loadRiskRuleCatalog() : loadSettings()))))))">{{ settingsLoading || adminTaskBusy ? '读取中…' : '刷新 ↻' }}</button>
         </div>
         <p v-if="settingsError" class="auth-error">{{ settingsError }}</p>
         <p v-if="settingsNotice" class="settings-notice">{{ settingsNotice }}</p>
@@ -2120,6 +2257,85 @@ onMounted(async () => {
                 <button type="button" class="settings-secondary danger" :disabled="adminTaskBusy" @click="confirmAdminRiskDecision(item, 'Reject')">驳回</button>
                 <button type="button" class="settings-secondary" :disabled="adminTaskBusy" @click="adminRiskDecisionId = ''">取消</button>
               </template>
+            </div>
+          </div>
+        </div>
+
+        <div v-else-if="settingsTab === 'rules'" class="settings-body">
+          <p class="settings-hint">规则目录是确定性风险判定的依据：命中“禁止发布”的类别一律拦死（人工也无权放行），命中“需人工复核”的进复核队列。每次保存都会生成新的一版（版本号 +1），旧版本永不改写；任务上记的是判定当时的版本号，所以每条拦截结论都能回溯到当时用的是哪一版规则。</p>
+          <p v-if="adminRuleDetail" class="settings-hint">
+            当前第 <b>{{ adminRuleDetail.version }}</b> 版<template v-if="adminRuleDetail.isBuiltIn">（代码内置目录，还没有运营覆盖）</template>：共 {{ adminRuleDetail.rules.length }} 条规则，其中禁止 {{ adminRuleDetail.rules.filter((rule) => rule.verdict === 'Blocked').length }} 条；悬赏超过 ¥{{ adminRuleDetail.highRewardThreshold }} 转人工；深夜时段 {{ adminRuleDetail.nightWindowStart }}–{{ adminRuleDetail.nightWindowEnd }}（北京时间）。
+          </p>
+          <p v-if="adminRuleDetail?.updatedAt" class="settings-hint">
+            最近一次修改：{{ adminRuleDetail.updatedByName ?? adminRuleDetail.updatedBy?.slice(0, 8) }} · {{ formatDeadline(adminRuleDetail.updatedAt) }} · 依据“{{ adminRuleDetail.changeReason }}” · {{ adminRuleDetail.changeSummary }}
+          </p>
+          <p v-if="adminRuleError" class="auth-error">{{ adminRuleError }}</p>
+          <p v-if="adminRuleNotice" class="settings-notice">{{ adminRuleNotice }}</p>
+
+          <div class="setting-control">
+            <button v-if="!adminRuleEditing" type="button" class="settings-secondary" :disabled="adminRuleBusy" @click="adminRuleEditing = true">编辑规则目录</button>
+            <template v-else>
+              <button type="button" class="settings-secondary" :disabled="adminRuleBusy" @click="resetRuleDrafts()">放弃编辑</button>
+              <button type="button" class="settings-primary" :disabled="adminRuleBusy" @click="saveRiskRules()">{{ adminRuleBusy ? '保存中…' : '保存为新版本' }}</button>
+            </template>
+            <template v-if="!adminRuleResetting">
+              <button type="button" class="settings-secondary" :disabled="adminRuleBusy || adminRuleDetail?.isBuiltIn" @click="adminRuleResetting = true; adminRuleResetNote = ''">恢复内置目录</button>
+            </template>
+            <template v-else>
+              <input v-model.trim="adminRuleResetNote" type="text" maxlength="200" placeholder="恢复依据（必填，最多 200 字，会写进运营审计）" />
+              <button type="button" class="settings-secondary danger" :disabled="adminRuleBusy" @click="confirmResetRiskRules()">确认恢复</button>
+              <button type="button" class="settings-secondary" :disabled="adminRuleBusy" @click="adminRuleResetting = false">取消</button>
+            </template>
+          </div>
+
+          <template v-if="adminRuleEditing">
+            <p class="settings-hint">匹配词一行一个，至少 2 个字（单字会误伤“代取”“代送”这类正常任务）；目录里至少要保留一条禁止类规则。改动内容会先过服务端校验，不合法会直接告诉你哪里不行。</p>
+            <div class="setting-control">
+              <input v-model.number="adminRuleThreshold" type="number" min="1" step="100" placeholder="高金额阈值（元）" />
+              <input v-model.trim="adminRuleNightStart" type="text" maxlength="5" placeholder="深夜起点 HH:mm" />
+              <input v-model.trim="adminRuleNightEnd" type="text" maxlength="5" placeholder="深夜终点 HH:mm" />
+            </div>
+            <div v-for="(rule, index) in adminRuleDrafts" :key="index" class="admin-row rule-draft">
+              <div>
+                <div class="setting-control">
+                  <input v-model.trim="rule.code" type="text" maxlength="80" placeholder="原因代码，例如 prohibited.no_drones" />
+                  <input v-model.trim="rule.category" type="text" maxlength="60" placeholder="类别名" />
+                  <select v-model="rule.verdict">
+                    <option value="Blocked">禁止发布</option>
+                    <option value="NeedsReview">需人工复核</option>
+                  </select>
+                </div>
+                <input v-model.trim="rule.description" type="text" maxlength="300" placeholder="给用户看的说明（不要写出具体匹配词）" />
+                <textarea v-model="rule.keywordsText" rows="3" placeholder="匹配词，一行一个"></textarea>
+              </div>
+              <div class="setting-actions">
+                <button type="button" class="settings-secondary danger" :disabled="adminRuleBusy" @click="removeRuleDraft(index)">删除这条</button>
+              </div>
+            </div>
+            <div class="setting-control">
+              <button type="button" class="settings-secondary" :disabled="adminRuleBusy" @click="addRuleDraft()">新增一条规则</button>
+              <input v-model.trim="adminRuleReason" type="text" maxlength="200" placeholder="变更依据（必填，最多 200 字，会写进运营审计）" />
+            </div>
+          </template>
+
+          <template v-else>
+            <div v-for="rule in adminRuleDetail?.rules ?? []" :key="rule.code" class="admin-row">
+              <div>
+                <strong>{{ rule.category }} · {{ riskVerdictLabel(rule.verdict) }}</strong>
+                <small class="evidence-note">{{ rule.code }} · 匹配词 {{ rule.keywords.length }} 个：{{ rule.keywords.join('、') }}</small>
+                <small>{{ rule.description }}</small>
+              </div>
+            </div>
+          </template>
+
+          <p class="settings-hint"><b>版本历史</b></p>
+          <span v-if="adminRuleVersions.length === 0" class="settings-empty">还没有运营改动，当前用的是代码内置目录（第 1 版）。</span>
+          <div v-for="version in adminRuleVersions" v-else :key="version.version" class="admin-row">
+            <div>
+              <strong>第 {{ version.version }} 版 · {{ version.ruleCount }} 条规则（禁止 {{ version.blockedRuleCount }} 条）· 阈值 ¥{{ version.highRewardThreshold }}</strong>
+              <small>{{ formatDeadline(version.createdAt) }} · {{ version.updatedByName ?? version.updatedBy.slice(0, 8) }}</small>
+              <small class="evidence-note">依据：{{ version.changeReason }}</small>
+              <small class="evidence-note">{{ version.changeSummary }}</small>
             </div>
           </div>
         </div>

@@ -24,6 +24,7 @@ using AIToHuman.Api.Idempotency;
 using AIToHuman.Application.Idempotency;
 using AIToHuman.Application.Risk;
 using AIToHuman.Infrastructure.Idempotency;
+using AIToHuman.Infrastructure.Risk;
 using AIToHuman.Api.Tasks;
 using AIToHuman.Application.Admin;
 using AIToHuman.Application.Settings;
@@ -86,6 +87,9 @@ if (usePostgres)
     builder.Services.AddScoped<IUserDirectory, EfUserDirectory>();
     builder.Services.AddScoped<IAdminAuditRepository, EfAdminAuditRepository>();
     builder.Services.AddScoped<IIdempotencyStore, EfIdempotencyStore>();
+    builder.Services.AddScoped<IRiskRuleCatalogStore, EfRiskRuleCatalogStore>();
+    builder.Services.AddScoped<IRiskRuleCatalogProvider, RiskRuleCatalogStoreProvider>();
+    builder.Services.AddScoped<RiskRuleCatalogService>();
     builder.Services.AddScoped<RiskAppealService>();
     builder.Services.AddScoped<IUnitOfWork, EfUnitOfWork>();
     builder.Services.AddScoped<AuthService>();
@@ -111,6 +115,9 @@ else
     builder.Services.AddSingleton<IUserDirectory, EmptyUserDirectory>();
     builder.Services.AddSingleton<IAdminAuditRepository, InMemoryAdminAuditRepository>();
     builder.Services.AddSingleton<IIdempotencyStore, InMemoryIdempotencyStore>();
+    builder.Services.AddSingleton<IRiskRuleCatalogStore, InMemoryRiskRuleCatalogStore>();
+    builder.Services.AddSingleton<IRiskRuleCatalogProvider, RiskRuleCatalogStoreProvider>();
+    builder.Services.AddScoped<RiskRuleCatalogService>();
     builder.Services.AddScoped<RiskAppealService>();
     builder.Services.AddSingleton<IUnitOfWork, InMemoryUnitOfWork>();
 }
@@ -563,7 +570,29 @@ adminConsole.MapPost("/risk/reviews/{taskId:guid}/decide", (Guid taskId, AdminRi
     return Results.Ok(reviewed);
 });
 // 规则目录自述：说明现在按什么规则拦（含版本），但不返回匹配词，避免被逐字试探绕过。
-adminConsole.MapGet("/risk/rules", () => Results.Ok(AdminConsoleService.DescribeRiskRules()));
+adminConsole.MapGet("/risk/rules", (RiskRuleCatalogService service) => Results.Ok(service.GetSummary()));
+// 规则明细与版本历史（含匹配词与改动依据）：只有运营能读，普通接口永远只给词的数量。
+adminConsole.MapGet("/risk/rules/detail", (RiskRuleCatalogService service) => Results.Ok(service.GetDetail()));
+adminConsole.MapGet("/risk/rules/versions", (int? limit, RiskRuleCatalogService service) =>
+    Results.Ok(service.ListVersions(limit)));
+// 编辑规则目录：整份替换 + 版本号自动 +1 + 依据必填 + 写运营审计。
+// 提交时带上 ExpectedVersion，与当前版本不一致会返回 409，避免覆盖别人刚收紧的规则。
+adminConsole.MapPost("/risk/rules", (UpdateRiskRuleCatalogRequest request, ClaimsPrincipal user, RiskRuleCatalogService service) =>
+{
+    var actorId = ResolveAdminId(user);
+    var updated = service.Update(request, actorId);
+    app.Logger.LogInformation("运营 {ActorId} 更新了风险规则目录到 v{Version}：{Summary}", actorId, updated.Version, updated.ChangeSummary);
+    return Results.Ok(updated);
+});
+// 恢复内置目录：改坏了要有退路。同样只追加一版（历史不丢），依据必填并写审计。
+adminConsole.MapPost("/risk/rules/reset", (ResetRiskRuleCatalogRequest request, ClaimsPrincipal user, RiskRuleCatalogService service) =>
+{
+    var actorId = ResolveAdminId(user);
+    var restored = service.ResetToBuiltIn(request, actorId);
+    app.Logger.LogInformation("运营 {ActorId} 把风险规则目录恢复到内置目录（v{Version}）：{Reason}", actorId, restored.Version, request.Reason);
+    return Results.Ok(restored);
+});
+
 // 误拦申诉：被拦的所有者提交的申诉排在这里。转人工被驳回的可以申诉成立并放行；
 // 禁止类别命中的即使申诉成立也只会记录"规则误伤"的结论，任务依旧不能发布（人工无权放行红线）。
 adminConsole.MapGet("/risk/appeals", (int? limit, RiskAppealService service) =>

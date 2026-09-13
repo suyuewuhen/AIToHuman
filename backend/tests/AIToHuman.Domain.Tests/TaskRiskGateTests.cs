@@ -23,7 +23,7 @@ public sealed class TaskRiskGateTests
 
         Assert.Equal(RiskVerdict.Blocked, task.RiskVerdict);
         Assert.Equal("prohibited.exam_impersonation", task.RiskRuleCode);
-        Assert.Equal(RiskRuleCatalog.Version, task.RiskRuleVersion);
+        Assert.Equal(RiskRuleCatalog.BuiltIn.Version, task.RiskRuleVersion);
         Assert.Equal(Now, task.RiskAssessedAt);
         Assert.True(task.IsRiskBlocked);
         Assert.True(task.IsPublishBlockedByRisk);
@@ -104,7 +104,7 @@ public sealed class TaskRiskGateTests
         var restored = TaskItem.Rehydrate(
             task.Id, Owner, "帮我把一份普通材料送到公司", "送到前台即可", "朝阳区", Now.AddHours(6), new Money(50), ["按时送达"], Now,
             TaskStatus.ReadyToPublish, [],
-            riskVerdict: RiskVerdict.Allowed, riskRuleVersion: RiskRuleCatalog.Version, riskAssessedAt: Now,
+            riskVerdict: RiskVerdict.Allowed, riskRuleVersion: RiskRuleCatalog.BuiltIn.Version, riskAssessedAt: Now,
             riskReviewStatus: RiskReviewStatus.Rejected, riskReviewedBy: Admin, riskReviewedAt: Now, riskReviewNote: "无法核实证件用途");
 
         var error = Assert.Throws<DomainException>(() => restored.Publish(Now));
@@ -159,7 +159,7 @@ public sealed class TaskRiskGateTests
     [Fact]
     public void A_high_reward_draft_goes_to_review_before_it_can_be_published()
     {
-        var task = Create("帮我送一份文件到郊区", reward: RiskRuleCatalog.HighRewardThreshold + 500);
+        var task = Create("帮我送一份文件到郊区", reward: RiskRuleCatalog.BuiltIn.HighRewardThreshold + 500);
 
         Assert.Equal("review.high_reward", task.RiskRuleCode);
         Assert.True(task.AwaitingRiskReview);

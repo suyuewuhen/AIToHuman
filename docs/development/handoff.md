@@ -6,7 +6,7 @@
 
 当前分支：`main`
 
-最新已提交基线：本轮之前 `main` 与 `origin/main` 同步在 `d2c7707`（把自动化扩展到 Redis 扇出与 S3 兼容对象存储）；本轮「草稿字段级差异与回滚」是紧随其后的一个提交，并已推送保持两边一致（见第 2 节）。
+最新已提交基线：本轮之前 `main` 与 `origin/main` 同步在 `d20b535`（草稿字段级差异与回滚）；本轮「风险规则目录后台编辑」是紧随其后的一个提交，并已推送保持两边一致（见第 2 节）。
 
 本文面向接手开发、代码评审和本地联调人员。内容以已提交代码为准；上一版文档里“已提交基线 / 当前未提交实现”的双轨描述已经过时——所有多轮 AI、通知、会话与凭证实现都已提交。文中每条“已实现 / 未实现”的结论都对应第 11 节可复现的验证步骤。
 
@@ -29,11 +29,11 @@ AI 多轮澄清（每轮一个问题）
 → 双方评价，双方提交或 7 天后公开
 ```
 
-尚未实现：真实支付和托管、实名认证、真实的病毒/内容扫描服务商（协议已接好，只差选定/部署服务）、争议的责任判定与赔付/退款、争议申诉与处理时限、客服工单、精确地址访问审计、图片重新编码；运营后台的任务/用户检索、人工下架、争议处置、风险复核与误拦申诉都已实现，风险侧缺的是模型辅助分类、规则目录的后台编辑与申诉的次数/频率限制。
+尚未实现：真实支付和托管、实名认证、真实的病毒/内容扫描服务商（协议已接好，只差选定/部署服务）、争议的责任判定与赔付/退款、争议申诉与处理时限、客服工单、精确地址访问审计、图片重新编码；运营后台的任务/用户检索、人工下架、争议处置、风险复核、误拦申诉与**风险规则目录的编辑**都已实现，风险侧缺的是模型辅助分类、规则命中统计与看板、规则目录编辑的审批流。
 
 ## 2. 当前工作区状态
 
-工作区状态：`main` 与 `origin/main` 同步；本轮的「草稿字段级差异与回滚」随本轮提交一起进入 `main` 并推送（`git log -1` 可见）。上一版交接文档描述的“多轮 AI 未提交实现”已经全部提交，本文不再区分“基线 / 未提交”两种状态。
+工作区状态：`main` 与 `origin/main` 同步；本轮的「风险规则目录后台编辑」随本轮提交一起进入 `main` 并推送（`git log -1` 可见）。上一版交接文档描述的“多轮 AI 未提交实现”已经全部提交，本文不再区分“基线 / 未提交”两种状态。
 
 从基线 `f196850` 到 `e45da76`（多轮 AI 与会话持久化那一轮）的主要变化：
 
@@ -118,21 +118,24 @@ docs/                             ai-planning、api/api-guidelines、architectur
 
 ### 风险规则与人工复核
 
-- 判定是**确定性规则**，不是模型自由判断：规则目录固定在 `backend/AIToHuman.Domain/Risk/RiskRuleCatalog.cs` 并带 `Version`（当前第 1 版），改规则必须同时提升版本号，否则历史任务上的判定无法回溯是哪一版规则给的。
+- 判定是**确定性规则**，不是模型自由判断。规则目录有两层：代码内置的那一份（`backend/AIToHuman.Domain/Risk/RiskRuleCatalog.cs` 的 `RiskRuleCatalog.BuiltIn`，版本 1，任何部署都自带，是平台的硬底线）与**运营在后台编辑出来的覆盖版本**（版本 ≥ 2，只追加的版本快照，见下一条）。目录带 `Version`，判定时把当时的版本号记在任务上，所以历史判定能回溯到"当时用的哪一版规则"。
 - 当前 10 条词表规则（6 条 `prohibited.*` 禁止类：代考与冒名顶替、违禁品与危险品、欺诈伪造与绕过身份核验、跟踪偷拍与骚扰、危害人身安全、必须由持证人员执行的医疗行为；4 条 `review.*` 转人工类：证件与重要文件、受限场所、敏感物品与照护对象、物品或用途不明）+ 2 条阈值规则：悬赏 > 5000 元（`review.high_reward`）、截止时间落在北京时间 00:00–06:00（`review.night_window`），共 12 个原因代码。
 - 匹配范围是标题、描述、验收标准与执行地址；匹配词全部 ≥ 2 个字（单字如“代”会误伤“代取/代送”，有单元测试锁死这条约束）。
-- 判定发生在两处：创建草稿（`TaskItem` 构造）与发布前（`Publish` 重新判定一次，因为悬赏与截止时间在草稿阶段会变）。被禁止的任务**仍然会创建出草稿**——用户能看到自己写的内容和原因，也可以自己撤销，只是发布这一关过不去；这比直接丢弃用户输入更好追溯。
+- 判定发生在四处：创建草稿（`TaskItem` 构造）、编辑草稿、回滚草稿与发布前（`Publish` 重新判定一次，因为悬赏与截止时间在草稿阶段会变）。四处用的都是**当次写入时生效的那一版目录**（`IRiskRuleCatalogProvider.GetEffective()`，无覆盖时就是内置目录），因此运营收紧规则后，已经存在的草稿在发布时同样会被拦住。被禁止的任务**仍然会创建出草稿**——用户能看到自己写的内容和原因，也可以自己撤销，只是发布这一关过不去；这比直接丢弃用户输入更好追溯。
 - 发布门禁：`prohibited.*` 一律 `422` 且**人工也无权放行**；`review.*` 进入人工队列，运营放行后才能发布，驳回则不能发布。人工驳回是终态：即使规则后来不再命中，也不会自己变回可发布。
 - 判定结果记在任务上：`RiskVerdict`、`RiskRuleCode`、`RiskCategory`、`RiskSummary`、`RiskRuleVersion`、`RiskAssessedAt`、`RiskReviewStatus`、`RiskReviewedBy`、`RiskReviewedAt`、`RiskReviewNote`。其中 `RiskSummary` 是给用户和运营看的说明，**刻意不含命中的具体词**，避免被逐字试探绕过。
 - 运营复核走既有后台：`GET /api/v1/admin/risk/reviews?limit=` 列出待复核任务（按创建时间升序，先来先处理），`POST /api/v1/admin/risk/reviews/{taskId}/decide` 放行或驳回（依据必填 ≤200 字，写进 `admin_audit_entries`，动作名 `task.risk.approve` / `task.risk.reject`），`GET /api/v1/admin/risk/rules` 说明当前按什么规则拦（版本、阈值、规则清单与匹配词数量，不返回匹配词）。非管理员一律 `403`。
+- **规则目录可由运营编辑**（迁移 24 `risk_rule_catalog_revisions`）：一版目录 = 一条只追加的快照行（完整 JSON + 自动生成的**变化摘要** + 运营填写的**变更依据** + 操作人 + 时间），读取永远取版本号最大的一版，数据库里没有覆盖时生效的就是内置目录。`GET /api/v1/admin/risk/rules/detail` 给出明细（含匹配词、是否内置、最近一版的摘要/依据/操作人），`GET /api/v1/admin/risk/rules/versions?limit=` 给出倒序的版本历史，`POST /api/v1/admin/risk/rules` 整份替换（规则 + 阈值 + 深夜时段）并让版本号自动 +1，`POST /api/v1/admin/risk/rules/reset` 一键**恢复到内置目录**（改坏了要有退路；同样是追加一版，被恢复掉的版本仍留在历史里）。
+- 编辑规则的三道闸门：**依据必填**（≤200 字，与版本快照一起落库，并同步写一条运营审计 `task.risk.rules.update` / `task.risk.rules.reset`）；**乐观并发**（提交带 `ExpectedVersion`，与当前版本不一致返回 `409`「风险规则已被其他人修改（当前版本 vX，你读到的是 vY），请刷新后重试。」，避免把别人刚收紧的规则覆盖回旧样子）；**领域校验**（至少保留一条禁止类规则、原因代码唯一、结论只能是禁止/转人工、匹配词每词 2–20 字、`review.high_reward`/`review.night_window` 是保留代码、阈值与深夜时段的合法区间；内容没变或依据为空也一律 `422`，不占版本号）。
+- 快照的可解释性是有意设计的：`RiskRuleCatalog.ToJson()`/`FromJson()` 能把任意一版完整还原，复盘一条历史拦截时直接拿那一版重放判定即可；**快照读不出来时抛错、绝不静默降级**——宁可让写入失败，也不能换一套规则去判定（那等于悄悄改了门禁的松紧）。
 - 复核结论通知所有者：`task.riskReviewed`，载荷 `{ taskId, title, reviewStatus, verdict, ruleCode, canPublish }`，走既有 Outbox + SignalR 链路。
-- 前端：草稿预览弹窗与“我的任务”会显示被拦/待复核的原因并禁用发布按钮；顶栏“运营配置”新增“风险复核”页签。
+- 前端：草稿预览弹窗与“我的任务”会显示被拦/待复核的原因并禁用发布按钮；顶栏“运营配置”新增“风险复核”页签与**“规则目录”页签**（看当前版本/阈值/时段/规则明细与版本历史，整份编辑后“保存为新版本”，或填依据后“恢复内置目录”）。
 - 误拦申诉：被拦下的任务，所有者可以申诉（`POST /api/v1/tasks/{id}/risk-appeals`，理由必填 ≤500 字），运营在 `GET /api/v1/admin/risk/appeals?limit=`（按提交时间升序）里看到队列，用 `POST /api/v1/admin/risk/appeals/{taskId}/decide`（`decision` 取 `Accept`/`Deny`，依据必填 ≤200 字，写进运营审计 `task.risk.appeal.accept|deny`）处置，所有者收到 `task.riskAppealDecided`。
 - **申诉的处置能力分两档，这是本功能的安全边界**：转人工后被驳回的任务，申诉成立即放行（运营本来就有这个权限，申诉只是多一双眼睛）；被禁止类别命中的任务，申诉成立也**不会**获得发布许可，只记录"规则误伤"的结论并提示改文案后重新判定。运营接口返回 `canBeReleasedByAppeal` 明确告诉运营结论能不能真的放行，通知载荷里的 `canPublish` 同样区分这两种情况。
 - 谁能申诉：只有所有者；只有"被禁止类别命中"或"转人工后被驳回"可以申诉——还在等复核（提示"不需要申诉，请等复核结果"）或已放行的都不行。
 - **同一版内容只能申诉一次**：处置过之后（无论成立还是驳回）再申诉返回 `422`「这一版内容已经申诉过：请先修改草稿（改完会重新判定风险），再决定是否重新申诉。」；编辑草稿会把申诉状态清回 `None`（正文变了，原来的申诉不再针对同一份材料），改完可以重新申诉。这是为了避免同一份材料把运营队列刷成申诉墙。
 - 申诉状态记在任务上（`RiskAppealStatus`/`RiskAppealReason`/`RiskAppealedAt`/`RiskAppealDecidedBy`/`RiskAppealDecidedAt`/`RiskAppealDecisionNote`，迁移 23）。前端在“我的任务”里给足资格的任务显示“申诉误判”（禁止类别会额外提示不会因此可发布），运营弹窗新增“误拦申诉”页签。
-- 尚未实现：申诉的次数与频率限制（只有"同一版一次"这条约束）、申诉历史表（同一版只保留最新结论，运营决策留在 `admin_audit_entries`）、客服工单与申诉时效；模型辅助分类与语义判断（现在只有字面词表匹配）；规则目录的后台编辑（改规则要发版）；追加式的风险决策历史表（现在只保留最新一条判定，记在任务行上）。
+- 尚未实现：申诉的次数与频率限制（只有"同一版一次"这条约束）、申诉历史表（同一版只保留最新结论，运营决策留在 `admin_audit_entries`）、客服工单与申诉时效；模型辅助分类与语义判断（现在只有字面词表匹配）；追加式的风险决策历史表（现在只保留最新一条判定，记在任务行上）；规则命中统计与看板、规则目录编辑的审批流（现在是一人一依据一审计）、按规则维度的报表。**已知缺口**：已发布任务的"提高悬赏"不会重跑风险判定，所以加价到高金额不会重新进人工复核队列（`IncreaseReward` 只改金额，没有重判；留作后续）。
 
 ### 订单、通知与评价
 
@@ -486,6 +489,10 @@ netstat -ano | Select-String ':5188|:5173'
 | GET | `/api/v1/admin/risk/reviews?limit=` | 风险复核队列（判定为“需人工复核”的任务，按创建时间升序） |
 | POST | `/api/v1/admin/risk/reviews/{taskId}/decide` | 放行或驳回风险复核（`decision=Approve\|Reject`，依据必填 ≤200 字）；禁止类别不在队列里，调用返回 422 |
 | GET | `/api/v1/admin/risk/rules` | 风险规则目录自述（版本、高金额阈值、规则清单与匹配词数量，不返回匹配词） |
+| GET | `/api/v1/admin/risk/rules/detail` | 规则明细（含匹配词、`isBuiltIn`、最近一版的摘要/依据/操作人） |
+| GET | `/api/v1/admin/risk/rules/versions?limit=` | 规则目录版本历史（倒序，含摘要、依据、操作人、当版条数/禁止条数/阈值/时段） |
+| POST | `/api/v1/admin/risk/rules` | 整份替换规则目录（版本号自动 +1，依据必填 ≤200 字）；`expectedVersion` 不一致 409，校验不过 422 |
+| POST | `/api/v1/admin/risk/rules/reset` | 恢复到代码内置目录（同样追加一版，历史不丢；依据必填） |
 | POST | `/api/v1/tasks/{id}/risk-appeals` | 所有者提交误拦申诉（理由必填 ≤500 字）；只有被禁止类别命中或转人工被驳回的任务可以申诉，同一版只能申诉一次 |
 | GET | `/api/v1/admin/risk/appeals?limit=` | 误拦申诉队列（按提交时间升序），返回 `canBeReleasedByAppeal` 区分能否真的放行 |
 | POST | `/api/v1/admin/risk/appeals/{taskId}/decide` | 处置申诉（`decision=Accept\|Deny`，依据必填 ≤200 字）；禁止类别即使 Accept 也不会放行 |
@@ -497,7 +504,7 @@ netstat -ano | Select-String ':5188|:5173'
 
 Development + PostgreSQL 启动时改为应用 EF Core 迁移（`Database.Migrate()`），不再使用 `EnsureCreated()` 和幂等建表 SQL。生产环境由部署流程执行迁移，不在应用启动时自动迁移。
 
-迁移历史（23 个）：`AddUsers` → `AddOrders` → `AddOrderEvidence` → `AddReviews` → `AddOrderRework` → `AddConversations` → `AddTaskTables` → `AddConcurrencyTokens` → `AddNotifications` → `AddOrderMessages` → `AddTaskExecutionAddress` → `AddEvidence` → `AddSystemSettings` → `AddEvidenceScanAttempts` → `AddEvidenceMetadataRemoved` → `AddAdminAudit` → `AddOrderCancellationAndTaskExpiry` → `AddApplicationDeadline` → `AddOrderDispute` → `AddTaskRiskAssessment` → `AddTaskDraftRevisions` → `AddIdempotencyEntries` → `AddRiskAppeal`。其中 `AddTaskTables` 补上了此前只由 `EnsureCreated()` 建出、从未纳入迁移的 `tasks` 与 `task_applications` 两张核心表；`AddConcurrencyTokens` 给 `tasks`/`orders` 加 `Version` 乐观并发令牌；`AddTaskExecutionAddress` 给 `tasks` 加参与者层的精确执行地址；`AddEvidence` 建 `evidence` 表；`AddSystemSettings` 建运营配置的两张表；`AddEvidenceScanAttempts` 给 `evidence` 补上扫描尝试次数、最近一次说明与尝试时间；`AddEvidenceMetadataRemoved` 补上“已移除元数据”说明与按人限速用的索引；`AddAdminAudit` 建运营操作审计表 `admin_audit_entries`（人工下架等动作只追加留痕）；`AddOrderCancellationAndTaskExpiry` 给 `orders` 加取消三列、给 `tasks` 加 `ExpiredAt`/`CancelledAt`/`CancellationReason`；`AddApplicationDeadline` 给 `tasks` 加可选的报名截止时间；`AddOrderDispute` 给 `orders` 加争议六列并补 `(Status, CreatedAt)` 索引供运营按状态检索；`AddTaskRiskAssessment` 给 `tasks` 加风险判定的 10 列并补 `(RiskReviewStatus, CreatedAt)` 索引供复核队列扫描——存量行用数据库默认值 `Allowed`/`NotRequired` 回填，读取时对未知取值也做防御性解析（历史行不会因为枚举名不认识而读不出来）；`AddTaskDraftRevisions` 建草稿历史表 `task_draft_revisions`（一行一个版本的完整快照 + `ChangeSummary` + 当版风险结论）并给 `(TaskId, Revision)` 建唯一索引；`AddIdempotencyEntries` 建幂等记录表 `idempotency_entries`（主键 `(UserId, Key)` + `StartedAt` 索引）；`AddRiskAppeal` 给 `tasks` 加误拦申诉的 6 列并补 `(RiskAppealStatus, RiskAppealedAt)` 索引供申诉队列扫描。
+迁移历史（24 个）：`AddUsers` → `AddOrders` → `AddOrderEvidence` → `AddReviews` → `AddOrderRework` → `AddConversations` → `AddTaskTables` → `AddConcurrencyTokens` → `AddNotifications` → `AddOrderMessages` → `AddTaskExecutionAddress` → `AddEvidence` → `AddSystemSettings` → `AddEvidenceScanAttempts` → `AddEvidenceMetadataRemoved` → `AddAdminAudit` → `AddOrderCancellationAndTaskExpiry` → `AddApplicationDeadline` → `AddOrderDispute` → `AddTaskRiskAssessment` → `AddTaskDraftRevisions` → `AddIdempotencyEntries` → `AddRiskAppeal` → `AddRiskRuleCatalogRevisions`。其中 `AddTaskTables` 补上了此前只由 `EnsureCreated()` 建出、从未纳入迁移的 `tasks` 与 `task_applications` 两张核心表；`AddConcurrencyTokens` 给 `tasks`/`orders` 加 `Version` 乐观并发令牌；`AddTaskExecutionAddress` 给 `tasks` 加参与者层的精确执行地址；`AddEvidence` 建 `evidence` 表；`AddSystemSettings` 建运营配置的两张表；`AddEvidenceScanAttempts` 给 `evidence` 补上扫描尝试次数、最近一次说明与尝试时间；`AddEvidenceMetadataRemoved` 补上“已移除元数据”说明与按人限速用的索引；`AddAdminAudit` 建运营操作审计表 `admin_audit_entries`（人工下架等动作只追加留痕）；`AddOrderCancellationAndTaskExpiry` 给 `orders` 加取消三列、给 `tasks` 加 `ExpiredAt`/`CancelledAt`/`CancellationReason`；`AddApplicationDeadline` 给 `tasks` 加可选的报名截止时间；`AddOrderDispute` 给 `orders` 加争议六列并补 `(Status, CreatedAt)` 索引供运营按状态检索；`AddTaskRiskAssessment` 给 `tasks` 加风险判定的 10 列并补 `(RiskReviewStatus, CreatedAt)` 索引供复核队列扫描——存量行用数据库默认值 `Allowed`/`NotRequired` 回填，读取时对未知取值也做防御性解析（历史行不会因为枚举名不认识而读不出来）；`AddTaskDraftRevisions` 建草稿历史表 `task_draft_revisions`（一行一个版本的完整快照 + `ChangeSummary` + 当版风险结论）并给 `(TaskId, Revision)` 建唯一索引；`AddIdempotencyEntries` 建幂等记录表 `idempotency_entries`（主键 `(UserId, Key)` + `StartedAt` 索引）；`AddRiskAppeal` 给 `tasks` 加误拦申诉的 6 列并补 `(RiskAppealStatus, RiskAppealedAt)` 索引供申诉队列扫描；`AddRiskRuleCatalogRevisions` 建风险规则目录的版本表 `risk_rule_catalog_revisions`（一行一版完整 JSON 快照 + 变化摘要 + 变更依据 + 操作人）并给 `Version` 建唯一索引、`CreatedAt` 建索引。
 
 早期 `EnsureCreated()` 建出的本地库没有迁移历史记录。启动逻辑会检测这种情况：先用模型对比物理表的「表名.列名」，只有结构完全对得上时，才把当时已有的迁移整体标记为已应用并打警告日志；一旦缺表或缺列就直接报错说明缺了什么，提示删除重建，避免在错误的 schema 上继续运行。基线化之后新增的迁移会正常应用——例如 `AddConcurrencyTokens` 就是在基线化之后自动补上的 `Version` 列。目标库不存在时由 `Migrate()` 负责建库。
 
@@ -780,6 +787,20 @@ npm run build
 - 两条自己踩过的坑（如实记录，避免后来者重犯）：① 过期那条第一版用假时钟把"现在"推到有效期之后，结果服务端照样返回 `200`——**有效期是服务端按 `X-Amz-Date + X-Amz-Expires` 与它自己的时钟判定的，改客户端时钟没有意义**，现在改成真等 7 秒；② 路径替换那条一开始用 `Uri.EscapeDataString(key)` 去替换 URL，而 URL 里是未转义的路径片段，替换没生效、地址根本没变，于是"因为没改而通过"（`200`），现在加了 `Assert.NotEqual(presigned, swapped)` 防止这种假通过。
 - CI：backend job 现在同时起 `postgres:16`、`redis:7`、`minio/minio`（都带 healthcheck），并在测试前用 `minio/mc` 容器建出测试用的桶——MinIO 起来是空实例，不建桶对象存储用例会跳过。
 
+本轮（风险规则目录后台编辑）新增验证：
+
+- 编译与测试：`dotnet build AIToHuman.sln --no-restore` 0 警告 0 错误；领域 283 + 集成 **331** = **614** 个用例全通过（本轮新增 20 条领域用例、12 条用例层用例、1 条真库用例）；前端 `npm run typecheck` 与 `npm run build` 通过（233.42 kB）。
+- 迁移自愈：开发库启动时自动应用第 24 个迁移 `AddRiskRuleCatalogRevisions`（日志"共 24 个迁移"），真库回归用例在随机空库上 `Migrate()` 也从零建出 `risk_rule_catalog_revisions`（`Version` 唯一索引）。
+- 真机 HTTP 全链路（管理员 JWT，基线是内置目录内容）：基线版本下「帮我把一台无人机送到郊区」`Allowed`（`ruleVersion=3`）→ 保存一版新目录（新增 `prohibited.no_drones`、匹配词"无人机/穿越机"，高金额阈值 5000 → 8000）返回摘要「v4：新增规则 1 条（prohibited.no_drones）；高金额阈值 5000 → 8000 元。」→ **同一条文本变成 `Blocked`（`prohibited.no_drones`，规则第 4 版）**。
+- 发布时按"发布那一刻"的规则重判（实测）：早先那条草稿记录的仍是第 3 版 `Allowed`，用它发布返回 `422`「该任务属于平台禁止的类别（prohibited.no_drones · 未经许可的无人机作业），不能发布：任务涉及未经许可的无人机飞行，属于受管制活动。」——规则收紧后老草稿同样发不出去，而历史判定不被改写。
+- 阈值随目录走（实测）：6000 元在新阈值下 `Allowed`、9000 元 `NeedsReview`（`review.high_reward`），两者都记第 4 版。
+- 编辑的三道闸门（实测）：旧版本号提交 `409`「风险规则已被其他人修改（当前版本 v4，你读到的是 v3），请刷新后重试。」；一条禁止规则都不留 `422`「风险规则目录至少要保留一条禁止类规则……」；没写依据 `422`「修改风险规则必须写明依据。」；内容没变 `422`「风险规则内容没有变化，无需更新。」；单字匹配词 `422`「匹配词"机"太短：匹配词至少 2 个字。」；这 5 次失败提交之后版本仍是 v4、版本历史仍是 3 条（**失败不留版本**）。
+- 审计（实测）：`GET /api/v1/admin/audits` 里出现 `task.risk.rules.update`（原因「v4：联调：把无人机作业列为禁止类别，并把高金额阈值抬到 8000 元」）与 `task.risk.rules.reset`（原因「v3：联调前清理：把目录恢复到代码内置的那一版」），对象类型 `risk_rule_catalog`。
+- 恢复内置目录（实测）：一键恢复得到第 5 版（10 条规则、阈值回到 5000），版本历史保留全部 4 版——**被恢复掉的那一版仍然查得到**，回退本身也是一次有依据、有操作人的追加。
+- 鉴权（实测）：匿名读规则明细 `401`、非管理员读概述/明细与调用恢复 `403`。
+- 真库用例：规则目录在真实 PostgreSQL 上的往返（追加两版、读取取最新一版、`CatalogJson` 里能读到新规则、`Version` 唯一索引挡住并发重复追加、任务上记的规则版本号跟着新目录走且老任务停在旧版本）。
+- 本轮踩到的坑（写进开发指南）：Windows PowerShell 5.1 的 `Invoke-RestMethod` 用字符串正文时会按非 UTF-8 发送，中文全部变成「?」——第一次联调因此把一版规则目录（关键词与说明）写成了乱码，正是靠"恢复内置目录"这条退路把它清回内置版本；正确做法是把 JSON 编成 UTF-8 字节再作为 `-Body` 传入，并显式带 `Content-Type: application/json; charset=utf-8`。
+
 本轮（草稿字段级差异与回滚）新增验证：
 
 - 编译与测试：`dotnet build AIToHuman.sln --no-restore` 0 警告 0 错误；领域 263 + 集成 **318** = **581** 个用例全通过（新增 7 条领域用例、4 条用例层用例、1 条真库用例）；前端 `npm run typecheck` 与 `npm run build` 通过（224.03 kB）。
@@ -907,6 +928,13 @@ npm run build
 - 测试基建：`backend/tests/AIToHuman.IntegrationTests/External/ExternalTestEnvironment.cs`（探测 + `[RedisFact]`/`[MinioFact]` + 字典版设置提供者，对象存储的可用性靠"写一条探针对象再删掉"判定）；`RedisFanoutTests.cs`（5 条）；`S3StorageTests.cs`（5 条）。
 - CI：三个依赖服务 + 建桶步骤（见 `.github/workflows/ci.yml`）。
 
+本轮追加（风险规则目录后台编辑）：
+
+- 领域：`RiskRuleCatalog` 从静态类变成**实例目录**（`BuiltIn` 是内置版本 1，构造时校验：至少一条禁止类规则、原因代码唯一、结论只能是禁止/转人工、匹配词 2–20 字、保留代码不能被顶替、阈值与深夜时段的合法区间），新增 `ToJson`/`FromJson` 快照往返与 `RiskRuleCatalogRevision`（只追加的版本快照 + 摘要 + 依据 + 操作人）。`TaskItem` 的创建、编辑、回滚与发布四处判定都接受"生效目录"参数（不传则退回内置目录）。
+- 应用与接口：`IRiskRuleCatalogStore`（EF 与内存两套实现，读取取版本号最大的一版）、`RiskRuleCatalogService`（概述/明细/版本历史/整份替换/恢复内置），五条 admin 路由；`TaskService` 每次写入都取一次生效目录。
+- 存储与迁移：第 24 个迁移建 `risk_rule_catalog_revisions`（`Version` 唯一索引 + `CreatedAt` 索引），只追加；配套 `PostgresWorld` 与真库用例。
+- 前端：运营后台新增“规则目录”页签（当前版本/阈值/时段/规则明细与版本历史、整份编辑保存为新版本、填依据后恢复内置目录）。
+
 本轮追加（草稿字段级差异与回滚）：
 
 - 领域：把草稿字段的写入收敛成唯一的 `ApplyDraft`（编辑 `UpdateDraft` 与回滚 `RestoreDraft` 共用，避免两套校验漂移）；新增 `TaskDraftFieldChange` 与 `TaskDraftRevision.Diff(previous, current)`（值格式化成可读文本）；`TaskDraftRevision.FromRestore` 产出"回滚自第 N 版：…"的摘要。
@@ -918,7 +946,7 @@ npm run build
 - 幂等键的收尾：没有 ETag/版本字段返回；前端还没有"自动生成并复用幂等键"，目前只靠按钮置灰防重复点击（见第 10 节）。记录清理已经自动化（24 小时 / 10 分钟 / 每小时一轮）。
 - 对象存储的短时签名 URL 已实现（见第 3、11 节）；如果以后要让前端完全绕开后端，需要补 CORS 配置与审计补偿。
 - 选定病毒/内容扫描服务后把 `evidence.scanner.provider` 切成 `http` + `failMode=closed`（重扫闭环已经就绪，只差真实服务商）。
-- 运营后台的其余部分：客服工单、争议的责任判定与赔付/退款、争议申诉与处理时限。风险复核队列、误拦申诉与人工下架都已实现；风险规则目录本身还不能后台编辑（改规则要发版并提升版本号），申诉也没有次数与频率限制。上传大小与份数上限已经进了设置目录；凭证类型白名单**故意不进**（放开等于允许上传可执行内容）。
+- 运营后台的其余部分：客服工单、争议的责任判定与赔付/退款、争议申诉与处理时限。风险复核队列、误拦申诉、人工下架与**风险规则目录的后台编辑**都已实现（改规则不再需要发版：版本号自动 +1、依据必填、只追加、可一键恢复内置目录），申诉没有次数与频率限制，规则编辑也没有双人复核。上传大小与份数上限已经进了设置目录；凭证类型白名单**故意不进**（放开等于允许上传可执行内容）。
 - 风险判定的增强：模型辅助分类（现在只有字面词表匹配，语义变体容易漏）、追加式决策历史表（现在只保留最新一条判定）、误拦与漏拦的回归测试集扩充（当前是 17 条禁止 + 6 条转人工 + 8 条正常用例）。
 - 草稿的版本与历史：版本号、编辑历史、**字段级差异与回滚**都已实现（`task_draft_revisions` 只追加，编辑与回滚都追加一版、都不会覆盖已有版本）。仍然没有独立的 `TaskDraft` 聚合（编辑直接改 `ReadyToPublish` 的任务）；历史的可见范围只有所有者，运营后台看不到。
 - 真实基础设施的自动化回归测试：**PostgreSQL、Redis、S3 兼容对象存储三块都已建立**（见第 7 节与第 11 节本轮条目）。剩下的自动化缺口是主机级端到端（`WebApplicationFactory`）与"两个真实实例 + 客户端"的通知扇出整链路。
@@ -979,6 +1007,9 @@ npm run build
 - [ ] 编辑一条草稿两三次，然后点“修改记录”：应看到 1/2/3… 逐版列出、每版有变更摘要、时间与**逐字段差异（旧值 → 新值）**；把草稿改成禁止内容后，最新那版应显示 `Blocked` 与原因代码；用别的账号读历史应返回 `403`。
 - [ ] 回滚：对较早的一版点“恢复这一版”，任务字段应回到那一版、历史里应多出一版（摘要“回滚自第 N 版：…”）而**中间版本仍在**；对已发布的任务回滚应返回 `422`。
 - [ ] 用敏感草稿验证防绕过：先由运营放行 → 再编辑草稿 → 复核状态应回到“待复核”、复核人与依据清空、重新出现在“风险复核”队列、发布被 `422` 拦住；再次放行后可以发布。
+- [ ] 规则目录编辑：在“规则目录”页签里加一条禁止类规则（例如 `prohibited.no_drones`，匹配词“无人机”），填依据后保存——版本号应 +1、摘要写清改了什么、审计里出现 `task.risk.rules.update`；随后创建一条含“无人机”的草稿应变成 `Blocked`，而**保存之前建的**同类草稿在发布时同样被 `422` 拦住（规则按发布那一刻生效）。
+- [ ] 规则目录的边界：拿旧的版本号再提交应返回 `409`；把禁止类规则全删应返回 `422`；不填依据或内容没变也应返回 `422`，且这些失败都不产生新版本；点“恢复内置目录”后版本号继续 +1、内容回到内置那一版，历史里被恢复掉的版本仍然查得到。
+- [ ] 规则目录的可见性：`GET /api/v1/admin/risk/rules` 只有匹配词数量；`/detail` 才给词本身，且非管理员访问 `/detail`、`/versions` 与两个写接口都是 `403`、匿名是 `401`。
 - [ ] 跑一次 `dotnet test AIToHuman.sln --no-build --no-restore`：确认 `PostgresRegressionTests` 是**通过**而不是**跳过**（跳过说明本机没连上测试库，见第 7 节“真实数据库回归测试”）；再把 `AITOHUMAN_TEST_POSTGRES` 指向不可达端口确认它们变成跳过而不是失败。
 - [ ] 用两个账号跑一遍双向信用：服务者完成一单且双方互评后，需求方在自己的任务“查看报名”里应看到该服务者的公开评分与条数，且与 `GET /api/v1/users/{id}/review-summary` 一致；只有单方评价（盲期内）时列表里应为 0 分 / 0 条。
 - [ ] 幂等键：对同一个写接口用同一个 `Idempotency-Key` 连发两次，第二次应返回与第一次相同的状态码和响应体，并带 `Idempotency-Replayed: true`；把请求体改掉再用同一个键，应返回 `409`；不带这个头时行为应和以前完全一样。

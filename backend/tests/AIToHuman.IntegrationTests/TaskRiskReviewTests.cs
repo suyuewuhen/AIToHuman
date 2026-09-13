@@ -2,6 +2,7 @@ using AIToHuman.Application.Admin;
 using AIToHuman.Application.Common;
 using AIToHuman.Application.Notifications;
 using AIToHuman.Application.Orders;
+using AIToHuman.Application.Risk;
 using AIToHuman.Application.Tasks;
 using AIToHuman.Contracts.Admin;
 using AIToHuman.Contracts.Notifications;
@@ -166,7 +167,7 @@ public sealed class TaskRiskReviewTests
         Assert.Equal("证件与重要文件", response.RiskCategory);
         Assert.Equal("Pending", response.RiskReviewStatus);
         Assert.True(response.RiskPublishBlocked);
-        Assert.Equal(RiskRuleCatalog.Version, response.RiskRuleVersion);
+        Assert.Equal(RiskRuleCatalog.BuiltIn.Version, response.RiskRuleVersion);
         Assert.NotNull(response.RiskAssessedAt);
     }
 
@@ -188,9 +189,9 @@ public sealed class TaskRiskReviewTests
     [Fact]
     public void The_rule_catalog_view_explains_what_is_blocked_without_leaking_match_words()
     {
-        var described = AdminConsoleService.DescribeRiskRules();
+        var described = RiskRuleCatalogService.DescribeSummary(RiskRuleCatalog.BuiltIn);
 
-        Assert.Equal(RiskRuleCatalog.Version, described.Version);
+        Assert.Equal(RiskRuleCatalog.BuiltIn.Version, described.Version);
         Assert.True(described.HighRewardThreshold > 0);
         Assert.Contains(described.Rules, rule => rule.Code == "prohibited.exam_impersonation" && rule.Verdict == "Blocked");
         Assert.Contains(described.Rules, rule => rule.Code == "review.identity_documents" && rule.Verdict == "NeedsReview");

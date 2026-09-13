@@ -303,6 +303,85 @@ export async function getRiskRules(): Promise<RiskRuleCatalog> {
   return parseResponse<RiskRuleCatalog>(await fetch('/api/v1/admin/risk/rules', { headers: authHeaders() }))
 }
 
+/** 规则明细里的一条：连匹配词一起给出（只有运营能读这个接口）。 */
+export interface RiskRuleDetailItem {
+  code: string
+  category: string
+  verdict: string
+  description: string
+  keywords: string[]
+}
+
+/**
+ * 当前生效的规则目录明细。`isBuiltIn` 为真表示还没有运营覆盖（版本 1 就是代码里的内置目录）；
+ * `changeSummary` / `changeReason` / `updatedBy` 描述最近一版改动的来龙去脉。
+ */
+export interface RiskRuleCatalogDetail {
+  version: number
+  isBuiltIn: boolean
+  highRewardThreshold: number
+  nightWindowStart: string
+  nightWindowEnd: string
+  rules: RiskRuleDetailItem[]
+  changeSummary: string | null
+  changeReason: string | null
+  updatedBy: string | null
+  updatedByName: string | null
+  updatedAt: string | null
+}
+
+/** 版本历史里的一条：只看改动摘要与依据，不看当时的完整词表。 */
+export interface RiskRuleCatalogVersion {
+  version: number
+  changeSummary: string
+  changeReason: string
+  updatedBy: string
+  updatedByName: string | null
+  createdAt: string
+  ruleCount: number
+  blockedRuleCount: number
+  highRewardThreshold: number
+  nightWindowStart: string
+  nightWindowEnd: string
+}
+
+/** 提交一版规则：整份目录替换，`expectedVersion` 用来挡住“拿着旧目录覆盖别人刚改的内容”（不一致会返回 409）。 */
+export interface UpdateRiskRuleCatalogInput {
+  expectedVersion: number
+  reason: string
+  highRewardThreshold: number
+  nightWindowStart: string
+  nightWindowEnd: string
+  rules: RiskRuleDetailItem[]
+}
+
+export async function getRiskRuleDetail(): Promise<RiskRuleCatalogDetail> {
+  return parseResponse<RiskRuleCatalogDetail>(await fetch('/api/v1/admin/risk/rules/detail', { headers: authHeaders() }))
+}
+
+export async function listRiskRuleVersions(limit = 20): Promise<{ items: RiskRuleCatalogVersion[]; limit: number }> {
+  return parseResponse<{ items: RiskRuleCatalogVersion[]; limit: number }>(
+    await fetch(`/api/v1/admin/risk/rules/versions?limit=${limit}`, { headers: authHeaders() }))
+}
+
+/** 保存规则目录：版本号自动 +1，依据必填并写进运营审计；改动内容不合法时服务端返回可读的 422。 */
+export async function updateRiskRules(input: UpdateRiskRuleCatalogInput): Promise<RiskRuleCatalogDetail> {
+  return parseResponse<RiskRuleCatalogDetail>(await fetch('/api/v1/admin/risk/rules', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify(input),
+  }))
+}
+
+/** 恢复到代码内置目录：同样追加一版（版本历史不丢），依据必填并写进运营审计。 */
+export async function resetRiskRules(expectedVersion: number, reason: string): Promise<RiskRuleCatalogDetail> {
+  return parseResponse<RiskRuleCatalogDetail>(await fetch('/api/v1/admin/risk/rules/reset', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ expectedVersion, reason }),
+  }))
+}
+
 export function riskVerdictLabel(verdict: string): string {
   const labels: Record<string, string> = {
     Allowed: '规则放行',
