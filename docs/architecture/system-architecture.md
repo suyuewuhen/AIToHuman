@@ -154,6 +154,8 @@ Conversation Orchestrator
 - 支付接入后，以支付方回调和内部账本为准，不相信前端结果。
 
 > 实现现状：`tasks`/`orders` 的 `Version` 乐观并发令牌、`IUnitOfWork` 显式事务（选人建单、验收关单）与 Outbox 通知都已落地，冲突返回 `409`；写接口的 `Idempotency-Key` 也已实现——已认证的 `/api/v1` 写请求可带该请求头，命中时回放上一次的响应（带 `Idempotency-Replayed: true`），同键不同请求体或并发占位返回 `409`，`5xx` 与业务异常不缓存；**仍未实现**的是 ETag/版本字段返回（旧幂等记录的清理已有后台任务：每小时删除已完成超过 24 小时的记录与超时占位，见 [API 设计约定](../api/api-guidelines.md) 第 7 节）。本轮补上的一条是**资金与状态同事务**：冻结、放款、退款与争议分账都先让网关确认（`IPaymentGateway`）再改订单的托管字段并写一条只追加的流水（`ledger_entries`），网关失败即整笔回滚（订单状态、任务分配与流水都不落库），托管可整体关闭；真实支付回调、失败重试队列与对账仍未接入。
+>
+> 测试形态（本轮新增）：**主机级端到端用例**（`backend/tests/AIToHuman.IntegrationTests/Host/`，集合 `host-e2e`）把已构建的 `AIToHuman.Api.dll` 当**子进程**起起来，配一个**随机命名的临时真库**（不提前建库，交给应用启动时的 `Migrate()` 自己建库并按顺序应用全部 28 个迁移，因此“空库能不能起来”也被真实覆盖）、随机空闲端口、临时 Data Protection 密钥环与对象存储目录，然后用**真实 HTTP** 打这个进程。它刻意不用 `WebApplicationFactory`：那需要 `Microsoft.AspNetCore.Mvc.Testing` 包，当前环境离线取不到，而子进程 + 真 HTTP 不依赖任何新包，且更接近部署形态（进程边界、真实端口）。这条路径专门覆盖**路由注册、DI 装配、中间件顺序（幂等键、异常映射、鉴权策略）、JSON 契约与启动期迁移**——单元测试与真库用例都碰不到、出问题时“单测全绿而接口不可用”的那一层。跳过语义与真库用例一致：缺 PostgreSQL、找不到已构建的程序集，或环境变量 `AITOHUMAN_TEST_HOST=0`（含 `false`）时，这 6 条用例**整组跳过而不是失败**。
 
 ## 9. 可观测性
 

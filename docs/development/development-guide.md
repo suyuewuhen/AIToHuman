@@ -81,7 +81,11 @@
     - 用例用 `[RedisFact]` / `[MinioFact]` 标注，依赖不可用时**标记为跳过而不是失败**（与 `[PostgresFact]` 同一套取舍）。
     - Redis 侧覆盖：广播的消息按字段原样到达订阅方（含 `PayloadJson` 原样跨进程传递）；处理函数抛异常不会中断订阅（第二条消息仍能收到）；开关关闭时 `Enabled=false` 且 `PublishAsync` 抛 `InvalidOperationException`（派发方据此退回单实例推送）、`SubscribeAsync` 立即返回；**配了一个连不上的 Redis 时 `PublishAsync` 会失败并返回**，断言的是"不会把派发周期无限卡住"（上限 30 秒）。
     - 对象存储侧覆盖：对象往返读写与存在性判断、删除后不存在（读不存在的对象返回 `null` 而不抛异常）；预签名地址**不带任何鉴权头**就能取回字节，且 `Content-Disposition` 的附件名生效；**篡改签名末位 → 403**；**拿 A 的签名去取 B 的路径 → 403**（路径参与签名）；**过期之后取 → 403**。过期这条只能真实等待：有效期由对象存储按 `X-Amz-Date + X-Amz-Expires` 与它自己的时钟判定，**改客户端时钟没用**，所以用的是"签 5 秒 → 立刻取应当 200 → 真等 7 秒 → 再取应当 403"，S3 那批约 21 秒。
-  - 仍**未**自动化的是**主机级端到端**（`WebApplicationFactory`：本机离线还原不到 `Microsoft.AspNetCore.Mvc.Testing`）与**两个真实 API 实例之间的整链路投递**——本轮覆盖的是"广播能到达订阅方"这一层，"两个实例 + 两个客户端"的全链路仍靠手工端到端；其余关键路径仍靠 `handoff.md` 第 11 节列出的手工步骤。
+  - **主机级端到端用例也已经建立**（`backend/tests/AIToHuman.IntegrationTests/Host/`，集合名 `host-e2e`，6 条）：它把**已构建的** `AIToHuman.Api.dll` 当子进程起起来（`ASPNETCORE_ENVIRONMENT=Development`、随机空闲端口、随机命名的临时库、临时 Data Protection 密钥环与对象存储目录、通知扇出关闭），然后用**真实 HTTP** 打这个进程，因此覆盖到的是单元测试与真库用例都碰不到的**路由注册、DI 装配、中间件顺序、JSON 契约与启动期迁移**（临时库不提前创建，由应用启动时的 `Migrate()` 自己建库并应用全部 28 个迁移）。刻意不用 `WebApplicationFactory`：它需要 `Microsoft.AspNetCore.Mvc.Testing` 包，本机离线取不到（见 `handoff.md` 第 7 节），而子进程 + 真 HTTP 不依赖任何新包。
+    - 怎么跑：先 `dotnet build`（本机默认 Debug，Release 下找的是 `backend/AIToHuman.Api/bin/Release/net10.0/AIToHuman.Api.dll`），再按配置提供 `AITOHUMAN_TEST_POSTGRES`（与真库用例同一个变量，也可以只在 `backend/AIToHuman.Api/appsettings.Development.json` 里配 `ConnectionStrings:Postgres`），然后正常 `dotnet test` 即可。6 条用例共用一个进程与一个临时库，整组约 1 秒。
+    - 怎么跳过：`AITOHUMAN_TEST_HOST=0`（或 `false`）显式关掉这组用例；缺 PostgreSQL 或找不到已构建的 API 程序集时同样**整组跳过而不是失败**，跳过原因写在用例的跳过信息里（与 `[PostgresFact]`/`[RedisFact]` 同一套取舍）。
+    - 怎么排查：就绪探测只认 `/health` 返回 200，最多等 90 秒；超时或进程刚起就退出时，异常消息里会带上**子进程的 stdout/stderr**（最多 400 行），不用另开窗口抓日志。用例跑完会杀掉整个进程树、`DROP DATABASE` 并删掉临时目录，清理失败只记一行日志、不影响结果。
+  - 仍**未**自动化的是**两个真实 API 实例 + 客户端之间的通知扇出整链路**——自动化覆盖的是"广播能到达订阅方"这一层，"两个实例 + 两个客户端"的全链路仍靠手工端到端；其余关键路径仍靠 `handoff.md` 第 11 节列出的手工步骤。
 - AI 协议集成测试：`backend/tests/AIToHuman.IntegrationTests` 用替身上游覆盖 SSE 分片、转义、缺少结束标记、超时与上游错误，不联网也不依赖数据库。
 - 契约测试：OpenAPI、生成客户端和 Problem Details。
 - 端到端测试：AI 草稿到任务完成的关键路径。
@@ -157,7 +161,7 @@ Pull Request 至少执行：
 - OpenAPI 兼容性检查。
 - 依赖和密钥扫描。
 
-现状（2026-09-13）：`.github/workflows/ci.yml` 的后端 job 已经同时起 `postgres:16`、`redis:7` 与 `minio/minio` 三个服务（都带 healthcheck），把连接串分别注入 `dotnet test`，并在测试前用 `minio/mc` 容器把测试用的桶（`aitohuman-evidence`）建出来——MinIO 起来时是空实例，不建桶对象存储用例会全部跳过。因此真实 PostgreSQL、Redis 与对象存储的回归用例在 CI 里会真正运行；同一批用例在本机缺少对应依赖时是跳过而不是失败。前端 job 已经执行 `npm ci`、`npm run typecheck` 与 `npm run build`。上面清单里仍缺的是 Markdown 与格式检查、Lint、OpenAPI 兼容性检查，以及依赖与密钥扫描。
+现状（2026-09-13）：`.github/workflows/ci.yml` 的后端 job 已经同时起 `postgres:16`、`redis:7` 与 `minio/minio` 三个服务（都带 healthcheck），把连接串分别注入 `dotnet test`，并在测试前用 `minio/mc` 容器把测试用的桶（`aitohuman-evidence`）建出来——MinIO 起来时是空实例，不建桶对象存储用例会全部跳过。因此真实 PostgreSQL、Redis 与对象存储的回归用例在 CI 里会真正运行，**主机级端到端用例同样会真跑**（测试前的 `dotnet build AIToHuman.sln --no-restore --configuration Release` 已经把 API 构建好，`dotnet test --configuration Release` 会自动跑到这批用例，工作流那一步的说明与名字也注明了包含主机级 E2E，**没有为此新增步骤**）；同一批用例在本机缺少对应依赖时是跳过而不是失败。前端 job 已经执行 `npm ci`、`npm run typecheck` 与 `npm run build`。上面清单里仍缺的是 Markdown 与格式检查、Lint、OpenAPI 兼容性检查，以及依赖与密钥扫描。
 
 ## 9. Definition of Done
 

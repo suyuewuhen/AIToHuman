@@ -60,7 +60,11 @@ jobs:
         run: |
           docker run --rm --network host --entrypoint sh minio/mc -c \
             "mc alias set ci http://127.0.0.1:9000 minioadmin minioadmin && mc mb --ignore-existing ci/aitohuman-evidence"
-      - name: Run tests (includes real PostgreSQL / Redis / object storage suites)
+      # 这一批里还包括**主机级端到端用例**（HostE2ETests）：它们把上面构建出来的
+      # AIToHuman.Api.dll 当子进程起起来、连一个随机命名的临时库、用真 HTTP 打接口，
+      # 所以"路由注册 / DI 装配 / 中间件顺序 / JSON 契约"这一层也在 CI 覆盖内。
+      # 取不到数据库或找不到已构建的程序集时，它们与真库用例一样跳过而不是失败。
+      - name: Run tests (includes real PostgreSQL / Redis / object storage suites and host-level E2E)
         run: dotnet test AIToHuman.sln --no-build --configuration Release
         env:
           AITOHUMAN_TEST_POSTGRES: Host=localhost;Port=5432;Database=postgres;Username=postgres;Password=postgres
