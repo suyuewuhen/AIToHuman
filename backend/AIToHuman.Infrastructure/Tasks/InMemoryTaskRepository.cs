@@ -31,6 +31,12 @@ public sealed class InMemoryTaskRepository : ITaskRepository, IAdminTaskQuery
         .OrderBy(task => task.Deadline)
         .Take(limit)
         .ToArray();
+
+    public IReadOnlyCollection<TaskItem> ListByApplicant(Guid workerId, int limit) => _tasks.Values
+        .Where(task => task.Applications.Any(application => application.WorkerId == workerId))
+        .OrderByDescending(task => task.CreatedAt)
+        .Take(limit)
+        .ToArray();
     public TaskItem? Get(Guid id) => _tasks.GetValueOrDefault(id);
 
     public void Add(TaskItem task)

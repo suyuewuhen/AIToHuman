@@ -30,12 +30,18 @@ public sealed class EfOrderRepository(TaskDbContext db) : IOrderRepository
         record.CancelledAt = order.CancelledAt;
         record.CancelledBy = order.CancelledBy;
         record.CancellationReason = order.CancellationReason;
+        record.DisputeReason = order.DisputeReason;
+        record.DisputeOpenedBy = order.DisputeOpenedBy;
+        record.DisputeOpenedAt = order.DisputeOpenedAt;
+        record.DisputeResolution = order.DisputeResult;
+        record.DisputeResolutionNote = order.DisputeResolutionNote;
+        record.DisputeResolvedAt = order.DisputeResolvedAt;
         // 自增并发令牌：同一订单被并发提交或验收时，后写入者会拿到 0 行更新并抛冲突。
         record.Version += 1;
         db.SaveChanges();
     }
-    private static OrderRecord ToRecord(Order order) => new() { Id = order.Id, TaskId = order.TaskId, OwnerId = order.OwnerId, WorkerId = order.WorkerId, Title = order.Title, RewardAmount = order.Reward.Amount, RewardCurrency = order.Reward.Currency, Status = order.Status.ToString(), CreatedAt = order.CreatedAt, EvidenceNote = order.EvidenceNote, ReviewNote = order.ReviewNote, SubmittedAt = order.SubmittedAt, ReviewedAt = order.ReviewedAt, RejectionNote = order.RejectionNote, ReworkCount = order.ReworkCount, CancelledAt = order.CancelledAt, CancelledBy = order.CancelledBy, CancellationReason = order.CancellationReason };
-    private static Order Map(OrderRecord record) => Order.Rehydrate(record.Id, record.TaskId, record.OwnerId, record.WorkerId, record.Title, new Money(record.RewardAmount, record.RewardCurrency), Enum.Parse<OrderStatus>(record.Status), record.CreatedAt, record.EvidenceNote, record.ReviewNote, record.SubmittedAt, record.ReviewedAt, record.RejectionNote, record.ReworkCount, record.CancelledAt, record.CancelledBy, record.CancellationReason);
+    private static OrderRecord ToRecord(Order order) => new() { Id = order.Id, TaskId = order.TaskId, OwnerId = order.OwnerId, WorkerId = order.WorkerId, Title = order.Title, RewardAmount = order.Reward.Amount, RewardCurrency = order.Reward.Currency, Status = order.Status.ToString(), CreatedAt = order.CreatedAt, EvidenceNote = order.EvidenceNote, ReviewNote = order.ReviewNote, SubmittedAt = order.SubmittedAt, ReviewedAt = order.ReviewedAt, RejectionNote = order.RejectionNote, ReworkCount = order.ReworkCount, CancelledAt = order.CancelledAt, CancelledBy = order.CancelledBy, CancellationReason = order.CancellationReason, DisputeReason = order.DisputeReason, DisputeOpenedBy = order.DisputeOpenedBy, DisputeOpenedAt = order.DisputeOpenedAt, DisputeResolution = order.DisputeResult, DisputeResolutionNote = order.DisputeResolutionNote, DisputeResolvedAt = order.DisputeResolvedAt };
+    private static Order Map(OrderRecord record) => Order.Rehydrate(record.Id, record.TaskId, record.OwnerId, record.WorkerId, record.Title, new Money(record.RewardAmount, record.RewardCurrency), Enum.Parse<OrderStatus>(record.Status), record.CreatedAt, record.EvidenceNote, record.ReviewNote, record.SubmittedAt, record.ReviewedAt, record.RejectionNote, record.ReworkCount, record.CancelledAt, record.CancelledBy, record.CancellationReason, record.DisputeReason, record.DisputeOpenedBy, record.DisputeOpenedAt, record.DisputeResolution, record.DisputeResolutionNote, record.DisputeResolvedAt);
 }
 
 public sealed class EfReviewRepository(TaskDbContext db) : IReviewRepository

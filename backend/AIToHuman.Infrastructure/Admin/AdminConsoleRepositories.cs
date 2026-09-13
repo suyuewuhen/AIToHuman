@@ -1,6 +1,8 @@
 using System.Text.Json;
 using AIToHuman.Application.Admin;
 using AIToHuman.Domain.Admin;
+using AIToHuman.Domain.Common;
+using AIToHuman.Domain.Orders;
 using AIToHuman.Domain.Tasks;
 using AIToHuman.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
@@ -131,6 +133,33 @@ public sealed class EfAdminAuditRepository(TaskDbContext db) : IAdminAuditReposi
         .AsEnumerable()
         .Select(item => AdminAuditEntry.Rehydrate(item.Id, item.ActorId, item.Action, item.TargetType, item.TargetId, item.Reason, item.OccurredAt))
         .ToArray();
+}
+
+/// <summary>
+/// 运营跨用户检索订单：主要用来找待处置的争议。只读，返回被跟踪的实体没有意义，
+/// 处置时走 IOrderRepository.Get（它保持跟踪，才能用乐观并发令牌）。
+/// </summary>
+public sealed class EfAdminOrderQuery(TaskDbContext db) : IAdminOrderQuery
+{
+    public IReadOnlyCollection<Order> Search(OrderStatus? status, int limit)
+    {
+        var query = db.Orders.AsNoTracking().AsQueryable();
+        if (status is { } expected) query = query.Where(item => item.Status == expected.ToString());
+
+        return query
+            .OrderByDescending(item => item.CreatedAt)
+            .ThenBy(item => item.Id)
+            .Take(limit)
+            .AsEnumerable()
+            .Select(Map)
+            .ToArray();
+    }
+
+    private static Order Map(OrderRecord record) => Order.Rehydrate(
+        record.Id, record.TaskId, record.OwnerId, record.WorkerId, record.Title, new Money(record.RewardAmount, record.RewardCurrency),
+        Enum.Parse<OrderStatus>(record.Status), record.CreatedAt, record.EvidenceNote, record.ReviewNote, record.SubmittedAt, record.ReviewedAt,
+        record.RejectionNote, record.ReworkCount, record.CancelledAt, record.CancelledBy, record.CancellationReason,
+        record.DisputeReason, record.DisputeOpenedBy, record.DisputeOpenedAt, record.DisputeResolution, record.DisputeResolutionNote, record.DisputeResolvedAt);
 }
 
 /// <summary>运营审计的内存实现（未配置 PostgreSQL 时的回退与测试用）。</summary>

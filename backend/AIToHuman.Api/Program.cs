@@ -77,6 +77,7 @@ if (usePostgres)
     builder.Services.AddScoped<IEvidenceRepository, EfEvidenceRepository>();
     builder.Services.AddScoped<ISystemSettingsRepository, EfSystemSettingRepository>();
     builder.Services.AddScoped<IAdminTaskQuery, EfAdminTaskQuery>();
+    builder.Services.AddScoped<IAdminOrderQuery, EfAdminOrderQuery>();
     builder.Services.AddScoped<IUserDirectory, EfUserDirectory>();
     builder.Services.AddScoped<IAdminAuditRepository, EfAdminAuditRepository>();
     builder.Services.AddScoped<IUnitOfWork, EfUnitOfWork>();
@@ -84,15 +85,21 @@ if (usePostgres)
 }
 else
 {
-    builder.Services.AddSingleton<ITaskRepository, InMemoryTaskRepository>();
-    builder.Services.AddSingleton<IOrderRepository, InMemoryOrderRepository>();
+    // 同一个内存实例同时充当普通仓储与运营检索：分别注册两个实现会得到两份互不相干的数据。
+    builder.Services.AddSingleton<InMemoryTaskRepository>();
+    builder.Services.AddSingleton<ITaskRepository>(provider => provider.GetRequiredService<InMemoryTaskRepository>());
+    builder.Services.AddSingleton<IAdminTaskQuery>(provider => provider.GetRequiredService<InMemoryTaskRepository>());
+
+    builder.Services.AddSingleton<InMemoryOrderRepository>();
+    builder.Services.AddSingleton<IOrderRepository>(provider => provider.GetRequiredService<InMemoryOrderRepository>());
+    builder.Services.AddSingleton<IAdminOrderQuery>(provider => provider.GetRequiredService<InMemoryOrderRepository>());
+
     builder.Services.AddSingleton<IReviewRepository, InMemoryReviewRepository>();
     builder.Services.AddSingleton<IConversationRepository, InMemoryConversationRepository>();
     builder.Services.AddSingleton<INotificationRepository, InMemoryNotificationRepository>();
     builder.Services.AddSingleton<IOrderMessageRepository, InMemoryOrderMessageRepository>();
     builder.Services.AddSingleton<IEvidenceRepository, InMemoryEvidenceRepository>();
     builder.Services.AddSingleton<ISystemSettingsRepository, InMemorySystemSettingRepository>();
-    builder.Services.AddSingleton<IAdminTaskQuery, InMemoryTaskRepository>();
     builder.Services.AddSingleton<IUserDirectory, EmptyUserDirectory>();
     builder.Services.AddSingleton<IAdminAuditRepository, InMemoryAdminAuditRepository>();
     builder.Services.AddSingleton<IUnitOfWork, InMemoryUnitOfWork>();
@@ -266,6 +273,12 @@ tasks.MapGet("/mine", (Guid? ownerId, ClaimsPrincipal user, IHostEnvironment env
     EnsureRole(user, "owner", environment);
     return Results.Ok(service.ListMine(ResolveUserId(user, ownerId ?? Guid.Empty, environment)));
 });
+// 服务者视角的“我的报名”：含已被选中/被拒绝/已撤回/已失效的记录，用于自查与撤回。
+tasks.MapGet("/applications/mine", (Guid? workerId, int? limit, ClaimsPrincipal user, IHostEnvironment environment, TaskService service) =>
+{
+    EnsureRole(user, "worker", environment);
+    return Results.Ok(service.ListMyApplications(ResolveUserId(user, workerId ?? Guid.Empty, environment), limit ?? 20));
+});
 // 公开详情：草稿只对所有者可见；这里用可空身份，匿名访问草稿一律 404。
 tasks.MapGet("/{id:guid}", (Guid id, Guid? userId, ClaimsPrincipal user, IHostEnvironment environment, TaskService service) =>
     service.GetPublic(id, TryResolveUserId(user, environment, userId)) is { } task ? Results.Ok(task) : Results.NotFound());
@@ -311,6 +324,12 @@ tasks.MapPost("/{id:guid}/applications/{applicationId:guid}/select", (Guid id, G
     EnsureRole(user, "owner", environment);
     var ownerId = ResolveUserId(user, request.OwnerId, environment);
     return Results.Ok(service.Select(id, applicationId, request with { OwnerId = ownerId }));
+});
+// 服务者撤回自己尚未被处理的报名；撤回后可以重新报名，任务所有者会收到通知。
+tasks.MapPost("/{id:guid}/applications/{applicationId:guid}/withdraw", (Guid id, Guid applicationId, WithdrawApplicationRequest request, ClaimsPrincipal user, IHostEnvironment environment, TaskService service) =>
+{
+    EnsureRole(user, "worker", environment);
+    return Results.Ok(service.WithdrawApplication(id, applicationId, ResolveUserId(user, request.WorkerId, environment)));
 });
 tasks.MapGet("/{id:guid}/order", (Guid id, ClaimsPrincipal user, IHostEnvironment environment, TaskService service) =>
 {
@@ -433,6 +452,8 @@ app.MapPost("/api/v1/orders/{id:guid}/reject", (Guid id, OrderActionRequest requ
 app.MapPost("/api/v1/orders/{id:guid}/resume", (Guid id, OrderActionRequest request, ClaimsPrincipal user, IHostEnvironment environment, TaskService service) => Results.Ok(service.ResumeOrder(id, ResolveUserId(user, request.ActorId, environment))));
 // 取消订单：服务者只能在开始执行前取消，需求方到提交验收前；原因必填，取消后任务回到大厅或直接过期。
 app.MapPost("/api/v1/orders/{id:guid}/cancel", (Guid id, OrderActionRequest request, ClaimsPrincipal user, IHostEnvironment environment, TaskService service) => Results.Ok(service.CancelOrder(id, ResolveUserId(user, request.ActorId, environment), request.Note)));
+// 发起争议，请平台介入：需求方在提交验收后、服务者在验收被驳回后可以发起；原因必填。
+app.MapPost("/api/v1/orders/{id:guid}/dispute", (Guid id, OrderActionRequest request, ClaimsPrincipal user, IHostEnvironment environment, TaskService service) => Results.Ok(service.OpenDispute(id, ResolveUserId(user, request.ActorId, environment), request.Note)));
 app.MapGet("/api/v1/orders/{id:guid}/reviews", (Guid id, ClaimsPrincipal user, IHostEnvironment environment, TaskService service) => Results.Ok(service.ListReviews(id, ResolveUserId(user, Guid.Empty, environment))));
 app.MapPost("/api/v1/orders/{id:guid}/reviews", (Guid id, CreateReviewRequest request, ClaimsPrincipal user, IHostEnvironment environment, TaskService service) => Results.Ok(service.CreateReview(id, request with { ReviewerId = ResolveUserId(user, request.ReviewerId, environment) }, ResolveUserId(user, request.ReviewerId, environment))));
 app.MapGet("/api/v1/users/{id:guid}/review-summary", (Guid id, TaskService service) => Results.Ok(service.GetReviewSummary(id)));
@@ -474,6 +495,16 @@ adminConsole.MapPost("/tasks/{id:guid}/cancel", (Guid id, AdminCancelTaskRequest
 });
 adminConsole.MapGet("/users", (string? keyword, int? limit, AdminConsoleService service) =>
     Results.Ok(service.SearchUsers(keyword, limit)));
+// 争议处置：默认列出待处置的争议订单，运营三选一并填依据；依据与结果都进审计。
+adminConsole.MapGet("/orders", (string? status, int? limit, AdminConsoleService service) =>
+    Results.Ok(service.SearchOrders(status, limit)));
+adminConsole.MapPost("/orders/{id:guid}/resolve", (Guid id, AdminResolveDisputeRequest request, ClaimsPrincipal user, AdminConsoleService service) =>
+{
+    var actorId = ResolveAdminId(user);
+    var resolved = service.ResolveDispute(id, request.Decision, request.Note, actorId);
+    app.Logger.LogInformation("运营 {ActorId} 处置了订单 {OrderId} 的争议：{Decision}", actorId, resolved.Id, request.Decision);
+    return Results.Ok(resolved);
+});
 adminConsole.MapGet("/audits", (int? limit, AdminConsoleService service) => Results.Ok(service.ListAudits(limit)));
 
 app.Run();

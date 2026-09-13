@@ -326,6 +326,7 @@ public sealed class OrderCancellationTests
         public IReadOnlyCollection<TaskItem> ListPublished(PublishedTaskFilter filter) => inner.ListPublished(filter);
         public IReadOnlyCollection<TaskItem> ListByOwner(Guid ownerId) => inner.ListByOwner(ownerId);
         public IReadOnlyCollection<TaskItem> ListOverduePublished(DateTimeOffset now, int limit) => inner.ListOverduePublished(now, limit);
+        public IReadOnlyCollection<TaskItem> ListByApplicant(Guid workerId, int limit) => inner.ListByApplicant(workerId, limit);
         public TaskItem? Get(Guid id) => inner.Get(id);
         public void Add(TaskItem task) => inner.Add(task);
 

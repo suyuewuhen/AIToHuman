@@ -16,6 +16,9 @@ public interface ITaskRepository
     /// </summary>
     IReadOnlyCollection<TaskItem> ListOverduePublished(DateTimeOffset now, int limit);
 
+    /// <summary>服务者视角的“我的报名”：他报过名的任务（含已被处理与已撤回的记录），按报名时间倒序。</summary>
+    IReadOnlyCollection<TaskItem> ListByApplicant(Guid workerId, int limit);
+
     TaskItem? Get(Guid id);
     void Add(TaskItem task);
     void Save(TaskItem task);

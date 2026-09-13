@@ -17,6 +17,15 @@ public static class NotificationTypes
 
     /// <summary>任务被所有者撤销或运营下架：通知报名中的服务者。</summary>
     public const string TaskCancelled = "task.cancelled";
+
+    /// <summary>服务者撤回了报名：通知任务所有者（报名人数变了）。</summary>
+    public const string TaskApplicationWithdrawn = "task.applicationWithdrawn";
+
+    /// <summary>订单进入争议：通知对方参与者，双方都等运营处置。</summary>
+    public const string OrderDisputed = "order.disputed";
+
+    /// <summary>争议已由运营处置：通知双方参与者，结果走 REST 详情。</summary>
+    public const string OrderDisputeResolved = "order.disputeResolved";
 }
 
 /// <summary>订单相关通知的载荷；只带定位信息，不带敏感内容。</summary>
@@ -24,6 +33,9 @@ public sealed record OrderNotificationPayload(Guid OrderId, string Status, strin
 
 /// <summary>任务相关通知的载荷；只带定位信息，不含执行地址等参与者层内容。</summary>
 public sealed record TaskNotificationPayload(Guid TaskId, string Status, string Title);
+
+/// <summary>报名变动通知的载荷：任务所有者据此知道有人撤回了报名。</summary>
+public sealed record TaskApplicationNotificationPayload(Guid TaskId, Guid ApplicationId, Guid WorkerId, string Title);
 
 /// <summary>持久化通知，供收件箱列表与未读数使用。</summary>
 public sealed record NotificationResponse(Guid Id, Guid EventId, string Type, int Version, DateTimeOffset CreatedAt, DateTimeOffset? ReadAt, JsonElement Payload);

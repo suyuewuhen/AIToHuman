@@ -5,6 +5,7 @@ using AIToHuman.Application.Tasks;
 using AIToHuman.Contracts.Admin;
 using AIToHuman.Domain.Admin;
 using AIToHuman.Domain.Common;
+using AIToHuman.Domain.Orders;
 using AIToHuman.Domain.Tasks;
 // System.Threading.Tasks 里也有一个 TaskStatus，这里明确用领域里的那个。
 using TaskStatus = AIToHuman.Domain.Tasks.TaskStatus;
@@ -17,6 +18,7 @@ namespace AIToHuman.Application.Admin;
 /// </summary>
 public sealed class AdminConsoleService(
     IAdminTaskQuery taskQuery,
+    IAdminOrderQuery orderQuery,
     IUserDirectory userDirectory,
     ITaskRepository taskRepository,
     IOrderRepository orderRepository,
@@ -28,6 +30,10 @@ public sealed class AdminConsoleService(
     /// <summary>运营下架动作的审计名称。</summary>
     public const string TaskCancelAction = "task.cancel";
     public const string TaskTargetType = "task";
+
+    /// <summary>处置争议的审计动作前缀，完整动作形如 <c>order.dispute.approve</c>。</summary>
+    public const string OrderResolveActionPrefix = "order.dispute";
+    public const string OrderTargetType = "order";
 
     /// <summary>一次检索最多返回多少条。</summary>
     public const int MaxLimit = 100;
@@ -92,6 +98,60 @@ public sealed class AdminConsoleService(
         return Map(task, owners);
     }
 
+    /// <summary>运营检索订单：默认给的是待处置的争议，也可以按状态查看历史处置结果（传 all 看全部）。</summary>
+    public AdminOrderListResponse SearchOrders(string? status, int? limit)
+    {
+        var normalizedLimit = Clamp(limit);
+        var parsedStatus = ParseOrderStatus(status);
+        var orders = orderQuery.Search(parsedStatus, normalizedLimit);
+        var parties = userDirectory.FindMany(orders.SelectMany(item => new[] { item.OwnerId, item.WorkerId }).Distinct().ToArray());
+
+        return new(orders.Select(item => MapOrder(item, parties)).ToArray(), normalizedLimit);
+    }
+
+    /// <summary>
+    /// 处置争议：强制完成、退回返工或终止订单，必须写明依据（依据写进运营审计）。
+    /// 订单状态、任务连带处理、审计与双方通知都在同一个事务里完成。
+    /// </summary>
+    public AdminOrderItemResponse ResolveDispute(Guid orderId, string decision, string note, Guid actorId)
+    {
+        var order = orderRepository.Get(orderId) ?? throw new KeyNotFoundException("订单不存在。");
+        var resolution = ParseResolution(decision);
+        var now = timeProvider.GetUtcNow();
+        order.ResolveDispute(resolution, note, now);
+
+        var task = taskRepository.Get(order.TaskId);
+        unitOfWork.Execute(() =>
+        {
+            orderRepository.Save(order);
+
+            // 任务侧的连带处理与“取消订单”一致：强制完成就关单，终止订单就放回大厅或直接过期；
+            // 退回返工时任务保持 Assigned（订单还在履约中）。
+            if (task is not null && task.Status == TaskStatus.Assigned)
+            {
+                switch (resolution)
+                {
+                    case DisputeResolution.Approve:
+                        task.Close();
+                        taskRepository.Save(task);
+                        break;
+
+                    case DisputeResolution.Cancel:
+                        task.ReleaseAfterOrderCancelled(now);
+                        taskRepository.Save(task);
+                        break;
+                }
+            }
+
+            auditRepository.Add(AdminAuditEntry.Record(actorId, $"{OrderResolveActionPrefix}.{resolution.ToString().ToLowerInvariant()}", OrderTargetType, order.Id, note, now));
+            notifications.EnqueueOrderDisputeResolved(order, order.OwnerId, now);
+            notifications.EnqueueOrderDisputeResolved(order, order.WorkerId, now);
+        });
+
+        var parties = userDirectory.FindMany([order.OwnerId, order.WorkerId]);
+        return MapOrder(order, parties);
+    }
+
     public IReadOnlyCollection<AdminAuditResponse> ListAudits(int? limit) =>
         auditRepository.List(Clamp(limit))
             .Select(item => new AdminAuditResponse(item.Id, item.ActorId, item.Action, item.TargetType, item.TargetId, item.Reason, item.OccurredAt))
@@ -114,6 +174,48 @@ public sealed class AdminConsoleService(
         if (Enum.TryParse<TaskStatus>(status.Trim(), ignoreCase: true, out var parsed)) return parsed;
         throw new DomainException($"任务状态 {status} 不存在：可选值为 {string.Join("、", Enum.GetNames<TaskStatus>())}。");
     }
+
+    private static OrderStatus? ParseOrderStatus(string? status)
+    {
+        // 默认只看待处置的争议；要历史记录显式传状态或 all。
+        if (string.IsNullOrWhiteSpace(status)) return OrderStatus.Disputed;
+        if (string.Equals(status.Trim(), "all", StringComparison.OrdinalIgnoreCase)) return null;
+        if (Enum.TryParse<OrderStatus>(status.Trim(), ignoreCase: true, out var parsed)) return parsed;
+        throw new DomainException($"订单状态 {status} 不存在：可选值为 {string.Join("、", Enum.GetNames<OrderStatus>())} 或 all。");
+    }
+
+    private static DisputeResolution ParseResolution(string? decision)
+    {
+        if (Enum.TryParse<DisputeResolution>(decision?.Trim(), ignoreCase: true, out var parsed)) return parsed;
+        throw new DomainException($"争议处置结果 {decision} 不存在：可选值为 {string.Join("、", Enum.GetNames<DisputeResolution>())}。");
+    }
+
+    private static AdminOrderItemResponse MapOrder(Order order, IReadOnlyDictionary<Guid, AdminUserView> parties) => new(
+        order.Id,
+        order.TaskId,
+        order.Title,
+        order.Status.ToString(),
+        order.OwnerId,
+        parties.TryGetValue(order.OwnerId, out var owner) ? owner.Email : null,
+        order.WorkerId,
+        parties.TryGetValue(order.WorkerId, out var worker) ? worker.Email : null,
+        order.Reward.Amount,
+        order.Reward.Currency,
+        order.CreatedAt,
+        order.SubmittedAt,
+        order.EvidenceNote,
+        order.ReviewNote,
+        order.RejectionNote,
+        order.ReworkCount,
+        order.CancelledAt,
+        order.CancelledBy,
+        order.CancellationReason,
+        order.DisputeReason,
+        order.DisputeOpenedBy,
+        order.DisputeOpenedAt,
+        order.DisputeResult,
+        order.DisputeResolutionNote,
+        order.DisputeResolvedAt);
 
     private AdminTaskItemResponse Map(TaskItem task, IReadOnlyDictionary<Guid, AdminUserView> owners)
     {

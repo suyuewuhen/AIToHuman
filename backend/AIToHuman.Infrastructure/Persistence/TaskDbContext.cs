@@ -75,6 +75,11 @@ public sealed class TaskDbContext(DbContextOptions<TaskDbContext> options) : DbC
             entity.Property(item => item.ReviewNote).HasMaxLength(4000);
             entity.Property(item => item.RejectionNote).HasMaxLength(4000);
             entity.Property(item => item.CancellationReason).HasMaxLength(Order.MaxCancellationReasonLength);
+            entity.Property(item => item.DisputeReason).HasMaxLength(Order.MaxDisputeReasonLength);
+            entity.Property(item => item.DisputeResolution).HasMaxLength(16);
+            entity.Property(item => item.DisputeResolutionNote).HasMaxLength(Order.MaxDisputeReasonLength);
+            // 运营按状态找争议订单，这条索引让“待处置”列表不必全表扫描。
+            entity.HasIndex(item => new { item.Status, item.CreatedAt });
         });
 
         modelBuilder.Entity<ReviewRecord>(entity =>
@@ -202,6 +207,9 @@ public sealed class TaskRecord
     /// <summary>任务被所有者撤销或运营下架的时间与原因。</summary>
     public DateTimeOffset? CancelledAt { get; set; }
     public string? CancellationReason { get; set; }
+
+    /// <summary>报名截止时间（可选）：到点后不再接受新报名，已有报名仍可被选中。</summary>
+    public DateTimeOffset? ApplicationDeadline { get; set; }
     public int Version { get; set; }
     public List<ApplicationRecord> Applications { get; set; } = [];
 }
@@ -249,6 +257,14 @@ public sealed class OrderRecord
     public DateTimeOffset? CancelledAt { get; set; }
     public Guid? CancelledBy { get; set; }
     public string? CancellationReason { get; set; }
+
+    /// <summary>争议：谁在什么时候因为什么发起，以及运营的处置结果与依据。</summary>
+    public string? DisputeReason { get; set; }
+    public Guid? DisputeOpenedBy { get; set; }
+    public DateTimeOffset? DisputeOpenedAt { get; set; }
+    public string? DisputeResolution { get; set; }
+    public string? DisputeResolutionNote { get; set; }
+    public DateTimeOffset? DisputeResolvedAt { get; set; }
     public int Version { get; set; }
 }
 

@@ -23,7 +23,8 @@ public sealed class TaskItem
         Money reward,
         IEnumerable<string> acceptanceCriteria,
         DateTimeOffset createdAt,
-        string? executionAddress = null)
+        string? executionAddress = null,
+        DateTimeOffset? applicationDeadline = null)
     {
         var criteria = acceptanceCriteria
             .Where(item => !string.IsNullOrWhiteSpace(item))
@@ -49,10 +50,32 @@ public sealed class TaskItem
         AcceptanceCriteria = criteria;
         CreatedAt = UtcTimestamp.Normalize(createdAt);
         ExecutionAddress = NormalizeExecutionAddress(executionAddress);
+        ApplicationDeadline = NormalizeApplicationDeadline(applicationDeadline, Deadline, CreatedAt);
     }
 
     /// <summary>执行地址属于订单参与者层信息，最长 200 字。</summary>
     public const int MaxExecutionAddressLength = 200;
+
+    /// <summary>报名截止时间：可选。到点后不再接受新报名，但已经报名的服务者仍然可以被选中。</summary>
+    public DateTimeOffset? ApplicationDeadline { get; private set; }
+
+    /// <summary>
+    /// 报名截止时间必须晚于创建时间、且不晚于任务截止时间——否则要么一发布就报不了名，
+    /// 要么出现“任务还能干但报不了名”的怪状态。
+    /// </summary>
+    private static DateTimeOffset? NormalizeApplicationDeadline(DateTimeOffset? applicationDeadline, DateTimeOffset deadline, DateTimeOffset createdAt)
+    {
+        if (applicationDeadline is not { } value) return null;
+
+        var normalized = UtcTimestamp.Normalize(value);
+        if (normalized <= createdAt) throw new DomainException("报名截止时间必须晚于创建时间。");
+        if (normalized > deadline) throw new DomainException("报名截止时间不能晚于任务截止时间。");
+        return normalized;
+    }
+
+    /// <summary>现在还能不能报名：任务已发布、且（若设了）报名截止时间还没到。</summary>
+    public bool AcceptingApplications(DateTimeOffset now) =>
+        Status == TaskStatus.Published && (ApplicationDeadline is not { } deadline || deadline > now);
 
     public Guid Id { get; private set; }
     public Guid OwnerId { get; private set; }
@@ -94,7 +117,8 @@ public sealed class TaskItem
         string? executionAddress = null,
         DateTimeOffset? expiredAt = null,
         DateTimeOffset? cancelledAt = null,
-        string? cancellationReason = null)
+        string? cancellationReason = null,
+        DateTimeOffset? applicationDeadline = null)
     {
         var task = new TaskItem
         {
@@ -111,7 +135,8 @@ public sealed class TaskItem
             ExecutionAddress = NormalizeExecutionAddress(executionAddress),
             ExpiredAt = expiredAt,
             CancelledAt = cancelledAt,
-            CancellationReason = cancellationReason
+            CancellationReason = cancellationReason,
+            ApplicationDeadline = applicationDeadline
         };
         task._applications.AddRange(applications);
         return task;
@@ -140,6 +165,12 @@ public sealed class TaskItem
     {
         EnsureStatus(TaskStatus.ReadyToPublish);
         if (Deadline <= now) throw new DomainException("已过截止时间的任务不能发布。");
+        // 报名截止时间已经过去还发布，等于把一个谁都报不了名的任务放进大厅。
+        if (ApplicationDeadline is { } applicationDeadline && applicationDeadline <= now)
+        {
+            throw new DomainException("报名截止时间已过，任务不能发布：请撤销后重新创建，或先调整报名截止时间。");
+        }
+
         Status = TaskStatus.Published;
     }
 
@@ -158,6 +189,11 @@ public sealed class TaskItem
     {
         EnsureStatus(TaskStatus.Published);
         if (workerId == OwnerId) throw new DomainException("任务发布者不能报名自己的任务。");
+        if (ApplicationDeadline is { } applicationDeadline && applicationDeadline <= now)
+        {
+            throw new DomainException("该任务的报名已经截止，不能再报名。");
+        }
+
         if (_applications.Any(item => item.WorkerId == workerId && item.Status == TaskApplicationStatus.Pending))
         {
             throw new DomainException("服务者已经报名该任务。");
@@ -165,6 +201,25 @@ public sealed class TaskItem
 
         var application = new TaskApplication(workerId, note ?? string.Empty, now);
         _applications.Add(application);
+        return application;
+    }
+
+    /// <summary>
+    /// 服务者撤回自己还没被处理的报名。撤回只是作废这一条：记录保留可追溯，服务者之后想反悔可以重新报名。
+    /// 被选中之后就不能撤回了——那时订单已经成立，要退出只能走订单取消。
+    /// </summary>
+    public TaskApplication WithdrawApplication(Guid applicationId, Guid workerId, DateTimeOffset now)
+    {
+        var application = _applications.SingleOrDefault(item => item.Id == applicationId)
+            ?? throw new DomainException("报名不存在。");
+        if (application.WorkerId != workerId) throw new UnauthorizedAccessException("只能撤回自己的报名。");
+        if (application.Status != TaskApplicationStatus.Pending)
+        {
+            throw new DomainException($"报名当前状态 {application.Status} 不能撤回，只有待处理的报名可以撤回。");
+        }
+
+        _ = UtcTimestamp.Normalize(now);
+        application.Status = TaskApplicationStatus.Withdrawn;
         return application;
     }
 

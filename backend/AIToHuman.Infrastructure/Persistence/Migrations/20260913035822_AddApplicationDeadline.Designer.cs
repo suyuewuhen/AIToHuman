@@ -3,6 +3,7 @@ using System;
 using AIToHuman.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace AIToHuman.Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(TaskDbContext))]
-    partial class TaskDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260913035822_AddApplicationDeadline")]
+    partial class AddApplicationDeadline
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -324,27 +327,6 @@ namespace AIToHuman.Infrastructure.Persistence.Migrations
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
-                    b.Property<DateTimeOffset?>("DisputeOpenedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<Guid?>("DisputeOpenedBy")
-                        .HasColumnType("uuid");
-
-                    b.Property<string>("DisputeReason")
-                        .HasMaxLength(500)
-                        .HasColumnType("character varying(500)");
-
-                    b.Property<string>("DisputeResolution")
-                        .HasMaxLength(16)
-                        .HasColumnType("character varying(16)");
-
-                    b.Property<string>("DisputeResolutionNote")
-                        .HasMaxLength(500)
-                        .HasColumnType("character varying(500)");
-
-                    b.Property<DateTimeOffset?>("DisputeResolvedAt")
-                        .HasColumnType("timestamp with time zone");
-
                     b.Property<string>("EvidenceNote")
                         .HasMaxLength(4000)
                         .HasColumnType("character varying(4000)");
@@ -402,8 +384,6 @@ namespace AIToHuman.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("TaskId")
                         .IsUnique();
-
-                    b.HasIndex("Status", "CreatedAt");
 
                     b.ToTable("orders", (string)null);
                 });

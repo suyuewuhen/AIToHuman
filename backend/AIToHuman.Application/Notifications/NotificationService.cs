@@ -42,6 +42,25 @@ public sealed class NotificationService(INotificationRepository repository, Time
     public void EnqueueTaskCancelled(TaskItem task, Guid recipientId, DateTimeOffset now) =>
         EnqueueTaskEvent(task, recipientId, NotificationTypes.TaskCancelled, "Cancelled", now);
 
+    /// <summary>订单进入争议：通知对方参与者。</summary>
+    public void EnqueueOrderDisputed(Order order, Guid recipientId, DateTimeOffset now) =>
+        EnqueueOrderEvent(recipientId, NotificationTypes.OrderDisputed, DeriveEventId(order.Id, "Disputed"), order, now);
+
+    /// <summary>争议处置完成：双方都要知道结果，事件键按接收者派生，否则只会入队第一条。</summary>
+    public void EnqueueOrderDisputeResolved(Order order, Guid recipientId, DateTimeOffset now) =>
+        EnqueueOrderEvent(recipientId, NotificationTypes.OrderDisputeResolved, DeriveEventId(order.Id, $"DisputeResolved:{recipientId:N}"), order, now);
+
+    /// <summary>服务者撤回报名：通知任务所有者。事件键直接用报名 ID，同一条报名只会通知一次。</summary>
+    public void EnqueueApplicationWithdrawn(TaskItem task, TaskApplication application, DateTimeOffset now)
+    {
+        if (task.OwnerId == Guid.Empty) return;
+        if (repository.ExistsByEventId(application.Id)) return;
+
+        var payload = JsonSerializer.Serialize(
+            new TaskApplicationNotificationPayload(task.Id, application.Id, application.WorkerId, task.Title), PayloadOptions);
+        repository.Add(new Notification(task.OwnerId, application.Id, NotificationTypes.TaskApplicationWithdrawn, EnvelopeVersion, payload, now));
+    }
+
     private void EnqueueTaskEvent(TaskItem task, Guid recipientId, string type, string eventName, DateTimeOffset now)
     {
         if (recipientId == Guid.Empty) return;

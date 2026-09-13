@@ -15,7 +15,9 @@ public sealed class TaskService(ITaskRepository repository, IOrderRepository ord
 {
     public TaskResponse Create(CreateTaskRequest request)
     {
-        var task = new TaskItem(request.OwnerId, request.Title, request.Description, request.District, request.Deadline, new Money(request.Reward), request.AcceptanceCriteria, timeProvider.GetUtcNow(), request.ExecutionAddress);
+        var task = new TaskItem(
+            request.OwnerId, request.Title, request.Description, request.District, request.Deadline, new Money(request.Reward),
+            request.AcceptanceCriteria, timeProvider.GetUtcNow(), request.ExecutionAddress, request.ApplicationDeadline);
         repository.Add(task);
         return Map(task);
     }
@@ -43,6 +45,53 @@ public sealed class TaskService(ITaskRepository repository, IOrderRepository ord
         repository.Save(task);
         return Map(task);
     }
+
+    /// <summary>
+    /// 服务者撤回自己尚未被处理的报名：作废这一条并通知任务所有者，服务者之后可以重新报名。
+    /// 报名记录保留（状态 <c>Withdrawn</c>），需求方能看出“有人报过又撤了”。
+    /// </summary>
+    public TaskResponse WithdrawApplication(Guid id, Guid applicationId, Guid workerId)
+    {
+        var task = GetRequired(id);
+        var now = timeProvider.GetUtcNow();
+        var application = task.WithdrawApplication(applicationId, workerId, now);
+
+        unitOfWork.Execute(() =>
+        {
+            repository.Save(task);
+            notifications.EnqueueApplicationWithdrawn(task, application, now);
+        });
+
+        return Map(task);
+    }
+
+    /// <summary>服务者视角的“我的报名”：包含已被选中、被拒绝、已撤回与已失效的记录，用于撤回与自查。</summary>
+    public MyApplicationListResponse ListMyApplications(Guid workerId, int limit)
+    {
+        var now = timeProvider.GetUtcNow();
+        var items = repository.ListByApplicant(workerId, limit is < 1 or > MaxListLimit ? 20 : limit)
+            .SelectMany(task => task.Applications
+                .Where(application => application.WorkerId == workerId)
+                .Select(application => new MyApplicationResponse(
+                    application.Id,
+                    task.Id,
+                    task.Title,
+                    task.District,
+                    task.Reward.Amount,
+                    task.Reward.Currency,
+                    task.Deadline,
+                    task.ApplicationDeadline,
+                    task.Status.ToString(),
+                    application.Status.ToString(),
+                    application.SubmittedAt,
+                    application.Status == TaskApplicationStatus.Pending)))
+            .ToArray();
+
+        return new(items);
+    }
+
+    /// <summary>“我的报名”列表的条数上限，与其它列表保持一致。</summary>
+    public const int MaxListLimit = 100;
 
     public SelectTaskResult Select(Guid id, Guid applicationId, SelectApplicationRequest request)
     {
@@ -171,6 +220,26 @@ public sealed class TaskService(ITaskRepository repository, IOrderRepository ord
     }
     public OrderResponse RejectOrder(Guid id, Guid actorId, string? note) => TransitionOrder(id, actorId, order => order.Reject(actorId, note, timeProvider.GetUtcNow()));
     public OrderResponse ResumeOrder(Guid id, Guid actorId) => TransitionOrder(id, actorId, order => order.ResumeRework(actorId));
+
+    /// <summary>
+    /// 发起争议，请平台介入。需求方只能在服务者提交验收后发起，服务者只能在验收被驳回后发起（规则由领域层判定）。
+    /// 争议期间订单冻结，双方都动不了，等运营处置。
+    /// </summary>
+    public OrderResponse OpenDispute(Guid id, Guid actorId, string? reason)
+    {
+        var order = orderRepository.Get(id) ?? throw new KeyNotFoundException("订单不存在。");
+        var now = timeProvider.GetUtcNow();
+        var recipient = actorId == order.OwnerId ? order.WorkerId : order.OwnerId;
+
+        unitOfWork.Execute(() =>
+        {
+            order.OpenDispute(actorId, reason, now);
+            orderRepository.Save(order);
+            notifications.EnqueueOrderDisputed(order, recipient, now);
+        });
+
+        return Map(order);
+    }
 
     /// <summary>
     /// 取消订单：谁能取消、能取消到哪一步由领域层判定（服务者只能在未开始时取消，需求方到提交验收前）。
@@ -338,16 +407,17 @@ public sealed class TaskService(ITaskRepository repository, IOrderRepository ord
         repository.Save(task);
     }
 
-    private static TaskResponse Map(TaskItem task) => new(task.Id, task.OwnerId, task.Title, task.Description, task.District, task.Deadline, task.Reward.Amount, task.Reward.Currency, task.Status.ToString(), task.AcceptanceCriteria, task.Applications.Select(MapApplication).ToArray(), task.ExpiredAt, task.CancelledAt, task.CancellationReason);
+    private TaskResponse Map(TaskItem task) => new(task.Id, task.OwnerId, task.Title, task.Description, task.District, task.Deadline, task.Reward.Amount, task.Reward.Currency, task.Status.ToString(), task.AcceptanceCriteria, task.Applications.Select(MapApplication).ToArray(), task.ExpiredAt, task.CancelledAt, task.CancellationReason, task.ApplicationDeadline, task.AcceptingApplications(timeProvider.GetUtcNow()));
     private static TaskApplicationResponse MapApplication(TaskApplication application) => new(application.Id, application.WorkerId, application.Note, application.Status.ToString(), application.SubmittedAt);
 
-    private static TaskSummaryResponse MapSummary(TaskItem task, bool includeCancellationTrail = false) => new(
+    private TaskSummaryResponse MapSummary(TaskItem task, bool includeCancellationTrail = false) => new(
         task.Id, task.OwnerId, task.Title, task.Description, task.District, task.Deadline, task.Reward.Amount, task.Reward.Currency,
         task.Status.ToString(), task.AcceptanceCriteria, task.Applications.Count, task.HasExecutionAddress,
         // 过期时间对谁都不敏感；撤销原因可能是运营的处置说明（例如“包含违规内容”），
         // 只回给任务所有者，公开详情与大厅都不带。
-        task.ExpiredAt, includeCancellationTrail ? task.CancellationReason : null);
-    private static OrderResponse Map(Order order) => new(order.Id, order.TaskId, order.OwnerId, order.WorkerId, order.Title, order.Reward.Amount, order.Reward.Currency, order.Status.ToString(), order.CreatedAt, order.EvidenceNote, order.ReviewNote, order.SubmittedAt, order.ReviewedAt, order.ReworkCount, order.RejectionNote, 0, order.CancelledAt, order.CancelledBy, order.CancellationReason);
+        task.ExpiredAt, includeCancellationTrail ? task.CancellationReason : null,
+        task.ApplicationDeadline, task.AcceptingApplications(timeProvider.GetUtcNow()));
+    private static OrderResponse Map(Order order) => new(order.Id, order.TaskId, order.OwnerId, order.WorkerId, order.Title, order.Reward.Amount, order.Reward.Currency, order.Status.ToString(), order.CreatedAt, order.EvidenceNote, order.ReviewNote, order.SubmittedAt, order.ReviewedAt, order.ReworkCount, order.RejectionNote, 0, order.CancelledAt, order.CancelledBy, order.CancellationReason, order.DisputeReason, order.DisputeOpenedBy, order.DisputeOpenedAt, order.DisputeResult, order.DisputeResolutionNote, order.DisputeResolvedAt);
     private static ReviewResponse MapReview(Review review, bool visible) => new(review.Id, review.OrderId, review.ReviewerId, review.RevieweeId, review.Rating, visible ? review.Comment : "评价将在双方完成后公开", review.CreatedAt, visible);
     private static void EnsureParticipant(Order order, Guid actorId) { if (order.OwnerId != actorId && order.WorkerId != actorId) throw new UnauthorizedAccessException("只有订单参与者可以执行该操作。"); }
     private bool IsReviewPublic(Guid orderId, DateTimeOffset createdAt)
