@@ -578,6 +578,43 @@ public sealed class PostgresRegressionTests(PostgresRegressionFixture fixture) :
         Assert.Equal(0, world.Enforcement.Recheck().Scanned);
     }
 
+    /// <summary>
+    /// 申诉留档在真库上的往返：一次申诉一行、扣上提交时的规则与版本，结论写回同一行；
+    /// 节流用的两个计数在数据库上算（COUNT），换一个作用域读回来仍然正确。
+    /// </summary>
+    [PostgresFact]
+    public async Task Appeal_records_round_trip_and_the_throttle_counts_come_from_the_database()
+    {
+        using var world = new PostgresWorld(fixture.ConnectionString, Now);
+        var taskId = world.CreateDraft("帮我代考英语四级");
+
+        world.Service.OpenRiskAppeal(taskId, world.Owner, "误判：只是给家里人帮忙");
+
+        using (var freshScope = world.NewScope())
+        {
+            var records = freshScope.ServiceProvider.GetRequiredService<IRiskAppealRepository>();
+            var record = Assert.Single(records.ListByTask(taskId));
+            Assert.Equal("prohibited.exam_impersonation", record.RuleCode);
+            Assert.Equal(RiskRuleCatalog.BuiltIn.Version, record.RuleVersion);
+            Assert.Equal(RiskAppealStatus.Pending, record.Status);
+            // 窗口内算一次，窗口外不算：这两条正是节流查询的语义。
+            Assert.Equal(1, records.CountByOwnerSince(world.Owner, Now - RiskAppealPolicy.Window));
+            Assert.Equal(0, records.CountByOwnerSince(world.Owner, Now + RiskAppealPolicy.Window));
+            Assert.Equal(1, records.CountByTasks([taskId, Guid.NewGuid()]).GetValueOrDefault(taskId));
+        }
+
+        world.Appeals.DecideAppeal(taskId, accepted: false, "维持原判：标题写的就是代考", world.AdminId);
+
+        await using var context = fixture.CreateContext();
+        var row = await context.RiskAppeals.AsNoTracking().SingleAsync();
+        Assert.Equal(taskId, row.TaskId);
+        Assert.Equal(world.Owner, row.OwnerId);
+        Assert.Equal("Denied", row.Status);
+        Assert.Equal(world.AdminId, row.DecidedBy);
+        Assert.NotNull(row.DecidedAt);
+        Assert.Equal("维持原判：标题写的就是代考", row.DecisionNote);
+    }
+
     /// <summary>带时区偏移的截止时间与中文文本在真库上的往返：领域层统一归一化成 UTC，文本原样保存。</summary>
     [PostgresFact]
     public async Task Utc_offsets_and_chinese_text_round_trip_through_the_database()

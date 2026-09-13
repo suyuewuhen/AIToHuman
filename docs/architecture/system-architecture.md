@@ -84,7 +84,7 @@ Domain 不引用 EF Core、HTTP、AI SDK 或对象存储 SDK。
 - Identity：账户、角色、登录、刷新令牌和服务者资料。
 - Conversations：对话、消息和 AI 运行记录。
 - Tasks：草稿、任务、步骤、位置摘要、发布和取消。
-- Risk：规则检查、AI 辅助分类、审核队列和决策记录。（现状：确定性规则检查、运营可编辑的规则目录（版本历史/明细/编辑/恢复内置）与人工审核队列已实现；AI 辅助分类、追加式决策历史与规则命中统计仍未实现。）
+- Risk：规则检查、AI 辅助分类、审核队列和决策记录。（现状：确定性规则检查、运营可编辑的规则目录（版本历史/明细/编辑/恢复内置）、人工审核队列、**发布后复检**（规则收紧后重新判定仍在线任务：禁止类别自动下架、有订单的冻结订单、转人工的保持在线并要求复检，平台动作以固定系统身份写审计）与**申诉节流与留档**（单任务 3 次、单人 24 小时 5 次，每次申诉留档、运营可看轨迹）都已实现；AI 辅助分类、追加式决策历史与规则命中统计仍未实现。）
 - Applications：按固定悬赏报名、撤回、选择和并发控制，不承载服务者价格。
 - Orders：交易快照、状态机、执行事件和验收。
 - Messaging：订单会话、消息和实时推送。
@@ -102,7 +102,7 @@ Domain 不引用 EF Core、HTTP、AI SDK 或对象存储 SDK。
 
 作为事实来源，保存业务状态、事件、审计、对话元数据和文件元数据。敏感字段按等级加密或令牌化。
 
-> 实现现状（✅）：表结构由 EF Core Migration 单一来源维护，当前 24 个迁移覆盖 users、orders、tasks、task_applications、conversations、conversation_messages、notifications、order_messages、evidence、system_settings、system_setting_audits、admin_audit_entries、task_draft_revisions、idempotency_entries、risk_rule_catalog_revisions 等表；Development 启动执行 `Database.Migrate()`，早期 `EnsureCreated()` 建出的旧库会自动基线化。运营可编辑的风险规则目录以**只追加的版本快照**落在 `risk_rule_catalog_revisions`（第 24 个迁移 `AddRiskRuleCatalogRevisions`：`Version` 唯一索引 + `CreatedAt` 索引，读取取版本号最大的一版），数据库里还没有覆盖版本时判定回退到代码内置目录（版本 1），每次判定把当时的版本号记在 `tasks.RiskRuleVersion` 上，因此任何一次拦截都能回溯到具体哪一版规则。
+> 实现现状（✅）：表结构由 EF Core Migration 单一来源维护，当前 26 个迁移覆盖 users、orders、tasks、task_applications、conversations、conversation_messages、notifications、order_messages、evidence、system_settings、system_setting_audits、admin_audit_entries、task_draft_revisions、idempotency_entries、risk_rule_catalog_revisions、task_risk_appeals 等表；Development 启动执行 `Database.Migrate()`，早期 `EnsureCreated()` 建出的旧库会自动基线化。运营可编辑的风险规则目录以**只追加的版本快照**落在 `risk_rule_catalog_revisions`（第 24 个迁移 `AddRiskRuleCatalogRevisions`：`Version` 唯一索引 + `CreatedAt` 索引，读取取版本号最大的一版），数据库里还没有覆盖版本时判定回退到代码内置目录（版本 1），每次判定把当时的版本号记在 `tasks.RiskRuleVersion` 上，因此任何一次拦截都能回溯到具体哪一版规则。发布后复检的处置落在 `tasks` 上（第 25 个迁移 `AddTaskRiskEnforcement`：补 `RiskEnforcementStatus`/`RiskEnforcementReason`/`RiskEnforcedAt` 三列，状态默认值 `None` 回填存量行，并加 `(Status, RiskRuleVersion)` 索引供复检挑候选）；申诉留档落在 `task_risk_appeals`（第 26 个迁移 `AddTaskRiskAppeals`：一行一次申诉、只追加，含提交时的规则代码/版本/结论与理由，运营结论写回同一行，`(TaskId, SubmittedAt)` 与 `(OwnerId, SubmittedAt)` 两条索引分别服务“看轨迹”和“按人算次数”）。
 
 ### Redis
 
@@ -113,6 +113,8 @@ Domain 不引用 EF Core、HTTP、AI SDK 或对象存储 SDK。
 ### Hangfire
 
 用于到期提醒、任务过期、通知重试、文件异步检查等。作业必须具备幂等性，执行失败可观测。
+
+> 实现现状：后台任务都是进程内的 `BackgroundService`（不是 Hangfire 作业），清单与周期如下——`TaskExpiryService` 每 60 秒把仍处于 `Published` 且已过截止时间的任务置为 `Expired`（已分配的 `Assigned` 任务不参与扫描）；`NotificationDispatcher` 原子认领未派发的通知并推送，失败退回 Outbox 等下一轮；`NotificationFanoutSubscriber` 在启用扇出时订阅 Redis 频道；`EvidenceRescanService` 对没有扫描结论的凭证退避重扫（30 秒退避、最多 5 次）；`IdempotencyCleanupService` 每小时清理幂等记录；`SettingsRefreshService` 轮询同步绕过 API 直接改库的运营配置；**`RiskRecheckService` 负责发布后风险复检——启动 30 秒后跑第一轮，之后每 5 分钟一轮**，只扫“仍在线且规则版本不是最新”的任务（单轮上限 200 条），判完把版本号刷新，因此天然幂等、不会重复处置或重复通知，运营也可以用 `POST /api/v1/admin/risk/recheck` 手动跑一轮。一轮失败只记日志、等下一轮，不影响服务本身。
 
 ### 对象存储
 

@@ -26,6 +26,7 @@ public sealed class TaskDbContext(DbContextOptions<TaskDbContext> options) : DbC
     public DbSet<TaskRevisionRecord> TaskRevisions => Set<TaskRevisionRecord>();
     public DbSet<IdempotencyRecord> IdempotencyEntries => Set<IdempotencyRecord>();
     public DbSet<RiskRuleCatalogRevisionRecord> RiskRuleCatalogRevisions => Set<RiskRuleCatalogRevisionRecord>();
+    public DbSet<RiskAppealRecordRecord> RiskAppeals => Set<RiskAppealRecordRecord>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -246,6 +247,20 @@ public sealed class TaskDbContext(DbContextOptions<TaskDbContext> options) : DbC
             entity.Property(item => item.ChangeReason).HasMaxLength(RiskRuleCatalogRevision.MaxReasonLength).IsRequired();
             // 完整目录快照（JSON）：不设长度上限，改成 text。
             entity.Property(item => item.CatalogJson).IsRequired();
+        });
+
+        modelBuilder.Entity<RiskAppealRecordRecord>(entity =>
+        {
+            entity.ToTable("task_risk_appeals");
+            entity.HasKey(item => item.Id);
+            // 看某条任务的申诉轨迹、以及按人统计近 24 小时的次数，各有一条索引。
+            entity.HasIndex(item => new { item.TaskId, item.SubmittedAt });
+            entity.HasIndex(item => new { item.OwnerId, item.SubmittedAt });
+            entity.Property(item => item.RuleCode).HasMaxLength(80);
+            entity.Property(item => item.Verdict).HasConversion<string>().HasMaxLength(16).IsRequired();
+            entity.Property(item => item.Reason).HasMaxLength(TaskItem.MaxRiskAppealReasonLength).IsRequired();
+            entity.Property(item => item.Status).HasConversion<string>().HasMaxLength(16).IsRequired();
+            entity.Property(item => item.DecisionNote).HasMaxLength(RiskAppealRecord.MaxDecisionNoteLength);
         });
     }
 }
@@ -528,4 +543,24 @@ public sealed class RiskRuleCatalogRevisionRecord
     public string ChangeReason { get; set; } = "";
     public Guid UpdatedBy { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
+}
+
+/// <summary>误拦申诉的留档：一次申诉一行，只追加；运营给出结论后把结论写回同一行。</summary>
+public sealed class RiskAppealRecordRecord
+{
+    public Guid Id { get; set; }
+    public Guid TaskId { get; set; }
+    public Guid OwnerId { get; set; }
+
+    /// <summary>提交时命中的原因代码与规则目录版本。</summary>
+    public string? RuleCode { get; set; }
+    public int RuleVersion { get; set; }
+
+    public string Verdict { get; set; } = "Blocked";
+    public string Reason { get; set; } = "";
+    public DateTimeOffset SubmittedAt { get; set; }
+    public string Status { get; set; } = "Pending";
+    public Guid? DecidedBy { get; set; }
+    public DateTimeOffset? DecidedAt { get; set; }
+    public string? DecisionNote { get; set; }
 }

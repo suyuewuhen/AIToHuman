@@ -4,8 +4,7 @@ using System.Text;
 using AIToHuman.Application.Common;
 using AIToHuman.Application.Orders;
 using AIToHuman.Application.Risk;
-using AIToHuman.Domain.Orders;
-using AIToHuman.Domain.Common;
+using AIToHuman.Domain.Orders;using AIToHuman.Domain.Common;
 using AIToHuman.Domain.Risk;
 using AIToHuman.Application.Notifications;
 // System.Threading.Tasks 里也有一个 TaskStatus，这里明确指向领域里的那个。
@@ -13,7 +12,7 @@ using DomainTaskStatus = AIToHuman.Domain.Tasks.TaskStatus;
 
 namespace AIToHuman.Application.Tasks;
 
-public sealed class TaskService(ITaskRepository repository, IOrderRepository orderRepository, IReviewRepository reviewRepository, ITaskRevisionRepository revisionRepository, AIToHuman.Application.Admin.IUserDirectory userDirectory, TimeProvider timeProvider, NotificationService notifications, IUnitOfWork unitOfWork, IRiskRuleCatalogProvider? riskRuleCatalog = null, AIToHuman.Application.Risk.RiskEnforcementService? riskEnforcement = null)
+public sealed class TaskService(ITaskRepository repository, IOrderRepository orderRepository, IReviewRepository reviewRepository, ITaskRevisionRepository revisionRepository, AIToHuman.Application.Admin.IUserDirectory userDirectory, TimeProvider timeProvider, NotificationService notifications, IUnitOfWork unitOfWork, IRiskRuleCatalogProvider? riskRuleCatalog = null, RiskEnforcementService? riskEnforcement = null, IRiskAppealRepository? riskAppeals = null)
 {
     /// <summary>
     /// 这次写入该用哪一版风险规则：运营在后台改过就是最新那一版，否则是代码里的内置目录。
@@ -123,13 +122,43 @@ public sealed class TaskService(ITaskRepository repository, IOrderRepository ord
     /// <summary>
     /// 所有者提交误拦申诉：理由必填，进运营的申诉队列。
     /// 只有"被判定为禁止类别"或"转人工后被驳回"的任务可以申诉（由领域层判定）。
+    ///
+    /// 这里额外做两道节流（见 <see cref="RiskAppealPolicy"/>）：单条任务累计次数与单日提交次数。
+    /// 领域规则只保证"同一版内容只能申诉一次"，而改一个字就能再来一次，没有上限时运营队列会被刷屏。
     /// </summary>
     public TaskResponse OpenRiskAppeal(Guid id, Guid ownerId, string reason)
     {
         var task = GetOwned(id, ownerId);
-        task.OpenRiskAppeal(ownerId, reason, timeProvider.GetUtcNow());
-        repository.Save(task);
+        var now = timeProvider.GetUtcNow();
+        EnsureAppealAllowed(task, ownerId, now);
+
+        task.OpenRiskAppeal(ownerId, reason, now);
+
+        unitOfWork.Execute(() =>
+        {
+            repository.Save(task);
+            riskAppeals?.Add(RiskAppealRecord.Submit(task, ownerId, task.RiskAppealReason ?? reason, now));
+        });
+
         return Map(task);
+    }
+
+    /// <summary>申诉节流：次数都从留档表现算，不信任客户端；没接留档仓储（手工装配）时跳过。</summary>
+    private void EnsureAppealAllowed(TaskItem task, Guid ownerId, DateTimeOffset now)
+    {
+        if (riskAppeals is null) return;
+
+        if (riskAppeals.CountByTask(task.Id) >= RiskAppealPolicy.MaxPerTask)
+        {
+            throw new DomainException(
+                $"这条任务累计申诉已达上限（{RiskAppealPolicy.MaxPerTask} 次）：请先修改文案，规则会重新判定。");
+        }
+
+        if (riskAppeals.CountByOwnerSince(ownerId, now - RiskAppealPolicy.Window) >= RiskAppealPolicy.MaxPerOwnerPerDay)
+        {
+            throw new DomainException(
+                $"近 24 小时提交的申诉已达上限（{RiskAppealPolicy.MaxPerOwnerPerDay} 次）：请明天再试，或先修改文案。");
+        }
     }
 
     /// <summary>

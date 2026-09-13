@@ -31,6 +31,9 @@
   ```
 
   提交后回读一次（例如 `GET /api/v1/admin/risk/rules/detail`）核对中文没有变成 `?`，再用 `curl.exe` 或 Postman 交叉验证一次；PowerShell 7 也建议显式写 `charset=utf-8`，不要依赖默认编码。
+- **风险相关的真机联调有两个坑**（都是这一轮踩过的）：
+  - ① **改完规则要跑一轮复检看在线任务**：改过风险规则目录（或手动收紧词表/阈值）之后，用管理员令牌调 `POST /api/v1/admin/risk/recheck`（可带 `?limit=`），看仍处于 `Published`/`Assigned` 的任务会不会被处置——响应里的 `scanned` / `refreshed` / `flagged` / `unpublished` / `frozen` / `skipped` 就是这一轮的条数：命中禁止类别且没有订单的被自动下架（`unpublished`）、已经有订单的改为冻结订单并进争议队列（`frozen`）、只命中“需人工复核”的保持在线并要求复检（`flagged`）。后台 `RiskRecheckService` 每 5 分钟也会自己跑一轮，所以“页面没动静”不等于“什么都没发生”。
+  - ② **申诉节流是按人按天算的**：同一条任务累计最多申诉 3 次、同一个人 24 小时内最多 5 次，反复联调同一个账号很容易撞上限（`422` 文案分别是「这条任务累计申诉已达上限（3 次）：请先修改文案，规则会重新判定。」与「近 24 小时提交的申诉已达上限（5 次）：请明天再试，或先修改文案。」）。换一个账号，或清掉 `task_risk_appeals`（同一条任务的留档行）再试。
 - 数据库结构只通过 EF Core Migration 演进。
 - **前端不要自己拼 API 地址**：所有请求走 `frontend/src/api/base.ts` 的 `apiFetch()`（SignalR 用 `hubUrl()`），两个入口之间的跳转用 `APP_HOME_URL` / `OPS_HOME_URL`。默认是相对路径（同源 + 反向代理），跨域部署时才由构建期变量给出绝对地址：`VITE_API_BASE_URL`、`VITE_HUB_BASE_URL`、`VITE_APP_HOME_URL`、`VITE_OPS_HOME_URL`（声明在 `frontend/env.d.ts`）。
 - 跨源部署必须让后端放行来源：`Cors__AllowedOrigins=https://ops.example.com,https://app.example.com`（也接受数组写法）。没配置时的兜底按环境区分：开发环境放行本机 5173 / 4173，其它环境一个都不放行（同源部署本来不需要 CORS）；生效清单每次启动都打进日志。策略里**必须保留 `AllowCredentials()`**：SignalR 协商默认带 credentials，漏掉它会出现“接口都正常、只有通知订阅报 CORS 错误”。想在没有域名的前提下复现跨源，用两个本机端口就够：`npm run build` 后用 `npm run preview`（4173）或任意静态服务器当第二个源、API 仍在本机 5188，再把该来源填进 `Cors__AllowedOrigins`。
@@ -64,7 +67,7 @@
   - `PostgresTestEnvironment` 负责解析测试库连接串，顺序是环境变量 `AITOHUMAN_TEST_POSTGRES` → 本机 `backend/AIToHuman.Api/appsettings.Development.json` 的 `ConnectionStrings:Postgres`（该文件被 Git 忽略，凭据不进仓库），启动时用 3 秒超时探测一次连通性；连不上或没配置就判定为不可用。
   - 用例用 `[PostgresFact]` 标注：数据库不可用时**标记为跳过而不是失败**，所以没装数据库的机器和默认 CI 仍能跑完其余测试。
   - `PostgresRegressionFixture` 在一次测试运行里共用一个随机命名的空库（`aitohuman_regression_<随机>`），用 `Database.Migrate()` 从零建库并应用全部迁移（顺带验证“空库能不能起来”），每个用例前 `TRUNCATE` 所有表，运行结束尽力删库；`PostgresWorld` 按 API 的注册方式搭一套 EF 仓储 + 应用服务，代表“一次请求作用域”，`NewScope()` 用来模拟并发请求（共用一个 `DbContext` 是测不出并发问题的）。
-  - 这组用例专门覆盖**内存替身测不出来**的缺陷类型：空库迁移、草稿编辑后每一列真的落库、乐观并发令牌真的生效（后写入者拿到 `DbUpdateConcurrencyException`）、12 路并发选人只产生一个订单、取消订单在 `orders`/`tasks`/`task_applications` 三张表上的连带效果、争议冻结落库、风险复核队列与“放行→编辑→重新排队”的防绕过链路、规则目录版本快照在真库上的写入与还原（`risk_rule_catalog_revisions` 往返 + 版本号唯一索引）、带 `+08:00` 偏移的截止时间归一化为 UTC。
+  - 这组用例专门覆盖**内存替身测不出来**的缺陷类型：空库迁移、草稿编辑后每一列真的落库、乐观并发令牌真的生效（后写入者拿到 `DbUpdateConcurrencyException`）、12 路并发选人只产生一个订单、取消订单在 `orders`/`tasks`/`task_applications` 三张表上的连带效果、争议冻结落库、风险复核队列与“放行→编辑→重新排队”的防绕过链路、规则目录版本快照在真库上的写入与还原（`risk_rule_catalog_revisions` 往返 + 版本号唯一索引）、发布后复检的处置落库（自动下架与订单冻结、以系统身份写的运营审计）与申诉留档（`task_risk_appeals` 往返 + 按人/按任务的计数口径）、带 `+08:00` 偏移的截止时间归一化为 UTC。
   - 真实 **Redis**（通知扇出）与 **S3 兼容对象存储**（MinIO / OSS / S3）的回归测试也已建立，位于 `backend/tests/AIToHuman.IntegrationTests/External/`：
     - `ExternalTestEnvironment` 解析并探测两类依赖。Redis 用环境变量 `AITOHUMAN_TEST_REDIS`（默认 `127.0.0.1:6379`）；对象存储用 `AITOHUMAN_TEST_S3_ENDPOINT` / `_REGION` / `_BUCKET` / `_ACCESS_KEY` / `_SECRET_KEY`（默认 `http://127.0.0.1:9000`、`us-east-1`、桶 `aitohuman-evidence`、`minioadmin/minioadmin`——默认凭据只是**本机开发**兜底，其他环境请用环境变量注入）。对象存储的探测方式是**真的写一条探针对象再删掉**：桶不存在、密钥不对、服务没起来都会在这里就暴露出来。
     - 用例用 `[RedisFact]` / `[MinioFact]` 标注，依赖不可用时**标记为跳过而不是失败**（与 `[PostgresFact]` 同一套取舍）。

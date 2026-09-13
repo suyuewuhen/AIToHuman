@@ -12,7 +12,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { APP_HOME_URL } from '../api/base'
 import { clearAccessToken, getAccessToken, getCurrentUser, login, type CurrentUser } from '../api/auth'
-import { adminAuditActorLabel, adminOrderStatusLabel, adminTaskStatusLabel, cancelAdminTask, decideRiskAppeal, decideRiskReview, disputeResolutionLabel, getRiskRuleDetail, getRiskRules, listAdminAudits, listDisputedOrders, listRiskAppeals, listRiskReviews, listRiskRuleVersions, resetRiskRules, resolveDispute, riskAppealStatusLabel, riskReviewStatusLabel, riskVerdictLabel, runRiskRecheck, searchAdminTasks, searchAdminUsers, updateRiskRules, type AdminAuditItem, type AdminOrderItem, type AdminRiskAppealItem, type AdminRiskReviewItem, type AdminTaskItem, type AdminUserItem, type DisputeDecision, type RiskAppealDecision, type RiskReviewDecision, type RiskRuleCatalog, type RiskRuleCatalogDetail, type RiskRuleCatalogVersion } from '../api/admin'
+import { adminAuditActorLabel, adminOrderStatusLabel, adminTaskStatusLabel, cancelAdminTask, decideRiskAppeal, decideRiskReview, disputeResolutionLabel, getRiskRuleDetail, getRiskRules, listAdminAudits, listDisputedOrders, listRiskAppealHistory, listRiskAppeals, listRiskReviews, listRiskRuleVersions, resetRiskRules, resolveDispute, riskAppealStatusLabel, riskReviewStatusLabel, riskVerdictLabel, runRiskRecheck, searchAdminTasks, searchAdminUsers, updateRiskRules, type AdminAuditItem, type AdminOrderItem, type AdminRiskAppealItem, type AdminRiskAppealRecord, type AdminRiskReviewItem, type AdminTaskItem, type AdminUserItem, type DisputeDecision, type RiskAppealDecision, type RiskReviewDecision, type RiskRuleCatalog, type RiskRuleCatalogDetail, type RiskRuleCatalogVersion } from '../api/admin'
 import { listSettingAudits, listSettings, resetSetting, settingChoiceLabel, settingSourceLabel, testSetting, updateSetting, type AdminSetting, type SettingAudit, type SettingTestResult } from '../api/settings'
 import { formatDeadline } from '../utils/format'
 
@@ -147,6 +147,10 @@ const adminRiskNote = ref('')
 const adminRiskAppeals = ref<AdminRiskAppealItem[]>([])
 const adminAppealDecisionId = ref('')
 const adminAppealNote = ref('')
+// 申诉轨迹：任务上只留最新一次状态，展开时才按需读这条任务的完整留档。
+const appealHistoryTaskId = ref('')
+const appealHistory = ref<AdminRiskAppealRecord[]>([])
+const appealHistoryBusy = ref(false)
 // 规则目录：查看当前生效的规则（连匹配词）+ 版本历史，并整份替换出一版新目录。
 // 编辑态单独放一份草稿（匹配词在界面上是一行一个的文本框），点“保存为新版本”才提交。
 const adminRuleDetail = ref<RiskRuleCatalogDetail | null>(null)
@@ -498,6 +502,31 @@ async function confirmAdminAppealDecision(item: AdminRiskAppealItem, decision: R
     adminTaskError.value = error instanceof Error ? error.message : '处置申诉失败'
   } finally {
     adminTaskBusy.value = false
+  }
+}
+
+/**
+ * 展开/收起某条任务的申诉轨迹：任务上只留最新一次申诉状态，改过文案之后上一轮的理由与结论就没地方看了，
+ * 所以轨迹按需从留档接口读（含每次提交时的规则版本与运营结论）。
+ */
+async function toggleAppealHistory(item: AdminRiskAppealItem) {
+  if (appealHistoryTaskId.value === item.taskId) {
+    appealHistoryTaskId.value = ''
+    return
+  }
+
+  appealHistoryBusy.value = true
+  adminTaskError.value = ''
+  adminTaskNotice.value = ''
+  try {
+    const history = await listRiskAppealHistory(item.taskId)
+    appealHistory.value = history.items
+    appealHistoryTaskId.value = item.taskId
+    if (history.items.length === 0) adminTaskNotice.value = '这条任务还没有申诉留档。'
+  } catch (error) {
+    adminTaskError.value = error instanceof Error ? error.message : '读取申诉轨迹失败'
+  } finally {
+    appealHistoryBusy.value = false
   }
 }
 
@@ -868,12 +897,20 @@ async function confirmResetRiskRules() {
               <strong>{{ item.title }}</strong>
               <small>{{ riskVerdictLabel(item.verdict) }} · {{ item.ruleCode }} · {{ item.category }} · 规则第 {{ item.ruleVersion }} 版 · 复核 {{ riskReviewStatusLabel(item.reviewStatus) }}</small>
               <small>{{ item.canBeReleasedByAppeal ? '申诉成立可以放行' : '禁止类别：申诉成立也不放行（只记录误伤）' }} · 悬赏 ¥{{ item.rewardAmount }} {{ item.rewardCurrency }} · {{ item.district }}</small>
-              <small>需求方 {{ item.ownerEmail ?? item.ownerId.slice(0, 8) }} · 申诉于 {{ item.appealedAt ? formatDeadline(item.appealedAt) : '—' }}</small>
+              <small>需求方 {{ item.ownerEmail ?? item.ownerId.slice(0, 8) }} · 申诉于 {{ item.appealedAt ? formatDeadline(item.appealedAt) : '—' }} · 这条任务累计申诉 <b>{{ item.appealCount }}</b> 次</small>
               <small class="evidence-note">申诉理由：{{ item.appealReason }}</small>
               <small class="evidence-note">命中原因：{{ item.summary }}</small>
               <small v-if="item.reviewNote" class="evidence-note">上次复核依据：{{ item.reviewNote }}</small>
+              <div v-if="appealHistoryTaskId === item.taskId" class="appeal-history">
+                <small v-if="appealHistory.length === 0" class="evidence-note">还没有留档记录（这张表上线之前提交的申诉查不到轨迹）。</small>
+                <small v-for="record in appealHistory" v-else :key="record.id" class="evidence-note">
+                  第 {{ record.ruleVersion }} 版规则 · {{ riskVerdictLabel(record.verdict) }} · {{ record.ruleCode }} · {{ formatDeadline(record.submittedAt) }} · {{ riskAppealStatusLabel(record.status) }}<template v-if="record.decisionNote"> · 结论：{{ record.decisionNote }}</template>
+                  <br />理由：{{ record.reason }}
+                </small>
+              </div>
             </div>
             <div class="setting-actions">
+              <button type="button" class="settings-secondary" :disabled="adminTaskBusy || appealHistoryBusy" @click="toggleAppealHistory(item)">{{ appealHistoryTaskId === item.taskId ? '收起轨迹' : '申诉轨迹' }}</button>
               <template v-if="adminAppealDecisionId !== item.taskId">
                 <button type="button" class="settings-secondary" :disabled="adminTaskBusy" @click="startAdminAppealDecision(item)">处置申诉</button>
               </template>

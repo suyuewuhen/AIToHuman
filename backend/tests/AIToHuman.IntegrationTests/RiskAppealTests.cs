@@ -10,6 +10,7 @@ using AIToHuman.Infrastructure.Admin;
 using AIToHuman.Infrastructure.Notifications;
 using AIToHuman.Infrastructure.Orders;
 using AIToHuman.Infrastructure.Persistence;
+using AIToHuman.Infrastructure.Risk;
 using AIToHuman.Infrastructure.Tasks;
 
 namespace AIToHuman.IntegrationTests;
@@ -140,15 +141,18 @@ public sealed class RiskAppealTests
         // 运营后台与申诉处置必须共用同一份审计仓储，否则两边各写各的、互相看不见。
         private readonly InMemoryAdminAuditRepository audits = new();
 
+        /// <summary>申诉留档：一次申诉一行（节流与历史都看它）。</summary>
+        private readonly InMemoryRiskAppealRepository appeals = new();
+
         public World()
         {
             Owner = Guid.NewGuid();
             AdminId = Guid.NewGuid();
             Clock = new MutableTimeProvider(Now);
             Notifications = new NotificationService(new InMemoryNotificationRepository(), Clock);
-            Service = new TaskService(tasks, orders, new InMemoryReviewRepository(), new InMemoryTaskRevisionRepository(), new EmptyUserDirectory(), Clock, Notifications, new InMemoryUnitOfWork());
+            Service = new TaskService(tasks, orders, new InMemoryReviewRepository(), new InMemoryTaskRevisionRepository(), new EmptyUserDirectory(), Clock, Notifications, new InMemoryUnitOfWork(), riskAppeals: appeals);
             Admin = new AdminConsoleService(tasks, orders, new EmptyUserDirectory(), tasks, orders, audits, Clock, Notifications, new InMemoryUnitOfWork());
-            Appeals = new RiskAppealService(tasks, audits, new EmptyUserDirectory(), Clock, Notifications, new InMemoryUnitOfWork());
+            Appeals = new RiskAppealService(tasks, appeals, audits, new EmptyUserDirectory(), Clock, Notifications, new InMemoryUnitOfWork());
         }
 
         public Guid Owner { get; }

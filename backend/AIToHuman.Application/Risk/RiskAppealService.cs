@@ -21,6 +21,7 @@ namespace AIToHuman.Application.Risk;
 /// </summary>
 public sealed class RiskAppealService(
     ITaskRepository taskRepository,
+    IRiskAppealRepository appealRepository,
     IAdminAuditRepository auditRepository,
     IUserDirectory userDirectory,
     TimeProvider timeProvider,
@@ -33,16 +34,49 @@ public sealed class RiskAppealService(
     public const int MaxLimit = 100;
     public const int DefaultLimit = 20;
 
-    /// <summary>待处置的申诉队列，按提交时间升序（先来先处理）。</summary>
+    /// <summary>待处置的申诉队列，按提交时间升序（先来先处理）。每一项带上"这条任务累计申诉过几次"。</summary>
     public AdminRiskAppealListResponse ListAppeals(int? limit)
     {
         var normalizedLimit = Math.Clamp(limit ?? DefaultLimit, 1, MaxLimit);
         var tasks = taskRepository.ListPendingRiskAppeal(normalizedLimit);
         var owners = userDirectory.FindMany(tasks.Select(item => item.OwnerId).Distinct().ToArray());
+        var counts = appealRepository.CountByTasks(tasks.Select(item => item.Id).ToArray());
 
         return new(
-            tasks.Select(task => Map(task, owners.TryGetValue(task.OwnerId, out var owner) ? owner.Email : null)).ToArray(),
+            tasks.Select(task => Map(
+                task,
+                owners.TryGetValue(task.OwnerId, out var owner) ? owner.Email : null,
+                counts.GetValueOrDefault(task.Id))).ToArray(),
             normalizedLimit);
+    }
+
+    /// <summary>
+    /// 某条任务的完整申诉轨迹（提交理由、提交时的规则与结论、运营结论与依据）。
+    /// 任务上只留最新一次申诉状态，想看"被误拦过几次"要看这里。
+    /// </summary>
+    public AdminRiskAppealHistoryResponse ListHistory(Guid taskId)
+    {
+        if (taskRepository.Get(taskId) is null) throw new KeyNotFoundException("任务不存在。");
+
+        var records = appealRepository.ListByTask(taskId);
+        var deciders = userDirectory.FindMany(records.Where(item => item.DecidedBy is not null).Select(item => item.DecidedBy!.Value).Distinct().ToArray());
+
+        return new(
+            taskId,
+            records.Select(record => new AdminRiskAppealRecordResponse(
+                record.Id,
+                record.RuleCode,
+                record.RuleVersion,
+                record.Verdict.ToString(),
+                record.Reason,
+                record.SubmittedAt,
+                record.Status.ToString(),
+                record.DecidedBy,
+                record.DecidedBy is { } decider && deciders.TryGetValue(decider, out var view) ? view.DisplayName : null,
+                record.DecidedAt,
+                record.DecisionNote)).ToArray(),
+            RiskAppealPolicy.MaxPerTask,
+            RiskAppealPolicy.MaxPerOwnerPerDay);
     }
 
     /// <summary>
@@ -56,20 +90,24 @@ public sealed class RiskAppealService(
 
         // 先让领域规则判定能不能处置（没有待处置申诉、没写依据都在这里拦），成立之后才写审计。
         task.ResolveRiskAppeal(actorId, accepted, note, now);
+        // 留档里的那一行也要写上结论；老数据（这张表之前提交的申诉）没有对应行时跳过。
+        var record = appealRepository.FindPending(taskId);
+        record?.Decide(actorId, accepted, note, now);
 
         unitOfWork.Execute(() =>
         {
             taskRepository.Save(task);
+            if (record is not null) appealRepository.Save(record);
             auditRepository.Add(AdminAuditEntry.Record(
                 actorId, $"{AppealActionPrefix}.{(accepted ? "accept" : "deny")}", TaskTargetType, task.Id, note, now));
             notifications.EnqueueTaskRiskAppealDecided(task, task.OwnerId, now);
         });
 
         var owners = userDirectory.FindMany([task.OwnerId]);
-        return Map(task, owners.TryGetValue(task.OwnerId, out var owner) ? owner.Email : null);
+        return Map(task, owners.TryGetValue(task.OwnerId, out var owner) ? owner.Email : null, appealRepository.CountByTask(task.Id));
     }
 
-    private static AdminRiskAppealItemResponse Map(TaskItem task, string? ownerEmail) => new(
+    private static AdminRiskAppealItemResponse Map(TaskItem task, string? ownerEmail, int appealCount) => new(
         task.Id,
         task.Title,
         task.Description,
@@ -89,5 +127,6 @@ public sealed class RiskAppealService(
         task.RiskAppealReason,
         task.RiskAppealedAt,
         // 禁止类别即使申诉成立也不会因此可发布：这个字段明确告诉运营"放行能力有没有生效"。
-        CanBeReleasedByAppeal: task.RiskVerdict == RiskVerdict.NeedsReview);
+        CanBeReleasedByAppeal: task.RiskVerdict == RiskVerdict.NeedsReview,
+        AppealCount: appealCount);
 }

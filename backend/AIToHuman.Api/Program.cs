@@ -89,6 +89,7 @@ if (usePostgres)
     builder.Services.AddScoped<IAdminAuditRepository, EfAdminAuditRepository>();
     builder.Services.AddScoped<IIdempotencyStore, EfIdempotencyStore>();
     builder.Services.AddScoped<IRiskRuleCatalogStore, EfRiskRuleCatalogStore>();
+    builder.Services.AddScoped<IRiskAppealRepository, EfRiskAppealRepository>();
     builder.Services.AddScoped<IRiskRuleCatalogProvider, RiskRuleCatalogStoreProvider>();
     builder.Services.AddScoped<RiskRuleCatalogService>();
     builder.Services.AddScoped<RiskEnforcementService>();
@@ -118,6 +119,7 @@ else
     builder.Services.AddSingleton<IAdminAuditRepository, InMemoryAdminAuditRepository>();
     builder.Services.AddSingleton<IIdempotencyStore, InMemoryIdempotencyStore>();
     builder.Services.AddSingleton<IRiskRuleCatalogStore, InMemoryRiskRuleCatalogStore>();
+    builder.Services.AddSingleton<IRiskAppealRepository, InMemoryRiskAppealRepository>();
     builder.Services.AddSingleton<IRiskRuleCatalogProvider, RiskRuleCatalogStoreProvider>();
     builder.Services.AddScoped<RiskRuleCatalogService>();
     builder.Services.AddScoped<RiskEnforcementService>();
@@ -641,6 +643,9 @@ adminConsole.MapPost("/risk/recheck", (int? limit, ClaimsPrincipal user, RiskEnf
 // 禁止类别命中的即使申诉成立也只会记录"规则误伤"的结论，任务依旧不能发布（人工无权放行红线）。
 adminConsole.MapGet("/risk/appeals", (int? limit, RiskAppealService service) =>
     Results.Ok(service.ListAppeals(limit)));
+// 申诉轨迹：任务上只留最新一次申诉状态，想看"被误拦过几次、每次运营怎么说的"要看这里。
+adminConsole.MapGet("/risk/appeals/{taskId:guid}/history", (Guid taskId, RiskAppealService service) =>
+    Results.Ok(service.ListHistory(taskId)));
 adminConsole.MapPost("/risk/appeals/{taskId:guid}/decide", (Guid taskId, AdminRiskAppealDecisionRequest request, ClaimsPrincipal user, RiskAppealService service) =>
 {
     var actorId = ResolveAdminId(user);

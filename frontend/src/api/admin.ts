@@ -261,6 +261,35 @@ export interface AdminRiskAppealItem {
   appealReason: string | null
   appealedAt: string | null
   canBeReleasedByAppeal: boolean
+  /** 这条任务累计申诉过几次（含已经处置过的）；上限见 /risk/appeals/{taskId}/history。 */
+  appealCount: number
+}
+
+/** 一次申诉的留档：提交理由、提交时的规则与结论、运营结论与依据。 */
+export interface AdminRiskAppealRecord {
+  id: string
+  ruleCode: string | null
+  ruleVersion: number
+  verdict: string
+  reason: string
+  submittedAt: string
+  status: string
+  decidedBy: string | null
+  decidedByName: string | null
+  decidedAt: string | null
+  decisionNote: string | null
+}
+
+export interface AdminRiskAppealHistory {
+  taskId: string
+  items: AdminRiskAppealRecord[]
+  maxPerTask: number
+  maxPerOwnerPerDay: number
+}
+
+/** 某条任务的申诉轨迹：任务上只留最新一次状态，想看"被误拦过几次"要看这里。 */
+export async function listRiskAppealHistory(taskId: string): Promise<AdminRiskAppealHistory> {
+  return parseResponse<AdminRiskAppealHistory>(await apiFetch(`/api/v1/admin/risk/appeals/${taskId}/history`, { headers: authHeaders() }))
 }
 
 export interface AdminRiskAppealList {

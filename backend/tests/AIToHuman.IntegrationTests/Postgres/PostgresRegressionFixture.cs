@@ -143,6 +143,7 @@ public sealed class PostgresWorld : IDisposable
         services.AddScoped<IAdminAuditRepository, EfAdminAuditRepository>();
         services.AddScoped<IIdempotencyStore, EfIdempotencyStore>();
         services.AddScoped<IRiskRuleCatalogStore, EfRiskRuleCatalogStore>();
+        services.AddScoped<IRiskAppealRepository, EfRiskAppealRepository>();
         services.AddScoped<IRiskRuleCatalogProvider, RiskRuleCatalogStoreProvider>();
         services.AddScoped<IUnitOfWork, EfUnitOfWork>();
         services.AddSingleton<TimeProvider>(Clock);
@@ -169,6 +170,7 @@ public sealed class PostgresWorld : IDisposable
     public RiskRuleCatalogService RiskRules => Services.GetRequiredService<RiskRuleCatalogService>();
     public RiskEnforcementService Enforcement => Services.GetRequiredService<RiskEnforcementService>();
     public IRiskRuleCatalogStore RuleStore => Services.GetRequiredService<IRiskRuleCatalogStore>();
+    public IRiskAppealRepository AppealRecords => Services.GetRequiredService<IRiskAppealRepository>();
     public NotificationService Notifications => Services.GetRequiredService<NotificationService>();
     public ITaskRepository Tasks => Services.GetRequiredService<ITaskRepository>();
     public IOrderRepository Orders => Services.GetRequiredService<IOrderRepository>();

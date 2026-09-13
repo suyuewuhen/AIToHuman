@@ -161,7 +161,31 @@ public sealed record AdminRiskAppealItemResponse(
     string AppealStatus,
     string? AppealReason,
     DateTimeOffset? AppealedAt,
-    bool CanBeReleasedByAppeal);
+    bool CanBeReleasedByAppeal,
+    int AppealCount = 0);
+
+/// <summary>一次申诉的留档：提交理由、提交时的规则与结论、运营结论与依据。</summary>
+public sealed record AdminRiskAppealRecordResponse(
+    Guid Id,
+    string? RuleCode,
+    int RuleVersion,
+    string Verdict,
+    string Reason,
+    DateTimeOffset SubmittedAt,
+    string Status,
+    Guid? DecidedBy,
+    string? DecidedByName,
+    DateTimeOffset? DecidedAt,
+    string? DecisionNote);
+
+/// <summary>
+/// 某条任务的申诉轨迹。带上当前生效的节流上限，运营据此判断"这个人是不是已经在刷申诉"。
+/// </summary>
+public sealed record AdminRiskAppealHistoryResponse(
+    Guid TaskId,
+    IReadOnlyList<AdminRiskAppealRecordResponse> Items,
+    int MaxPerTask,
+    int MaxPerOwnerPerDay);
 
 public sealed record AdminRiskAppealListResponse(IReadOnlyList<AdminRiskAppealItemResponse> Items, int Limit);
 
