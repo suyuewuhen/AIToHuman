@@ -83,12 +83,12 @@ Domain 不引用 EF Core、HTTP、AI SDK 或对象存储 SDK。
 
 - Identity：账户、角色、登录、刷新令牌和服务者资料。
 - Conversations：对话、消息和 AI 运行记录。
-- Tasks：草稿、任务、步骤、位置摘要、发布和取消。
+- Tasks：草稿、任务、步骤、位置摘要、发布和取消。（现状：精确执行地址只向所有者与被选中的服务者披露，**每次读取都留痕**——含被拒绝的尝试，运营可用 `GET /api/v1/admin/address-access?taskId=&viewerId=&limit=` 按任务或按人审计，见 [领域模型](./domain-model.md) 第 7 节。）
 - Risk：规则检查、AI 辅助分类、审核队列和决策记录。（现状：确定性规则检查、运营可编辑的规则目录（版本历史/明细/编辑/恢复内置）、人工审核队列、**发布后复检**（规则收紧后重新判定仍在线任务：禁止类别自动下架、有订单的冻结订单、转人工的保持在线并要求复检，平台动作以固定系统身份写审计）与**申诉节流与留档**（单任务 3 次、单人 24 小时 5 次，每次申诉留档、运营可看轨迹）都已实现；AI 辅助分类、追加式决策历史与规则命中统计仍未实现。）
 - Applications：按固定悬赏报名、撤回、选择和并发控制，不承载服务者价格。
 - Orders：交易快照、状态机、执行事件和验收。
 - Messaging：订单会话、消息和实时推送。
-- Evidence：上传授权、元数据、病毒扫描状态和访问控制。
+- Evidence：上传授权、元数据、病毒扫描状态和访问控制。（现状：上传时先按声明类型校验签名，再做**容器白名单化 + 结构 fail-closed**——非白名单的扩展段/块一律丢弃，容器结构不合法一律 `422` 而不是原样放行；随后落库并进入扫描。这是容器规范化，**不是像素级重编码**，像素数据的兜底是内容扫描。）
 - Reviews：用户评价服务者、服务者评价用户、评价盲期、公开资料和基础信用指标。
 - Disputes：申诉、证据包和运营处理。
 - Notifications：站内通知及后续外部渠道。
@@ -102,7 +102,7 @@ Domain 不引用 EF Core、HTTP、AI SDK 或对象存储 SDK。
 
 作为事实来源，保存业务状态、事件、审计、对话元数据和文件元数据。敏感字段按等级加密或令牌化。
 
-> 实现现状（✅）：表结构由 EF Core Migration 单一来源维护，当前 26 个迁移覆盖 users、orders、tasks、task_applications、conversations、conversation_messages、notifications、order_messages、evidence、system_settings、system_setting_audits、admin_audit_entries、task_draft_revisions、idempotency_entries、risk_rule_catalog_revisions、task_risk_appeals 等表；Development 启动执行 `Database.Migrate()`，早期 `EnsureCreated()` 建出的旧库会自动基线化。运营可编辑的风险规则目录以**只追加的版本快照**落在 `risk_rule_catalog_revisions`（第 24 个迁移 `AddRiskRuleCatalogRevisions`：`Version` 唯一索引 + `CreatedAt` 索引，读取取版本号最大的一版），数据库里还没有覆盖版本时判定回退到代码内置目录（版本 1），每次判定把当时的版本号记在 `tasks.RiskRuleVersion` 上，因此任何一次拦截都能回溯到具体哪一版规则。发布后复检的处置落在 `tasks` 上（第 25 个迁移 `AddTaskRiskEnforcement`：补 `RiskEnforcementStatus`/`RiskEnforcementReason`/`RiskEnforcedAt` 三列，状态默认值 `None` 回填存量行，并加 `(Status, RiskRuleVersion)` 索引供复检挑候选）；申诉留档落在 `task_risk_appeals`（第 26 个迁移 `AddTaskRiskAppeals`：一行一次申诉、只追加，含提交时的规则代码/版本/结论与理由，运营结论写回同一行，`(TaskId, SubmittedAt)` 与 `(OwnerId, SubmittedAt)` 两条索引分别服务“看轨迹”和“按人算次数”）。
+> 实现现状（✅）：表结构由 EF Core Migration 单一来源维护，当前 27 个迁移覆盖 users、orders、tasks、task_applications、conversations、conversation_messages、notifications、order_messages、evidence、system_settings、system_setting_audits、admin_audit_entries、task_draft_revisions、idempotency_entries、risk_rule_catalog_revisions、task_risk_appeals、address_access_entries 等表；Development 启动执行 `Database.Migrate()`，早期 `EnsureCreated()` 建出的旧库会自动基线化。运营可编辑的风险规则目录以**只追加的版本快照**落在 `risk_rule_catalog_revisions`（第 24 个迁移 `AddRiskRuleCatalogRevisions`：`Version` 唯一索引 + `CreatedAt` 索引，读取取版本号最大的一版），数据库里还没有覆盖版本时判定回退到代码内置目录（版本 1），每次判定把当时的版本号记在 `tasks.RiskRuleVersion` 上，因此任何一次拦截都能回溯到具体哪一版规则。发布后复检的处置落在 `tasks` 上（第 25 个迁移 `AddTaskRiskEnforcement`：补 `RiskEnforcementStatus`/`RiskEnforcementReason`/`RiskEnforcedAt` 三列，状态默认值 `None` 回填存量行，并加 `(Status, RiskRuleVersion)` 索引供复检挑候选）；申诉留档落在 `task_risk_appeals`（第 26 个迁移 `AddTaskRiskAppeals`：一行一次申诉、只追加，含提交时的规则代码/版本/结论与理由，运营结论写回同一行，`(TaskId, SubmittedAt)` 与 `(OwnerId, SubmittedAt)` 两条索引分别服务“看轨迹”和“按人算次数”）。精确执行地址的访问留痕落在 `address_access_entries`（第 27 个迁移 `AddAddressAccessEntries`：`Id`/`TaskId`/`ViewerId`（可空，空表示匿名请求）/`ViewerRole`/`Outcome`/`OccurredAt`，**只追加、一次读取一行**，并给 `(TaskId, OccurredAt)` 与 `(ViewerId, OccurredAt)` 各建一条索引，分别服务“看某条任务被谁读过”和“看某个人读过哪些任务”；写入顺序是**先留痕再判断**，因此被拒绝的尝试同样在表里）。
 
 ### Redis
 

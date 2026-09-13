@@ -333,14 +333,6 @@ public sealed class TaskService(ITaskRepository repository, IOrderRepository ord
         return MapSummary(task);
     }
 
-    /// <summary>分阶段披露：只有所有者与被选中的服务者能读取执行地址，其他人返回 403。</summary>
-    public string? GetExecutionAddress(Guid id, Guid viewerId)
-    {
-        var task = repository.Get(id) ?? throw new KeyNotFoundException("任务不存在。");
-        var address = task.ExecutionAddressFor(viewerId);
-        if (address is null && task.HasExecutionAddress) throw new UnauthorizedAccessException("执行地址仅在订单成立后向参与者披露。");
-        return address;
-    }
     /// <summary>按任务查询订单（路由是 /tasks/{id}/order，因此这里的 id 是任务 ID）。</summary>
     public OrderResponse? GetOrderByTask(Guid taskId, Guid userId)
     {

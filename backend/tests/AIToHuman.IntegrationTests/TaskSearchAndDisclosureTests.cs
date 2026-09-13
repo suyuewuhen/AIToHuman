@@ -109,29 +109,6 @@ public sealed class TaskSearchAndDisclosureTests
     }
 
     [Fact]
-    public void Execution_address_is_staged_for_owner_and_selected_worker_only()
-    {
-        var (service, owner) = CreateService();
-        var selectedWorker = Guid.NewGuid();
-        var otherWorker = Guid.NewGuid();
-        var task = service.Create(new CreateTaskRequest(owner, "代取文件", "到前台取一份普通文件", "浦东新区", Now.AddHours(6), 50, ["上传取件码照片"], "世纪大道 100 号前台"));
-        service.Publish(task.Id, owner);
-        var selected = service.Apply(task.Id, new ApplyForTaskRequest(selectedWorker, "半小时可到"));
-        service.Apply(task.Id, new ApplyForTaskRequest(otherWorker, "一小时可到"));
-
-        // 未选人前只有所有者能读。
-        Assert.Equal("世纪大道 100 号前台", service.GetExecutionAddress(task.Id, owner));
-        Assert.Throws<UnauthorizedAccessException>(() => service.GetExecutionAddress(task.Id, selectedWorker));
-
-        service.Select(task.Id, selected.Applications.Single().Id, new SelectApplicationRequest(owner));
-
-        Assert.Equal("世纪大道 100 号前台", service.GetExecutionAddress(task.Id, owner));
-        Assert.Equal("世纪大道 100 号前台", service.GetExecutionAddress(task.Id, selectedWorker));
-        Assert.Throws<UnauthorizedAccessException>(() => service.GetExecutionAddress(task.Id, otherWorker));
-        Assert.Throws<UnauthorizedAccessException>(() => service.GetExecutionAddress(task.Id, Guid.NewGuid()));
-    }
-
-    [Fact]
     public void Hall_list_and_public_detail_never_expose_the_address()
     {
         var (service, owner) = CreateService();
@@ -140,21 +117,10 @@ public sealed class TaskSearchAndDisclosureTests
 
         var summary = service.SearchPublished(new TaskSearchRequest(null, null, null, 10, null)).Items.Single();
 
-        // 公开信息里只暴露“是否填写了执行地址”，地址本身要走受控接口。
+        // 公开信息里只暴露“是否填写了执行地址”，地址本身要走受控接口（读取会留痕，见 AddressAccessAuditTests）。
         Assert.True(summary.HasExecutionAddress);
         Assert.DoesNotContain("世纪大道", System.Text.Json.JsonSerializer.Serialize(summary), StringComparison.Ordinal);
         Assert.DoesNotContain("世纪大道", System.Text.Json.JsonSerializer.Serialize(service.GetPublic(task.Id, null)), StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void Task_without_address_returns_null_instead_of_forbidden()
-    {
-        var (service, owner) = CreateService();
-        var taskId = Publish(service, owner, "没有地址", "浦东新区", 30, Now.AddHours(2));
-
-        Assert.Null(service.GetExecutionAddress(taskId, owner));
-        Assert.Null(service.GetExecutionAddress(taskId, Guid.NewGuid()));
-        Assert.False(service.GetPublic(taskId, null)!.HasExecutionAddress);
     }
 
     private static Guid Publish(TaskService service, Guid owner, string title, string district, decimal reward, DateTimeOffset deadline)

@@ -246,3 +246,23 @@ public sealed record RiskRuleCatalogVersionResponse(
     string NightWindowEnd);
 
 public sealed record RiskRuleCatalogVersionListResponse(IReadOnlyList<RiskRuleCatalogVersionResponse> Items, int Limit);
+
+/// <summary>
+/// 精确执行地址的访问留痕：谁（<paramref name="ViewerId"/>，为空表示匿名）、以什么身份、
+/// 在什么时候读了哪条任务的地址，以及这次**有没有真的披露**（<paramref name="Disclosed"/>）。
+/// </summary>
+public sealed record AdminAddressAccessItemResponse(
+    Guid Id,
+    Guid TaskId,
+    Guid? ViewerId,
+    string? ViewerEmail,
+    string ViewerRole,
+    string Outcome,
+    bool Disclosed,
+    DateTimeOffset OccurredAt);
+
+/// <summary><paramref name="DeniedCount"/> 是同一过滤条件下被拒绝的尝试总数——批量试探就藏在这个数字里。</summary>
+public sealed record AdminAddressAccessListResponse(
+    IReadOnlyList<AdminAddressAccessItemResponse> Items,
+    int Limit,
+    int DeniedCount);

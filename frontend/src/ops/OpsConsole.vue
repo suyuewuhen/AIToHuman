@@ -12,7 +12,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { APP_HOME_URL } from '../api/base'
 import { clearAccessToken, getAccessToken, getCurrentUser, login, type CurrentUser } from '../api/auth'
-import { adminAuditActorLabel, adminOrderStatusLabel, adminTaskStatusLabel, cancelAdminTask, decideRiskAppeal, decideRiskReview, disputeResolutionLabel, getRiskRuleDetail, getRiskRules, listAdminAudits, listDisputedOrders, listRiskAppealHistory, listRiskAppeals, listRiskReviews, listRiskRuleVersions, resetRiskRules, resolveDispute, riskAppealStatusLabel, riskReviewStatusLabel, riskVerdictLabel, runRiskRecheck, searchAdminTasks, searchAdminUsers, updateRiskRules, type AdminAuditItem, type AdminOrderItem, type AdminRiskAppealItem, type AdminRiskAppealRecord, type AdminRiskReviewItem, type AdminTaskItem, type AdminUserItem, type DisputeDecision, type RiskAppealDecision, type RiskReviewDecision, type RiskRuleCatalog, type RiskRuleCatalogDetail, type RiskRuleCatalogVersion } from '../api/admin'
+import { adminAuditActorLabel, addressAccessOutcomeLabel, addressAccessRoleLabel, adminOrderStatusLabel, adminTaskStatusLabel, cancelAdminTask, decideRiskAppeal, decideRiskReview, disputeResolutionLabel, getRiskRuleDetail, getRiskRules, listAddressAccess, listAdminAudits, listDisputedOrders, listRiskAppealHistory, listRiskAppeals, listRiskReviews, listRiskRuleVersions, resetRiskRules, resolveDispute, riskAppealStatusLabel, riskReviewStatusLabel, riskVerdictLabel, runRiskRecheck, searchAdminTasks, searchAdminUsers, updateRiskRules, type AdminAddressAccessItem, type AdminAuditItem, type AdminOrderItem, type AdminRiskAppealItem, type AdminRiskAppealRecord, type AdminRiskReviewItem, type AdminTaskItem, type AdminUserItem, type DisputeDecision, type RiskAppealDecision, type RiskReviewDecision, type RiskRuleCatalog, type RiskRuleCatalogDetail, type RiskRuleCatalogVersion } from '../api/admin'
 import { listSettingAudits, listSettings, resetSetting, settingChoiceLabel, settingSourceLabel, testSetting, updateSetting, type AdminSetting, type SettingAudit, type SettingTestResult } from '../api/settings'
 import { formatDeadline } from '../utils/format'
 
@@ -110,7 +110,7 @@ onMounted(async () => {
 })
 
 // 运营配置：入口只对管理员展示，真正的授权在服务端（/api/v1/admin/settings 需要管理员身份）。
-const settingsTab = ref<'values' | 'audits' | 'tasks' | 'users' | 'disputes' | 'risk' | 'appeals' | 'rules'>('values')
+const settingsTab = ref<'values' | 'audits' | 'tasks' | 'users' | 'disputes' | 'risk' | 'appeals' | 'rules' | 'addresses'>('values')
 const settingsLoading = ref(false)
 const settingsError = ref('')
 const settingsNotice = ref('')
@@ -151,6 +151,12 @@ const adminAppealNote = ref('')
 const appealHistoryTaskId = ref('')
 const appealHistory = ref<AdminRiskAppealRecord[]>([])
 const appealHistoryBusy = ref(false)
+// 地址留痕：精确地址是最敏感的用户数据，谁能看（所有者与被选中的服务者）由服务端决定，
+// 这里只展示"谁在什么时候读过、有没有真的给出去"，被拒绝的尝试同样在列表里。
+const addressAccessItems = ref<AdminAddressAccessItem[]>([])
+const addressAccessDenied = ref(0)
+const addressAccessTaskId = ref('')
+const addressAccessViewerId = ref('')
 // 规则目录：查看当前生效的规则（连匹配词）+ 版本历史，并整份替换出一版新目录。
 // 编辑态单独放一份草稿（匹配词在界面上是一行一个的文本框），点“保存为新版本”才提交。
 const adminRuleDetail = ref<RiskRuleCatalogDetail | null>(null)
@@ -509,8 +515,7 @@ async function confirmAdminAppealDecision(item: AdminRiskAppealItem, decision: R
  * 展开/收起某条任务的申诉轨迹：任务上只留最新一次申诉状态，改过文案之后上一轮的理由与结论就没地方看了，
  * 所以轨迹按需从留档接口读（含每次提交时的规则版本与运营结论）。
  */
-async function toggleAppealHistory(item: AdminRiskAppealItem) {
-  if (appealHistoryTaskId.value === item.taskId) {
+async function toggleAppealHistory(item: AdminRiskAppealItem) {  if (appealHistoryTaskId.value === item.taskId) {
     appealHistoryTaskId.value = ''
     return
   }
@@ -530,9 +535,27 @@ async function toggleAppealHistory(item: AdminRiskAppealItem) {
   }
 }
 
+/**
+ * 地址留痕：谁在什么时候读过精确执行地址、有没有真的给出去。被拒绝的尝试也在列表里——
+ * 那才是判断"有没有人在批量试探"的依据，所以页面把拒绝次数单独标出来。
+ */
+async function loadAddressAccess() {
+  settingsTab.value = 'addresses'
+  adminTaskBusy.value = true
+  adminTaskError.value = ''
+  try {
+    const result = await listAddressAccess(addressAccessTaskId.value, addressAccessViewerId.value)
+    addressAccessItems.value = result.items
+    addressAccessDenied.value = result.deniedCount
+  } catch (error) {
+    adminTaskError.value = error instanceof Error ? error.message : '读取地址留痕失败'
+  } finally {
+    adminTaskBusy.value = false
+  }
+}
+
 // 规则目录：读取当前生效的一版 + 版本历史，编辑后整份提交（服务端把版本号 +1 并写运营审计）。
-async function loadRiskRuleCatalog() {
-  settingsTab.value = 'rules'
+async function loadRiskRuleCatalog() {  settingsTab.value = 'rules'
   adminRuleBusy.value = true
   adminRuleError.value = ''
   adminRuleNotice.value = ''
@@ -690,7 +713,8 @@ async function confirmResetRiskRules() {
           <button type="button" :class="{ selected: settingsTab === 'risk' }" @click="loadAdminRiskReviews()">风险复核 <b>{{ adminRiskReviews.length }}</b></button>
           <button type="button" :class="{ selected: settingsTab === 'appeals' }" @click="loadAdminRiskAppeals()">误拦申诉 <b>{{ adminRiskAppeals.length }}</b></button>
           <button type="button" :class="{ selected: settingsTab === 'rules' }" @click="loadRiskRuleCatalog()">规则目录 <b>v{{ adminRuleDetail?.version ?? adminRiskRules?.version ?? 1 }}</b></button>
-          <button type="button" class="settings-refresh" :disabled="settingsLoading || adminTaskBusy" @click="settingsTab === 'audits' ? loadAdminAudits() : (settingsTab === 'tasks' ? loadAdminTasks() : (settingsTab === 'users' ? loadAdminUsers() : (settingsTab === 'disputes' ? loadAdminOrders() : (settingsTab === 'risk' ? loadAdminRiskReviews() : (settingsTab === 'appeals' ? loadAdminRiskAppeals() : (settingsTab === 'rules' ? loadRiskRuleCatalog() : loadSettings()))))))">{{ settingsLoading || adminTaskBusy ? '读取中…' : '刷新 ↻' }}</button>
+          <button type="button" :class="{ selected: settingsTab === 'addresses' }" @click="loadAddressAccess()">地址留痕 <b>{{ addressAccessDenied }}</b></button>
+          <button type="button" class="settings-refresh" :disabled="settingsLoading || adminTaskBusy" @click="settingsTab === 'audits' ? loadAdminAudits() : (settingsTab === 'tasks' ? loadAdminTasks() : (settingsTab === 'users' ? loadAdminUsers() : (settingsTab === 'disputes' ? loadAdminOrders() : (settingsTab === 'risk' ? loadAdminRiskReviews() : (settingsTab === 'appeals' ? loadAdminRiskAppeals() : (settingsTab === 'rules' ? loadRiskRuleCatalog() : (settingsTab === 'addresses' ? loadAddressAccess() : loadSettings())))))))">{{ settingsLoading || adminTaskBusy ? '读取中…' : '刷新 ↻' }}</button>
         </div>
         <p v-if="settingsError" class="auth-error">{{ settingsError }}</p>
         <p v-if="settingsNotice" class="settings-notice">{{ settingsNotice }}</p>
@@ -804,6 +828,25 @@ async function confirmResetRiskRules() {
                 <button type="button" class="settings-secondary danger" :disabled="adminTaskBusy" @click="confirmAdminRiskDecision(item, 'Reject')">驳回</button>
                 <button type="button" class="settings-secondary" :disabled="adminTaskBusy" @click="adminRiskDecisionId = ''">取消</button>
               </template>
+            </div>
+          </div>
+        </div>
+
+        <div v-else-if="settingsTab === 'addresses'" class="settings-body">
+          <p class="settings-hint">精确执行地址是最敏感的用户数据：只有任务所有者与被选中的服务者能读。<b>每一次读取都留痕</b>，包括被拒绝的尝试——批量试探就藏在"已拒绝"的计数里。地址本身不在这张表里，这里只记"谁在什么时候读了哪条任务、有没有真的给出去"。</p>
+          <div class="setting-control">
+            <input v-model.trim="addressAccessTaskId" type="text" placeholder="按任务 ID 过滤（可留空）" @keyup.enter="loadAddressAccess()" />
+            <input v-model.trim="addressAccessViewerId" type="text" placeholder="按查看者 ID 过滤（可留空）" @keyup.enter="loadAddressAccess()" />
+            <button type="button" class="settings-primary" :disabled="adminTaskBusy" @click="loadAddressAccess()">查询</button>
+          </div>
+          <p v-if="adminTaskError" class="auth-error">{{ adminTaskError }}</p>
+          <p class="settings-hint">当前过滤条件下：共 <b>{{ addressAccessItems.length }}</b> 条留痕，其中被拒绝 <b>{{ addressAccessDenied }}</b> 次。</p>
+          <span v-if="addressAccessItems.length === 0" class="settings-empty">还没有访问留痕。</span>
+          <div v-for="item in addressAccessItems" v-else :key="item.id" class="admin-row">
+            <div>
+              <strong>{{ addressAccessOutcomeLabel(item.outcome) }} · {{ addressAccessRoleLabel(item.viewerRole) }}</strong>
+              <small>{{ formatDeadline(item.occurredAt) }} · 任务 {{ item.taskId.slice(0, 8) }} · 查看者 {{ item.viewerEmail ?? (item.viewerId ? item.viewerId.slice(0, 8) : '匿名') }}</small>
+              <small v-if="!item.disclosed" class="evidence-note">这次没有把地址给出去。</small>
             </div>
           </div>
         </div>

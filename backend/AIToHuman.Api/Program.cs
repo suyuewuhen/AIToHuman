@@ -87,6 +87,7 @@ if (usePostgres)
     builder.Services.AddScoped<IAdminOrderQuery, EfAdminOrderQuery>();
     builder.Services.AddScoped<IUserDirectory, EfUserDirectory>();
     builder.Services.AddScoped<IAdminAuditRepository, EfAdminAuditRepository>();
+    builder.Services.AddScoped<IAddressAccessRepository, EfAddressAccessRepository>();
     builder.Services.AddScoped<IIdempotencyStore, EfIdempotencyStore>();
     builder.Services.AddScoped<IRiskRuleCatalogStore, EfRiskRuleCatalogStore>();
     builder.Services.AddScoped<IRiskAppealRepository, EfRiskAppealRepository>();
@@ -117,6 +118,7 @@ else
     builder.Services.AddSingleton<ISystemSettingsRepository, InMemorySystemSettingRepository>();
     builder.Services.AddSingleton<IUserDirectory, EmptyUserDirectory>();
     builder.Services.AddSingleton<IAdminAuditRepository, InMemoryAdminAuditRepository>();
+    builder.Services.AddSingleton<IAddressAccessRepository, InMemoryAddressAccessRepository>();
     builder.Services.AddSingleton<IIdempotencyStore, InMemoryIdempotencyStore>();
     builder.Services.AddSingleton<IRiskRuleCatalogStore, InMemoryRiskRuleCatalogStore>();
     builder.Services.AddSingleton<IRiskAppealRepository, InMemoryRiskAppealRepository>();
@@ -144,6 +146,8 @@ builder.Services.AddScoped<ClamAvEvidenceScanner>();
 builder.Services.AddScoped<IEvidenceScanner, SettingsEvidenceScanner>();
 builder.Services.AddScoped<EvidenceService>();
 builder.Services.AddScoped<TaskService>();
+    // 执行地址的读取与留痕（地址是最敏感的用户数据，读过就要能查到）。
+    builder.Services.AddScoped<AddressAccessService>();
 builder.Services.AddScoped<ConversationService>();
 // Outbox 派发：把已落库但还没推送的通知发给在线客户端。
 builder.Services.AddHostedService<NotificationDispatcher>();
@@ -342,9 +346,9 @@ tasks.MapGet("/applications/mine", (Guid? workerId, int? limit, ClaimsPrincipal 
 // 公开详情：草稿只对所有者可见；这里用可空身份，匿名访问草稿一律 404。
 tasks.MapGet("/{id:guid}", (Guid id, Guid? userId, ClaimsPrincipal user, IHostEnvironment environment, TaskService service) =>
     service.GetPublic(id, TryResolveUserId(user, environment, userId)) is { } task ? Results.Ok(task) : Results.NotFound());
-// 精确执行地址：只有所有者与被选中的服务者可读，其他人 403。
-tasks.MapGet("/{id:guid}/execution-address", (Guid id, Guid? userId, ClaimsPrincipal user, IHostEnvironment environment, TaskService service) =>
-    Results.Ok(new TaskExecutionAddressResponse(id, service.GetExecutionAddress(id, ResolveUserId(user, userId ?? Guid.Empty, environment)))));
+// 精确执行地址：只有所有者与被选中的服务者可读，其他人 403（读过就留痕，被拒绝的尝试同样留痕）。
+tasks.MapGet("/{id:guid}/execution-address", (Guid id, Guid? userId, ClaimsPrincipal user, IHostEnvironment environment, AddressAccessService service) =>
+    Results.Ok(new TaskExecutionAddressResponse(id, service.Read(id, ResolveUserId(user, userId ?? Guid.Empty, environment)).Address)));
 tasks.MapGet("/{id:guid}/applications", (Guid id, Guid? ownerId, ClaimsPrincipal user, IHostEnvironment environment, TaskService service) =>
 {
     EnsureRole(user, "owner", environment);
@@ -592,6 +596,9 @@ adminConsole.MapPost("/orders/{id:guid}/resolve", (Guid id, AdminResolveDisputeR
     return Results.Ok(resolved);
 });
 adminConsole.MapGet("/audits", (int? limit, AdminConsoleService service) => Results.Ok(service.ListAudits(limit)));
+// 精确地址的访问留痕：谁在什么时候读过哪条任务的地址、有没有真的给出去（拒绝的尝试也在里面）。
+adminConsole.MapGet("/address-access", (Guid? taskId, Guid? viewerId, int? limit, AddressAccessService service) =>
+    Results.Ok(service.ListAudits(taskId, viewerId, limit)));
 // 风险复核：确定性规则判成“需要人工复核”的任务排在这里，运营只能放行或驳回，依据必填并进审计。
 // 被禁止的类别不会出现在队列里——它们由领域规则直接锁死，人工无权放行。
 adminConsole.MapGet("/risk/reviews", (int? limit, AdminConsoleService service) =>

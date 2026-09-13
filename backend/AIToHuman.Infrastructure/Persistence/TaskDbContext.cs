@@ -27,6 +27,7 @@ public sealed class TaskDbContext(DbContextOptions<TaskDbContext> options) : DbC
     public DbSet<IdempotencyRecord> IdempotencyEntries => Set<IdempotencyRecord>();
     public DbSet<RiskRuleCatalogRevisionRecord> RiskRuleCatalogRevisions => Set<RiskRuleCatalogRevisionRecord>();
     public DbSet<RiskAppealRecordRecord> RiskAppeals => Set<RiskAppealRecordRecord>();
+    public DbSet<AddressAccessRecord> AddressAccessEntries => Set<AddressAccessRecord>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -261,6 +262,17 @@ public sealed class TaskDbContext(DbContextOptions<TaskDbContext> options) : DbC
             entity.Property(item => item.Reason).HasMaxLength(TaskItem.MaxRiskAppealReasonLength).IsRequired();
             entity.Property(item => item.Status).HasConversion<string>().HasMaxLength(16).IsRequired();
             entity.Property(item => item.DecisionNote).HasMaxLength(RiskAppealRecord.MaxDecisionNoteLength);
+        });
+
+        modelBuilder.Entity<AddressAccessRecord>(entity =>
+        {
+            entity.ToTable("address_access_entries");
+            entity.HasKey(item => item.Id);
+            // 两种查询各一条索引：按任务看"谁看过这条地址"，按人看"这个人查过多少地址"。
+            entity.HasIndex(item => new { item.TaskId, item.OccurredAt });
+            entity.HasIndex(item => new { item.ViewerId, item.OccurredAt });
+            entity.Property(item => item.ViewerRole).HasConversion<string>().HasMaxLength(20).IsRequired();
+            entity.Property(item => item.Outcome).HasConversion<string>().HasMaxLength(16).IsRequired();
         });
     }
 }
@@ -546,8 +558,7 @@ public sealed class RiskRuleCatalogRevisionRecord
 }
 
 /// <summary>误拦申诉的留档：一次申诉一行，只追加；运营给出结论后把结论写回同一行。</summary>
-public sealed class RiskAppealRecordRecord
-{
+public sealed class RiskAppealRecordRecord{
     public Guid Id { get; set; }
     public Guid TaskId { get; set; }
     public Guid OwnerId { get; set; }
@@ -563,4 +574,19 @@ public sealed class RiskAppealRecordRecord
     public Guid? DecidedBy { get; set; }
     public DateTimeOffset? DecidedAt { get; set; }
     public string? DecisionNote { get; set; }
+}
+
+/// <summary>精确执行地址的访问留痕：一次读取一行，只追加（含被拒绝的尝试）。</summary>
+public sealed class AddressAccessRecord
+{
+    public Guid Id { get; set; }
+    public Guid TaskId { get; set; }
+
+    /// <summary>请求者；为空表示匿名（未登录）请求。</summary>
+    public Guid? ViewerId { get; set; }
+
+    /// <summary>请求者身份（Owner / SelectedWorker / Other）与结论（Granted / Denied / NotSet）。</summary>
+    public string ViewerRole { get; set; } = "Other";
+    public string Outcome { get; set; } = "Denied";
+    public DateTimeOffset OccurredAt { get; set; }
 }

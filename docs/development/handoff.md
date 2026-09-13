@@ -6,7 +6,7 @@
 
 当前分支：`main`
 
-最新已提交基线：本轮之前 `main` 与 `origin/main` 同步在 `e733cf5`（发布后风险复检闭环，是本轮的第一批）；本轮「申诉节流与留档 + 文档同步」是紧随其后的提交，并已推送保持两边一致（见第 2 节）。
+最新已提交基线：本轮之前 `main` 与 `origin/main` 同步在 `dc68f98`（申诉节流与留档）；本轮「精确地址访问审计 + 凭证容器白名单化」是紧随其后的一个提交，并已推送保持两边一致（见第 2 节）。
 
 本文面向接手开发、代码评审和本地联调人员。内容以已提交代码为准；上一版文档里“已提交基线 / 当前未提交实现”的双轨描述已经过时——所有多轮 AI、通知、会话与凭证实现都已提交。文中每条“已实现 / 未实现”的结论都对应第 11 节可复现的验证步骤。
 
@@ -29,11 +29,11 @@ AI 多轮澄清（每轮一个问题）
 → 双方评价，双方提交或 7 天后公开
 ```
 
-尚未实现：真实支付和托管、实名认证、真实的病毒/内容扫描服务商（协议已接好，只差选定/部署服务）、争议的责任判定与赔付/退款、争议申诉与处理时限、客服工单、精确地址访问审计、图片重新编码；运营后台的任务/用户检索、人工下架、争议处置、风险复核、误拦申诉、**风险规则目录的编辑**与**发布后复检**都已实现，风险侧缺的是模型辅助分类、规则命中统计与看板、规则目录编辑的审批流；另外禁止类别命中的已分配任务目前只做"冻结订单 + 运营按争议处置"，**没有自动退款或赔付**（要等支付与托管那一批）。
+尚未实现：真实支付和托管、实名认证、真实的病毒/内容扫描服务商（协议已接好，只差选定/部署服务）、争议的责任判定与赔付/退款、争议申诉与处理时限、客服工单、凭证图片的**像素级重编码**（需要图像编解码库，离线取不到；当前做的是容器白名单化 + 结构 fail-closed，兜底靠内容扫描）；运营后台的任务/用户检索、人工下架、争议处置、风险复核、误拦申诉、**风险规则目录的编辑**、**发布后复检**与**精确地址访问审计**都已实现，风险侧缺的是模型辅助分类、规则命中统计与看板、规则目录编辑的审批流；另外禁止类别命中的已分配任务目前只做"冻结订单 + 运营按争议处置"，**没有自动退款或赔付**（要等支付与托管那一批）。
 
 ## 2. 当前工作区状态
 
-工作区状态：`main` 与 `origin/main` 同步；本轮的「发布后风险复检」与「申诉节流与留档」随本轮提交一起进入 `main` 并推送（`git log -1` 可见）。上一版交接文档描述的“多轮 AI 未提交实现”已经全部提交，本文不再区分“基线 / 未提交”两种状态。
+工作区状态：`main` 与 `origin/main` 同步；本轮的「精确地址访问审计」与「凭证容器白名单化」随本轮提交一起进入 `main` 并推送（`git log -1` 可见）。上一版交接文档描述的“多轮 AI 未提交实现”已经全部提交，本文不再区分“基线 / 未提交”两种状态。
 
 从基线 `f196850` 到 `e45da76`（多轮 AI 与会话持久化那一轮）的主要变化：
 
@@ -106,6 +106,7 @@ docs/                             ai-planning、api/api-guidelines、architectur
 - 公开详情只对已发布及之后的状态开放；`ReadyToPublish` 草稿仅所有者可见，其他人（含匿名）一律 `404`，避免草稿内容泄露。
 - 精确执行地址属于订单参与者层信息：所有者始终可读，被选中的服务者在订单成立后可读，已报名但未被选中的服务者与其他人返回 `403`；大厅与公开详情只暴露 `hasExecutionAddress` 布尔值，永远不含地址本身。
 - 需求方在选人前能看到服务者的公开评价摘要：报名列表（`GET /api/v1/tasks/{id}/applications`，仅所有者）每条报名都带 `workerAverageRating` 与 `workerReviewCount`，**只统计已公开的评价**（同一订单双方都提交，或订单完成满 7 天），盲期内的评价不计入；口径与 `GET /api/v1/users/{id}/review-summary` 完全一致（服务层用同一个 `PublicCredit` 计算）。没有公开评价的服务者显示 0 分 / 0 条，页面写“暂无公开评价”而不是伪造分数；每个报名只看自己那个 workerId，不会串号。
+- **精确地址的访问审计**（`address_access_entries`，迁移 27）：执行地址是全系统最敏感的用户数据，所以"谁能看"（所有者与被选中的服务者，见下一条）之外还必须有"谁看过"。每一次读取都写一条只追加的留痕（`AddressAccessEntry`：任务、查看者、身份、结论、时间），**被拒绝的尝试同样留痕**——批量试探在日志里就藏在这些拒绝记录里。身份与结论全部由领域层从任务本身推出（所有者 / 被选中的服务者 / 其他人；有地址 + 参与者 = `Granted`，有地址但不是参与者 = `Denied`，任务没登记地址 = `NotSet`，不把"没有地址可看"算成越权），不信任调用方传进来的角色。匿名请求记成"没有 viewer id"，不占用任何真实用户。应用层的顺序是**先留痕再判断**：落库之后才决定抛 `403` 还是返回地址，避免留下一条"读了不记"的旁路（原来那个不留痕的 `TaskService.GetExecutionAddress` 已删除）。运营用 `GET /api/v1/admin/address-access?taskId=&viewerId=&limit=` 查（默认 50、上限 200），响应里带同一过滤条件下的**拒绝次数**，运营后台有"地址留痕"页签。
 
 - 草稿历史（`task_draft_revisions`，迁移 21）：**一行就是一个版本的完整快照**，只追加、不可改。创建草稿时写入第 1 版（`changeSummary = "创建草稿"`，`editedBy` 是创建者），之后每次编辑追加一版，版本号在同一任务内单调递增。每版都记下该版文本对应的风险结论（`riskVerdict`/`riskRuleCode`/`riskRuleVersion`），所以能回答"第几版被判成禁止、当时用的是哪一版规则"。
 - 每次编辑由领域层比对前后字段得出"改了哪些字段"（标题/描述/公开区域/截止时间/悬赏/验收标准/执行地址/报名截止时间），拼成 `changeSummary`，例如"标题、悬赏"；超过 6 项收敛成"…等 N 项"；一个字段都没变则写"无字段变化"。
@@ -171,7 +172,10 @@ docs/                             ai-planning、api/api-guidelines、architectur
 - 扫描没给出结论时凭证保持 `Pending`（不可下载）：后台 `EvidenceRescanService` 每 60 秒重扫一批，同一条凭证退避 30 秒、最多尝试 5 次；文件已不在存储里则直接判定为 `Rejected`。用尽次数后保留待扫描状态并写明“停止自动重试”，交给人工处理，不会无声无息地永远挂着。
 - 凭证接口会返回检查次数与最近一次说明（`scanAttempts` / `lastScanNote` / `scanExhausted`），前端凭证面板直接显示，因此“为什么不可下载”对双方都是可见的。
 - 类型白名单为 JPEG / PNG / WebP / PDF，且**刻意不做成运营配置**（放开它等于允许上传可执行内容）。服务端不信客户端声明的 MIME：先做白名单校验，再按**文件签名**核对内容（PNG 头、JPEG SOI、WebP RIFF+WEBP、`%PDF`），不一致直接拒绝。
-- 上传时默认剥离元数据（`evidence.stripMetadata`，默认开启）：JPEG 丢掉 EXIF/XMP（含 GPS）与注释段、PNG 丢掉 `tEXt`/`zTXt`/`iTXt`/`eXIf`/`tIME` 块、WebP 丢掉 `EXIF`/`XMP ` 子块并同步清掉 VP8X 的对应标志位与 RIFF 长度；**像素数据逐字节不动**，也不需要图像库（纯字节解析）。剥离结果写进 `metadataRemoved` 并落库，前端凭证面板会显示“已在上传时移除元数据：…”；需要完整取证链时可以把这个开关关掉，保留原始文件。PDF 不做处理（没有统一的元数据块结构）。
+- 上传时默认做**容器白名单化 + 结构校验**（`evidence.stripMetadata`，默认开启）：JPEG 丢掉**全部** APPn 扩展段（0xE0–0xEF，含 JFIF 与 ICC）与 COM 注释、PNG 只保留结构必需的 `IHDR`/`PLTE`/`tRNS`/`IDAT`/`IEND`、WebP 只保留 `VP8 `/`VP8L`/`VP8X`/`ALPH`/`ANIM`/`ANMF`（并同步清掉 VP8X 标志位与 RIFF 长度）；**像素数据逐字节不动**，也不需要图像库（纯字节解析）。
+  - 口径是**白名单而不是黑名单**：不认识的扩展段/块一律丢掉——嵌入载荷最省事的藏法就是"造一个私有块"，黑名单永远追不上；丢掉之后文件仍然是合法的 JPEG/PNG/WebP（APPn 与辅助块都是可选的）。留痕里已知元数据写原名（`EXIF/XMP`、`JPEG 注释`、`PNG tEXt`…），其他写成 `JPEG APP13`、`PNG 未知块(prVt)`、`WebP 未知块(xxxx)`。
+  - **结构坏了就拒绝**（fail closed）：JPEG 段长度越界、缺 SOS 之后的结束标记，PNG 缺 `IEND` 或没有 `IDAT`，WebP 块长度越界或没有图像数据块——这些情况返回 `422`「凭证内容不是合法的 PNG（缺少结束块 IEND），已拒绝保存。」，而不是把一份自己都解析不了的文件存下来交给下游解码器与扫描器去赌。剥离结果写进 `metadataRemoved` 并落库，前端凭证面板会显示"已在上传时移除元数据：…"；需要完整取证链时可以把这个开关关掉，保留原始文件。PDF 不做处理（没有统一的块结构）。
+  - **明确不是像素级重编码**：重编码需要图像编解码库（当前环境离线取不到）。真正的兜底是内容扫描（`http`/`clamav` 两条路与 `failMode` 的 closed/open 语义都有用例覆盖）。
 - 按人限速（`evidence.uploadsPerUserPerHour`，默认 60）：同一个上传者一小时内提交的凭证数上限，计数直接查数据库（`IX_evidence_UploadedBy_CreatedAt`），因此多实例部署也一致；超限返回 `422` 与“一小时内的凭证上传次数已达上限（N 次），请稍后再试。”
 - 摘要与大小都按**真正存下来的内容**计算（先剥离、再核对签名与大小、最后算 SHA-256），所以剥离不会绕过单份上限。
 - 存储键完全由系统生成（`{orderId:N}/{evidenceId:N}.{ext}`），原始文件名只作为展示元数据，永不参与路径拼接。
@@ -484,7 +488,7 @@ netstat -ano | Select-String ':5188|:5173'
 | GET | `/api/v1/tasks?district=&minReward=&maxReward=&limit=&cursor=` | 大厅列表，游标分页与筛选 |
 | GET | `/api/v1/tasks/mine?ownerId=...` | 所有者查看自己的全部任务及状态（草稿、已发布、已分配、已结束） |
 | GET | `/api/v1/tasks/{id}` | 公开任务详情；草稿仅所有者可见，其他人 404 |
-| GET | `/api/v1/tasks/{id}/execution-address` | 精确执行地址；仅所有者与被选中的服务者 |
+| GET | `/api/v1/tasks/{id}/execution-address` | 精确执行地址；仅所有者与被选中的服务者（其余 403）；**每次读取都留痕** |
 | POST | `/api/v1/tasks` | owner 创建任务草稿 |
 | PUT | `/api/v1/tasks/{id}` | 所有者编辑草稿（仅 `ReadyToPublish`；字段校验与创建一致，改完重判风险并作废原人工复核结论，同时追加一版快照） |
 | GET | `/api/v1/tasks/{id}/revisions?ownerId=...` | 草稿历史（仅所有者）：每版快照、变更摘要、当版风险结论，以及**与上一版的逐字段差异**（`changes`） |
@@ -527,6 +531,7 @@ netstat -ano | Select-String ':5188|:5173'
 | POST | `/api/v1/admin/settings/{key}/test` | 只读自检（目录可写、服务可达） |
 | GET | `/api/v1/admin/settings/audits?limit=` | 配置变更审计，按时间倒序 |
 | GET | `/api/v1/admin/audits?limit=` | 运营操作审计（人工下架等），按时间倒序 |
+| GET | `/api/v1/admin/address-access?taskId=&viewerId=&limit=` | 精确地址的访问留痕（含被拒绝的尝试），返回条目与同一过滤条件下的拒绝次数 |
 | GET | `/api/v1/admin/tasks?keyword=&status=&limit=` | 跨所有者检索任务（标题/描述/区域模糊匹配 + 状态过滤） |
 | GET | `/api/v1/admin/tasks/{id}` | 任务详情（含报名者与订单状态） |
 | POST | `/api/v1/admin/tasks/{id}/cancel` | 人工下架（必须给原因，原因进运营审计；已分配任务返回 422） |
@@ -551,7 +556,7 @@ netstat -ano | Select-String ':5188|:5173'
 
 Development + PostgreSQL 启动时改为应用 EF Core 迁移（`Database.Migrate()`），不再使用 `EnsureCreated()` 和幂等建表 SQL。生产环境由部署流程执行迁移，不在应用启动时自动迁移。
 
-迁移历史（26 个）：`AddUsers` → `AddOrders` → `AddOrderEvidence` → `AddReviews` → `AddOrderRework` → `AddConversations` → `AddTaskTables` → `AddConcurrencyTokens` → `AddNotifications` → `AddOrderMessages` → `AddTaskExecutionAddress` → `AddEvidence` → `AddSystemSettings` → `AddEvidenceScanAttempts` → `AddEvidenceMetadataRemoved` → `AddAdminAudit` → `AddOrderCancellationAndTaskExpiry` → `AddApplicationDeadline` → `AddOrderDispute` → `AddTaskRiskAssessment` → `AddTaskDraftRevisions` → `AddIdempotencyEntries` → `AddRiskAppeal` → `AddRiskRuleCatalogRevisions` → `AddTaskRiskEnforcement` → `AddTaskRiskAppeals`。其中 `AddTaskTables` 补上了此前只由 `EnsureCreated()` 建出、从未纳入迁移的 `tasks` 与 `task_applications` 两张核心表；`AddConcurrencyTokens` 给 `tasks`/`orders` 加 `Version` 乐观并发令牌；`AddTaskExecutionAddress` 给 `tasks` 加参与者层的精确执行地址；`AddEvidence` 建 `evidence` 表；`AddSystemSettings` 建运营配置的两张表；`AddEvidenceScanAttempts` 给 `evidence` 补上扫描尝试次数、最近一次说明与尝试时间；`AddEvidenceMetadataRemoved` 补上“已移除元数据”说明与按人限速用的索引；`AddAdminAudit` 建运营操作审计表 `admin_audit_entries`（人工下架等动作只追加留痕）；`AddOrderCancellationAndTaskExpiry` 给 `orders` 加取消三列、给 `tasks` 加 `ExpiredAt`/`CancelledAt`/`CancellationReason`；`AddApplicationDeadline` 给 `tasks` 加可选的报名截止时间；`AddOrderDispute` 给 `orders` 加争议六列并补 `(Status, CreatedAt)` 索引供运营按状态检索；`AddTaskRiskAssessment` 给 `tasks` 加风险判定的 10 列并补 `(RiskReviewStatus, CreatedAt)` 索引供复核队列扫描——存量行用数据库默认值 `Allowed`/`NotRequired` 回填，读取时对未知取值也做防御性解析（历史行不会因为枚举名不认识而读不出来）；`AddTaskDraftRevisions` 建草稿历史表 `task_draft_revisions`（一行一个版本的完整快照 + `ChangeSummary` + 当版风险结论）并给 `(TaskId, Revision)` 建唯一索引；`AddIdempotencyEntries` 建幂等记录表 `idempotency_entries`（主键 `(UserId, Key)` + `StartedAt` 索引）；`AddRiskAppeal` 给 `tasks` 加误拦申诉的 6 列并补 `(RiskAppealStatus, RiskAppealedAt)` 索引供申诉队列扫描；`AddRiskRuleCatalogRevisions` 建风险规则目录的版本表 `risk_rule_catalog_revisions`（一行一版完整 JSON 快照 + 变化摘要 + 变更依据 + 操作人）并给 `Version` 建唯一索引、`CreatedAt` 建索引；`AddTaskRiskEnforcement` 给 `tasks` 加发布后风控处置的三列（`RiskEnforcementStatus` 带默认值 `None`，存量行回填成"没有处置过"）并补 `(Status, RiskRuleVersion)` 索引供复检扫描；`AddTaskRiskAppeals` 建申诉留档表 `task_risk_appeals`（一次申诉一行，含提交时的规则代码/版本/结论与理由、运营结论与依据）并给 `(TaskId, SubmittedAt)`（看轨迹）与 `(OwnerId, SubmittedAt)`（按人算节流次数）各建索引。
+迁移历史（27 个）：`AddUsers` → `AddOrders` → `AddOrderEvidence` → `AddReviews` → `AddOrderRework` → `AddConversations` → `AddTaskTables` → `AddConcurrencyTokens` → `AddNotifications` → `AddOrderMessages` → `AddTaskExecutionAddress` → `AddEvidence` → `AddSystemSettings` → `AddEvidenceScanAttempts` → `AddEvidenceMetadataRemoved` → `AddAdminAudit` → `AddOrderCancellationAndTaskExpiry` → `AddApplicationDeadline` → `AddOrderDispute` → `AddTaskRiskAssessment` → `AddTaskDraftRevisions` → `AddIdempotencyEntries` → `AddRiskAppeal` → `AddRiskRuleCatalogRevisions` → `AddTaskRiskEnforcement` → `AddTaskRiskAppeals` → `AddAddressAccessEntries`。其中 `AddTaskTables` 补上了此前只由 `EnsureCreated()` 建出、从未纳入迁移的 `tasks` 与 `task_applications` 两张核心表；`AddConcurrencyTokens` 给 `tasks`/`orders` 加 `Version` 乐观并发令牌；`AddTaskExecutionAddress` 给 `tasks` 加参与者层的精确执行地址；`AddEvidence` 建 `evidence` 表；`AddSystemSettings` 建运营配置的两张表；`AddEvidenceScanAttempts` 给 `evidence` 补上扫描尝试次数、最近一次说明与尝试时间；`AddEvidenceMetadataRemoved` 补上“已移除元数据”说明与按人限速用的索引；`AddAdminAudit` 建运营操作审计表 `admin_audit_entries`（人工下架等动作只追加留痕）；`AddOrderCancellationAndTaskExpiry` 给 `orders` 加取消三列、给 `tasks` 加 `ExpiredAt`/`CancelledAt`/`CancellationReason`；`AddApplicationDeadline` 给 `tasks` 加可选的报名截止时间；`AddOrderDispute` 给 `orders` 加争议六列并补 `(Status, CreatedAt)` 索引供运营按状态检索；`AddTaskRiskAssessment` 给 `tasks` 加风险判定的 10 列并补 `(RiskReviewStatus, CreatedAt)` 索引供复核队列扫描——存量行用数据库默认值 `Allowed`/`NotRequired` 回填，读取时对未知取值也做防御性解析（历史行不会因为枚举名不认识而读不出来）；`AddTaskDraftRevisions` 建草稿历史表 `task_draft_revisions`（一行一个版本的完整快照 + `ChangeSummary` + 当版风险结论）并给 `(TaskId, Revision)` 建唯一索引；`AddIdempotencyEntries` 建幂等记录表 `idempotency_entries`（主键 `(UserId, Key)` + `StartedAt` 索引）；`AddRiskAppeal` 给 `tasks` 加误拦申诉的 6 列并补 `(RiskAppealStatus, RiskAppealedAt)` 索引供申诉队列扫描；`AddRiskRuleCatalogRevisions` 建风险规则目录的版本表 `risk_rule_catalog_revisions`（一行一版完整 JSON 快照 + 变化摘要 + 变更依据 + 操作人）并给 `Version` 建唯一索引、`CreatedAt` 建索引；`AddTaskRiskEnforcement` 给 `tasks` 加发布后风控处置的三列（`RiskEnforcementStatus` 带默认值 `None`，存量行回填成"没有处置过"）并补 `(Status, RiskRuleVersion)` 索引供复检扫描；`AddTaskRiskAppeals` 建申诉留档表 `task_risk_appeals`（一次申诉一行，含提交时的规则代码/版本/结论与理由、运营结论与依据）并给 `(TaskId, SubmittedAt)`（看轨迹）与 `(OwnerId, SubmittedAt)`（按人算节流次数）各建索引；`AddAddressAccessEntries` 建精确地址的访问留痕表 `address_access_entries`（一次读取一行，含被拒绝的尝试；`ViewerId` 可空表示匿名）并给 `(TaskId, OccurredAt)`（看这条地址被谁看过）与 `(ViewerId, OccurredAt)`（看这个人查过多少地址）各建索引。
 
 早期 `EnsureCreated()` 建出的本地库没有迁移历史记录。启动逻辑会检测这种情况：先用模型对比物理表的「表名.列名」，只有结构完全对得上时，才把当时已有的迁移整体标记为已应用并打警告日志；一旦缺表或缺列就直接报错说明缺了什么，提示删除重建，避免在错误的 schema 上继续运行。基线化之后新增的迁移会正常应用——例如 `AddConcurrencyTokens` 就是在基线化之后自动补上的 `Version` 列。目标库不存在时由 `Migrate()` 负责建库。
 
@@ -864,6 +869,16 @@ npm run build
   - 非管理员路径：退出登录 → 换一个不在管理员名单里的账号登录 → 看到“这个账号没有运营权限”（说明文字指出名单来自 `Admin__UserIds` / `Admin__Emails`），且页面上没有任何后台内容。
 - 说明：截图存在 `.scratch/ops-1-login.png` … `.scratch/ops-7-not-admin.png`（本机临时目录，不入库）；我这次的模型不具备图片输入能力，所以上述结论来自 DOM 断言与尺寸测量，截图请人工过一眼。
 
+本轮（精确地址访问审计 + 凭证容器白名单化）新增验证：
+
+- 编译与测试：`dotnet build AIToHuman.sln --no-restore` 0 警告 0 错误；领域 **311** + 集成 **347** = **658** 个用例全通过（本轮新增/改写领域 14 条、用例层 6 条、真库 1 条）；迁移总数 **27**；前端 `npm run typecheck` 与 `npm run build` 通过（`index` 128.50 kB、`ops` 41.76 kB）。
+- 迁移自愈：开发库启动时自动应用第 27 个迁移 `AddAddressAccessEntries`（日志"共 27 个迁移"）；真库回归用例在随机空库上 `Migrate()` 也从零建出这张表并验证往返。
+- 地址留痕真机 HTTP（真实 PostgreSQL）：一条带精确地址的任务上——选人前所有者读取 `200` 且拿到地址、报名者读取 `403`；选中其中一位之后被选中者 `200`、另一位仍 `403`；运营 `GET /api/v1/admin/address-access?taskId=…` 返回 **4 条留痕**（所有者 `Granted`、报名者选人前 `Denied`、被选中者 `Granted`、另一位 `Denied`）且 `deniedCount=2`；按 `viewerId` 过滤能看到那位未被选中者"查过 1 次、被拒 1 次"；非管理员访问留痕 `403`、匿名 `401`。
+- 凭证规范化真机 HTTP（同一进程内走真实 multipart 上传，订单链路完整：发布 → 报名 → 选人 → 开工）：
+  - 造一个 89 字节的 PNG，在 `IDAT` 前塞一个私有块 `prVt`（载荷是 ZIP 魔数 `PK\x03\x04`）——上传返回 `200`，**存储为 62 字节**（`sizeBytes: 62`，即私有块被剥掉），响应里的 `metadataRemoved` 是 `PNG 未知块(prVt)`，订单凭证列表里也只有这一份（`scanStatus=Clean`、可下载）。
+  - 缺 `IEND` 的截断 PNG 被拒：`422`「凭证内容不是合法的 PNG（缺少结束块 IEND），已拒绝保存。」；把 JPEG 改名成 `.png` 上传同样被拒：`422`「凭证内容与声明的类型不一致，已拒绝保存。」——两条都留在同一个订单上，凭证列表里仍然只有第一份，说明被拒的上传没有留下任何文件。
+- 口径说明（写进缺口）：这里是**容器白名单化 + 结构 fail-closed**，不是像素级重编码（重编码需要图像编解码库，离线取不到）；内容扫描（`http`/`clamav` 与 `failMode` 的 closed/open 语义）此前已有用例覆盖，本轮未改动。
+
 本轮（发布后风险复检 + 申诉节流与留档）新增验证：
 
 - 编译与测试：`dotnet build AIToHuman.sln --no-restore` 0 警告 0 错误；领域 **302** + 集成 **344** = **646** 个用例全通过（本轮新增领域 19 条、用例层 11 条、真库 2 条）；迁移总数 **26**；前端 `npm run typecheck` 与 `npm run build` 通过（`index` 128.50 kB 与 `ops` 39.37 kB 两个入口）。
@@ -1037,6 +1052,13 @@ npm run build
 - 主应用：顶栏只保留一个“运营后台 ↗”链接（`target="_blank"`，仅管理员可见），运营相关状态与引用（`settingsOpen`、配置项/审计草稿、各队列数据）全部移出，退出登录时不再需要清理这些状态。
 - 顺带抽取：时间格式化搬到 `frontend/src/utils/format.ts`，两个入口共用一份，避免口径漂移。
 
+本轮追加（精确地址访问审计 + 凭证容器白名单化）：
+
+- 领域：新增只追加的 `AddressAccessEntry`（身份与结论由任务本身推出：`Owner`/`SelectedWorker`/`Other` × `Granted`/`Denied`/`NotSet`，匿名不留 viewer id，"没有地址可看"不算越权）与 `AddressAccessRole`/`AddressAccessOutcome`；`EvidenceContentSanitizer` 由黑名单改为**白名单 + 结构校验**（JPEG 丢全部 APPn/COM、PNG 只留 IHDR/PLTE/tRNS/IDAT/IEND、WebP 只留图像与动画块），结构坏了抛 `DomainException`（fail closed，不再原样放行）。
+- 应用与接口：`AddressAccessService`（先留痕再判断：无论给不给都落库，然后才 403 或返回地址）替换掉原来不留痕的 `TaskService.GetExecutionAddress`；新增 `GET /api/v1/admin/address-access?taskId=&viewerId=&limit=`。
+- 存储与迁移：第 27 个迁移建 `address_access_entries`（两条索引：看这条地址被谁看过 / 看这个人查过多少地址）。
+- 前端：运营后台新增"地址留痕"页签（按任务或按人过滤，列出身份、结论、时间与查看者邮箱，并单独标出拒绝次数）。
+
 本轮追加（发布后风险复检 + 申诉节流与留档）：
 
 - 领域：`TaskItem.ReassessRisk`（发布后复检：禁止类别当场下架、有订单改为冻结订单、只命中转人工的保持在线并要求复检；同一条规则已放行或已在队列时只刷新版本号）、`IncreaseReward` 加价即重判、`Order.SuspendByRisk`（平台发起争议冻结订单）、`RiskEnforcementStatus`/`RiskEnforcementOutcome`、`AdminAuditEntry.SystemActorId`（平台动作的固定操作人身份）；`RiskAppealPolicy`（单任务 3 次 / 单人 24 小时 5 次）与 `RiskAppealRecord`（一次申诉一行、结论写回同一行）。
@@ -1063,14 +1085,14 @@ npm run build
 - 幂等键的收尾：没有 ETag/版本字段返回；前端还没有"自动生成并复用幂等键"，目前只靠按钮置灰防重复点击（见第 10 节）。记录清理已经自动化（24 小时 / 10 分钟 / 每小时一轮）。
 - 对象存储的短时签名 URL 已实现（见第 3、11 节）；如果以后要让前端完全绕开后端，需要补 CORS 配置与审计补偿。
 - 选定病毒/内容扫描服务后把 `evidence.scanner.provider` 切成 `http` + `failMode=closed`（重扫闭环已经就绪，只差真实服务商）。
-- 运营后台的其余部分：客服工单、争议的责任判定与赔付/退款、争议申诉与处理时限。风险复核队列、误拦申诉（含**单任务 3 次 / 单人 24 小时 5 次的节流与逐次留档**）、人工下架、**风险规则目录的后台编辑**与**发布后复检**都已实现（改规则不再需要发版：版本号自动 +1、依据必填、只追加、可一键恢复内置目录；改完之后在线的任务会被重新判定并按口径处置）。规则编辑仍然没有双人复核；禁止类别命中的已分配任务只做"冻结订单 + 运营按争议处置"，**没有自动退款或赔付**（等支付与托管那一批）。上传大小与份数上限已经进了设置目录；凭证类型白名单**故意不进**（放开等于允许上传可执行内容）。
+- 运营后台的其余部分：客服工单、争议的责任判定与赔付/退款、争议申诉与处理时限。风险复核队列、误拦申诉（含**单任务 3 次 / 单人 24 小时 5 次的节流与逐次留档**）、人工下架、**风险规则目录的后台编辑**、**发布后复检**与**精确地址访问审计**都已实现（改规则不再需要发版：版本号自动 +1、依据必填、只追加、可一键恢复内置目录；改完之后在线的任务会被重新判定并按口径处置；地址的每次读取都留痕，含被拒绝的尝试）。规则编辑仍然没有双人复核；禁止类别命中的已分配任务只做"冻结订单 + 运营按争议处置"，**没有自动退款或赔付**（等支付与托管那一批）。上传大小与份数上限已经进了设置目录；凭证类型白名单**故意不进**（放开等于允许上传可执行内容）。
 - 风险判定的增强：模型辅助分类（现在只有字面词表匹配，语义变体容易漏）、追加式决策历史表（现在只保留最新一条判定）、误拦与漏拦的回归测试集扩充（当前是 17 条禁止 + 6 条转人工 + 8 条正常用例）。
 - 草稿的版本与历史：版本号、编辑历史、**字段级差异与回滚**都已实现（`task_draft_revisions` 只追加，编辑与回滚都追加一版、都不会覆盖已有版本）。仍然没有独立的 `TaskDraft` 聚合（编辑直接改 `ReadyToPublish` 的任务）；历史的可见范围只有所有者，运营后台看不到。
 - 真实基础设施的自动化回归测试：**PostgreSQL、Redis、S3 兼容对象存储三块都已建立**（见第 7 节与第 11 节本轮条目）。剩下的自动化缺口是主机级端到端（`WebApplicationFactory`）与"两个真实实例 + 客户端"的通知扇出整链路。
 - 通知的更多事件类型（任务发布、加价、评价公开）与推送渠道（短信、邮件）。
 - 会话消息的分页与历史截断、消息撤回与编辑。
-- 大厅排序选项（悬赏、距离）、任务分类筛选，以及精确地址的访问审计。
-- 图片像素级重新编码、凭证与验收项关联，以及运营后台的申诉工单。
+- 大厅排序选项（悬赏、距离）与任务分类筛选；精确地址的访问审计**已实现**（见第 3、11 节），剩下的隐私侧缺口是地址的"访问配额/异常告警"（现在只有留痕与运营查询）。
+- 凭证图片的**像素级重新编码**（需要图像编解码库，当前环境离线取不到；已经做到的是容器白名单化 + 结构 fail-closed）、凭证与验收项关联，以及运营后台的申诉工单。
 
 ### P2
 
@@ -1137,6 +1159,8 @@ npm run build
 - [ ] 复检不重复惊动：连续保存两版目录（内容都命中同一批在售任务），跑两轮复检——第二轮应该只刷新规则版本号，不会把这些任务重新推回队列或再发一轮通知。
 - [ ] 申诉节流：对同一条任务反复申诉（每次处置后改一下文案）——第 4 次应返回 `422`「这条任务累计申诉已达上限（3 次）…」；换一条任务继续申诉到当天第 6 次，应返回 `422`「近 24 小时提交的申诉已达上限（5 次）…」。
 - [ ] 申诉轨迹：在“误拦申诉”页签点某条任务的“申诉轨迹”，应看到每次申诉的规则版本、理由、运营结论与依据，以及当前生效的两条上限（3 / 5）。
+- [ ] 地址留痕：用所有者读一次 `/api/v1/tasks/{id}/execution-address`（应 `200`），再让一位没被选中的服务者读一次（应 `403`），然后以管理员打开运营后台"地址留痕"页签：应看到这两条记录（一条"已披露"、一条"已拒绝"），拒绝计数为 1；按查看者 ID 过滤应只剩那位服务者的记录。
+- [ ] 凭证规范化：上传一张 PNG，其中夹一个私有块（例如在 `IDAT` 前插一个 `prVt` 块，载荷写 `PK\x03\x04`）——应上传成功，且凭证面板的"已在上传时移除元数据"里出现 `PNG 未知块(prVt)`，文件的 `sizeBytes` 比上传前小；再把同一张图截断（去掉 `IEND`）后上传，应返回 `422`「凭证内容不是合法的 PNG（缺少结束块 IEND），已拒绝保存。」且凭证列表里不新增条目。
 - [ ] 跑一次 `dotnet test AIToHuman.sln --no-build --no-restore`：确认 `PostgresRegressionTests` 是**通过**而不是**跳过**（跳过说明本机没连上测试库，见第 7 节“真实数据库回归测试”）；再把 `AITOHUMAN_TEST_POSTGRES` 指向不可达端口确认它们变成跳过而不是失败。
 - [ ] 用两个账号跑一遍双向信用：服务者完成一单且双方互评后，需求方在自己的任务“查看报名”里应看到该服务者的公开评分与条数，且与 `GET /api/v1/users/{id}/review-summary` 一致；只有单方评价（盲期内）时列表里应为 0 分 / 0 条。
 - [ ] 幂等键：对同一个写接口用同一个 `Idempotency-Key` 连发两次，第二次应返回与第一次相同的状态码和响应体，并带 `Idempotency-Replayed: true`；把请求体改掉再用同一个键，应返回 `409`；不带这个头时行为应和以前完全一样。

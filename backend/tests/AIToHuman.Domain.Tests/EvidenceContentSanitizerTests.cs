@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Text;
+using AIToHuman.Domain.Common;
 using AIToHuman.Domain.Orders;
 
 namespace AIToHuman.Domain.Tests;
@@ -11,32 +12,34 @@ namespace AIToHuman.Domain.Tests;
 public sealed class EvidenceContentSanitizerTests
 {
     [Fact]
-    public void Jpeg_loses_exif_and_comments_but_keeps_everything_else()
+    public void Jpeg_loses_every_extension_segment_and_comment_but_keeps_the_structure()
     {
         var exif = Segment(0xE1, "Exif\0\0GPS: 39.90,116.40"u8.ToArray());
-        var comment = Segment(0xFE, "shot on my phone"u8.ToArray());
         var jfif = Segment(0xE0, "JFIF\0"u8.ToArray());
+        // APP13（Photoshop IRB）过去是保留的：白名单口径下所有 APPn 都要丢掉。
+        var photoshop = Segment(0xED, "Photoshop 3.0\0"u8.ToArray());
+        var comment = Segment(0xFE, "shot on my phone"u8.ToArray());
         var frame = Segment(0xC0, [0x08, 0x00, 0x10, 0x00, 0x10, 0x01, 0x01, 0x11, 0x00]);
         var scan = Segment(0xDA, [0x01, 0x01, 0x00]);
         byte[] entropy = [0x12, 0x34, 0x56, 0xFF, 0x00, 0x78];
-        var input = Concat([0xFF, 0xD8], exif, jfif, comment, frame, scan, entropy, [0xFF, 0xD9]);
+        var input = Concat([0xFF, 0xD8], exif, jfif, photoshop, comment, frame, scan, entropy, [0xFF, 0xD9]);
 
         var result = EvidenceContentSanitizer.StripMetadata("image/jpeg", input);
 
         Assert.True(result.Changed);
-        Assert.Equal(new[] { "EXIF/XMP", "JPEG 注释" }, result.Removed);
-        // 保留下来的段与熵编码数据必须逐字节一致。
-        var expected = Concat([0xFF, 0xD8], jfif, frame, scan, entropy, [0xFF, 0xD9]);
+        Assert.Equal(new[] { "EXIF/XMP", "JPEG APP0(JFIF)", "JPEG APP13", "JPEG 注释" }, result.Removed);
+        // 保留下来的结构段与熵编码数据必须逐字节一致（像素数据一个字节都不许动）。
+        var expected = Concat([0xFF, 0xD8], frame, scan, entropy, [0xFF, 0xD9]);
         Assert.Equal(expected, result.Bytes);
         Assert.DoesNotContain("GPS", Encoding.Latin1.GetString(result.Bytes), StringComparison.Ordinal);
     }
 
     [Fact]
-    public void Jpeg_without_metadata_is_returned_untouched()
+    public void Jpeg_without_extension_segments_is_returned_untouched()
     {
-        var jfif = Segment(0xE0, "JFIF\0"u8.ToArray());
+        var frame = Segment(0xC0, [0x08, 0x00, 0x10, 0x00, 0x10, 0x01, 0x01, 0x11, 0x00]);
         var scan = Segment(0xDA, [0x01, 0x01, 0x00]);
-        var input = Concat([0xFF, 0xD8], jfif, scan, [0xAA, 0xBB], [0xFF, 0xD9]);
+        var input = Concat([0xFF, 0xD8], frame, scan, [0xAA, 0xBB], [0xFF, 0xD9]);
 
         var result = EvidenceContentSanitizer.StripMetadata("image/jpeg", input);
 
@@ -46,39 +49,47 @@ public sealed class EvidenceContentSanitizerTests
     }
 
     [Theory]
+    // 段长度越界（声称 0x40 字节，实际只剩 1 字节）。
     [InlineData(new byte[] { 0xFF, 0xD8, 0xFF, 0xE1, 0x00, 0x40, 0x01 })]
+    // 期望一个标记字节，拿到的却是 0x00。
     [InlineData(new byte[] { 0xFF, 0xD8, 0x00, 0x11 })]
+    // 声明成 JPEG 却根本没有文件头。
     [InlineData(new byte[] { 0x00, 0x01, 0x02 })]
-    public void Broken_jpeg_is_never_rewritten(byte[] input)
+    // 有 SOS 但没有结束标记（文件被截断）。
+    [InlineData(new byte[] { 0xFF, 0xD8, 0xFF, 0xDA, 0x00, 0x03, 0x01, 0x01, 0x00, 0x12, 0x34 })]
+    public void Malformed_jpeg_is_rejected_instead_of_stored_as_is(byte[] input)
     {
-        var result = EvidenceContentSanitizer.StripMetadata("image/jpeg", input);
+        // fail closed：解析不了的"图片"不再原样放行，而是让上传失败。
+        var error = Assert.Throws<DomainException>(() => EvidenceContentSanitizer.StripMetadata("image/jpeg", input));
 
-        Assert.False(result.Changed);
-        Assert.Same(input, result.Bytes);
+        Assert.Contains("已拒绝保存", error.Message);
     }
 
     [Fact]
-    public void Png_loses_text_time_and_exif_chunks()
+    public void Png_loses_metadata_and_unknown_private_chunks()
     {
         var text = PngChunk("tEXt", "Comment\0GPS 39.90,116.40"u8.ToArray());
         var time = PngChunk("tIME", [0x07, 0xEA, 0x09, 0x0C, 0x08, 0x00, 0x00]);
         var exif = PngChunk("eXIf", "Exif\0\0"u8.ToArray());
+        // 私有块是嵌入载荷最省事的藏身处：白名单口径下不管认不认识都丢掉。
+        var payload = PngChunk("prVt", "PK\u0003\u0004 假装一个 zip"u8.ToArray());
         var header = PngChunk("IHDR", [0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0]);
         var pixels = PngChunk("IDAT", [0x78, 0x9C, 0x63, 0x00, 0x01]);
         var end = PngChunk("IEND", []);
-        var input = Concat([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A], header, text, time, exif, pixels, end);
+        var input = Concat([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A], header, text, time, exif, payload, pixels, end);
 
         var result = EvidenceContentSanitizer.StripMetadata("image/png", input);
 
         Assert.True(result.Changed);
-        Assert.Equal(new[] { "PNG tEXt", "PNG tIME", "PNG eXIf" }, result.Removed);
+        Assert.Equal(new[] { "PNG tEXt", "PNG tIME", "PNG eXIf", "PNG 未知块(prVt)" }, result.Removed);
         var expected = Concat([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A], header, pixels, end);
         Assert.Equal(expected, result.Bytes);
         Assert.DoesNotContain("GPS", Encoding.Latin1.GetString(result.Bytes), StringComparison.Ordinal);
+        Assert.DoesNotContain("PK", Encoding.Latin1.GetString(result.Bytes), StringComparison.Ordinal);
     }
 
     [Fact]
-    public void Png_without_metadata_is_returned_untouched()
+    public void Png_without_extra_chunks_is_returned_untouched()
     {
         var header = PngChunk("IHDR", [0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0]);
         var pixels = PngChunk("IDAT", [0x78, 0x9C, 0x63]);
@@ -90,6 +101,27 @@ public sealed class EvidenceContentSanitizerTests
         Assert.Same(input, result.Bytes);
     }
 
+    [Theory]
+    // 缺 IEND（文件被截断）。
+    [InlineData(new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A })]
+    public void Malformed_png_is_rejected_instead_of_stored_as_is(byte[] header)
+    {
+        var error = Assert.Throws<DomainException>(() => EvidenceContentSanitizer.StripMetadata("image/png", header));
+
+        Assert.Contains("已拒绝保存", error.Message);
+    }
+
+    [Fact]
+    public void Png_without_pixel_data_is_rejected()
+    {
+        var header = PngChunk("IHDR", [0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0]);
+        var input = Concat([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A], header, PngChunk("IEND", []));
+
+        var error = Assert.Throws<DomainException>(() => EvidenceContentSanitizer.StripMetadata("image/png", input));
+
+        Assert.Contains("IDAT", error.Message);
+    }
+
     [Fact]
     public void Webp_loses_exif_and_xmp_and_fixes_the_header_flags_and_length()
     {
@@ -97,14 +129,16 @@ public sealed class EvidenceContentSanitizerTests
         var vp8x = WebpChunk("VP8X", [0x0C, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
         var exif = WebpChunk("EXIF", "Exif\0\0GPS 39.90"u8.ToArray());
         var xmp = WebpChunk("XMP ", "xmpmeta"u8.ToArray());
+        // 未知块同样丢掉（白名单口径）。
+        var privateChunk = WebpChunk("prVt", "PK\u0003\u0004"u8.ToArray());
         var pixels = WebpChunk("VP8L", [0x2F, 0x00, 0x00, 0x00, 0x00]);
-        var body = Concat(vp8x, exif, xmp, pixels);
+        var body = Concat(vp8x, exif, xmp, privateChunk, pixels);
         var input = Riff(body);
 
         var result = EvidenceContentSanitizer.StripMetadata("image/webp", input);
 
         Assert.True(result.Changed);
-        Assert.Equal(new[] { "WebP EXIF", "WebP XMP" }, result.Removed);
+        Assert.Equal(new[] { "WebP EXIF", "WebP XMP", "WebP 未知块(prVt)" }, result.Removed);
         var expected = Riff(Concat(WebpChunk("VP8X", [0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0]), pixels));
         Assert.Equal(expected, result.Bytes);
         // RIFF 的总长度字段必须跟着改，否则解码器会认为文件被截断。
@@ -120,6 +154,17 @@ public sealed class EvidenceContentSanitizerTests
 
         Assert.False(result.Changed);
         Assert.Same(input, result.Bytes);
+    }
+
+    [Fact]
+    public void Malformed_webp_is_rejected_instead_of_stored_as_is()
+    {
+        // RIFF 头声明了 4096 字节的子块，实际只有 5 字节：块长度越界。
+        var broken = Concat("RIFF"u8.ToArray(), Length(4 + 8 + 4096), "WEBP"u8.ToArray(), Encoding.ASCII.GetBytes("VP8L"), Length(4096), [0x2F, 0, 0, 0, 0]);
+
+        var error = Assert.Throws<DomainException>(() => EvidenceContentSanitizer.StripMetadata("image/webp", broken));
+
+        Assert.Contains("已拒绝保存", error.Message);
     }
 
     [Fact]

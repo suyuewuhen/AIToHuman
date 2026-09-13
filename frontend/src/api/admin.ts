@@ -341,6 +341,48 @@ export function adminAuditActorLabel(actorId: string): string {
   return actorId === ADMIN_SYSTEM_ACTOR_ID ? '平台（风控）' : actorId.slice(0, 8)
 }
 
+/**
+ * 精确执行地址的一次访问留痕：谁（`viewerId` 为空表示匿名）、以什么身份、
+ * 什么时候读了哪条任务的地址，以及这次**有没有真的披露**（`disclosed`）。
+ */
+export interface AdminAddressAccessItem {
+  id: string
+  taskId: string
+  viewerId: string | null
+  viewerEmail: string | null
+  viewerRole: string
+  outcome: string
+  disclosed: boolean
+  occurredAt: string
+}
+
+export interface AdminAddressAccessList {
+  items: AdminAddressAccessItem[]
+  limit: number
+  /** 同一过滤条件下被拒绝的尝试总数——批量试探就藏在这个数字里。 */
+  deniedCount: number
+}
+
+/** 地址访问留痕（可按任务或按人过滤）。地址是最敏感的用户数据，读过就要能查到。 */
+export async function listAddressAccess(taskId = '', viewerId = '', limit = 50): Promise<AdminAddressAccessList> {
+  const query = new URLSearchParams({ limit: String(limit) })
+  if (taskId.trim()) query.set('taskId', taskId.trim())
+  if (viewerId.trim()) query.set('viewerId', viewerId.trim())
+  return parseResponse<AdminAddressAccessList>(await apiFetch(`/api/v1/admin/address-access?${query.toString()}`, { headers: authHeaders() }))
+}
+
+/** 留痕里的身份中文。 */
+export function addressAccessRoleLabel(role: string): string {
+  const labels: Record<string, string> = { Owner: '任务所有者', SelectedWorker: '被选中的服务者', Other: '其他人' }
+  return labels[role] ?? role
+}
+
+/** 留痕里的结论中文。 */
+export function addressAccessOutcomeLabel(outcome: string): string {
+  const labels: Record<string, string> = { Granted: '已披露', Denied: '已拒绝', NotSet: '任务未登记地址' }
+  return labels[outcome] ?? outcome
+}
+
 /** 一轮发布后风险复检的结果（运营手动触发时看的统计）。 */
 export interface AdminRiskRecheckResult {
   ruleVersion: number

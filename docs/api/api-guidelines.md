@@ -62,7 +62,9 @@ GET    /api/v1/workers/{workerId}/reviews
 
 已实现的报名列表（`GET /api/v1/tasks/{id}/applications?ownerId=...`，仅任务所有者，其他身份 `403`）在报名本身之外带上了该服务者的**公开**评价摘要：`workerAverageRating` 与 `workerReviewCount`，以及显示名 `workerDisplayName`（取不到时为 `null`，客户端退化成显示 id 前缀，而不是整列取不到数据）。只统计已达到公开条件的评价（同一订单双方都提交，或订单完成满 7 天），盲期内的评价不计入，因此与 `GET /api/v1/users/{id}/review-summary` 的口径完全一致（服务端共用同一处公开信用计算，前端对没有公开评价的服务者显示“暂无公开评价”，而不是 0 分）。响应仍然不含执行地址等参与者层信息。
 
-公开详情 `GET /tasks/{id}` 不返回他人的草稿：`ReadyToPublish` 状态只有所有者能读到，其他人（含匿名）得到 `404`。精确执行地址走独立接口 `GET /tasks/{id}/execution-address`，只有所有者与被选中的服务者可读，其余返回 `403`；大厅与公开详情只暴露 `hasExecutionAddress` 布尔值。
+公开详情 `GET /tasks/{id}` 不返回他人的草稿：`ReadyToPublish` 状态只有所有者能读到，其他人（含匿名）得到 `404`。精确执行地址走独立接口 `GET /tasks/{id}/execution-address`，只有所有者与被选中的服务者可读，其余返回 `403`；大厅与公开详情只暴露 `hasExecutionAddress` 布尔值。**披露口径没变，但读取一律留痕**：每次调用都会往 `address_access_entries` 追加一条（谁、以什么身份、什么时候、有没有真的披露），**被拒绝的尝试同样落库**——只记成功的那次，批量试探在审计里就是一片空白；任务本来没登记地址记 `NotSet`（不算越权尝试），匿名请求记成“没有 viewer id”，不占用真实用户。`TaskService` 里原来那条不留痕的读取已删除，不留“读了不记”的旁路。
+
+已实现的地址留痕运营查询：`GET /api/v1/admin/address-access?taskId=&viewerId=&limit=`（管理员身份，**匿名 `401`、非管理员 `403`**）返回 `AdminAddressAccessListResponse`——`items[]`（每条 `AdminAddressAccessItemResponse(id, taskId, viewerId, viewerEmail, viewerRole, outcome, disclosed, occurredAt)`：`viewerId` 为空表示匿名请求，`viewerEmail` 取不到时为 `null`，`viewerRole` 取 `Owner`/`SelectedWorker`/`Other`，`outcome` 取 `Granted`/`Denied`/`NotSet`，`disclosed` 表示这次**有没有真的把地址给出去**）、`limit`（实际生效值，默认 **50**、上限 **200**）与 `deniedCount`（**同一过滤条件下**被拒绝的次数——批量试探就藏在这个数字里）。`taskId` 与 `viewerId` 都可以留空，分别用来回答“某条任务被谁读过”和“某个人读过哪些任务”。
 
 `GET /tasks/mine` 是所有者视角的任务列表：返回当前用户作为所有者的全部任务及其状态（`ReadyToPublish`、`Published`、`Assigned`、`Closed` 等）和报名人数，避免草稿、已分配和已结束的任务只在公开大厅里消失。身份优先取 JWT，Development 环境可用 `?ownerId=...` 回退；已认证时请求里的 `ownerId` 会被忽略。状态里包含 `Expired`（超过截止时间被后台置为过期）与 `Cancelled`（所有者撤销或运营下架）。
 
@@ -221,7 +223,8 @@ GET /api/v1/tasks?category=pickup&district=chaoyang&limit=20&cursor=...
 - `GET /api/v1/evidence/{id}/content` 在鉴权后流式返回文件，响应带 `X-Content-Type-Options: nosniff`，下载文件名由系统生成（不使用用户原始文件名，避免响应头注入）；未通过扫描的凭证返回 `403`。
 - 上传上限来自运营配置（`evidence.maxPerOrder` / `evidence.maxSizeBytes`，默认 10 份 / 5 MB，硬上限 50 份 / 25 MB）：超限返回 `413`（请求体过大）或 `422`（份数已满），错误文案里带上当前生效的数值。浏览器侧只挡超过硬上限的文件，真正判断以服务端为准。
 - 凭证状态里带 `scanAttempts` / `lastScanNote` / `scanExhausted`：扫描服务没给出结论时凭证保持 `Pending`、不可下载，由后台任务退避重扫（30 秒退避、最多 5 次）；用尽次数后 `scanExhausted=true` 并保留原因，说明“为什么不能下载”对参与者始终可见。
-- 上传时默认剥离图片元数据（`evidence.stripMetadata`）：JPEG 的 EXIF/XMP 与注释、PNG 的文本/时间/EXIF 块、WebP 的 EXIF/XMP 块会被丢掉，像素数据不变；`metadataRemoved` 字段说明剥掉了什么，为空表示没剥或不需要剥。关闭该开关会保留原始文件。
+- 上传时默认做**容器白名单化**（`evidence.stripMetadata`，默认开）：JPEG 丢掉**全部** APPn（`0xE0`–`0xEF`，含 JFIF 与 ICC）与 COM，只保留 DQT/SOF/DHT/DRI/SOS 等结构段与熵编码数据；PNG 只保留结构必需的 `IHDR`/`PLTE`/`tRNS`/`IDAT`/`IEND`，其余（含未知私有块）一律丢弃；WebP 只保留 `VP8 `/`VP8L`/`VP8X`/`ALPH`/`ANIM`/`ANMF`，EXIF/XMP 与未知块一律丢弃。像素数据逐字节保留；`metadataRemoved` 字段说明丢掉了什么（已知元数据用原名，如 `EXIF/XMP`、`JPEG 注释`、`PNG tEXt`；其余标成 `JPEG APP13`、`PNG 未知块(prVt)`、`WebP 未知块(xxxx)`），为空表示没剥或不需要剥。关闭该开关会保留原始文件。**注意这是容器规范化，不是像素级重编码**——重编码需要图像编解码库，真正兜底的是内容扫描。
+- **结构 fail-closed**：容器结构不合法不再原样放行，而是 `422` 拒绝。两条可引用的文案：「凭证内容不是合法的 PNG（缺少结束块 IEND），已拒绝保存。」（结构坏了：JPEG 段长度越界或缺少 SOS 之后的结束标记、PNG 缺少 `IEND` 或没有 `IDAT`、WebP 块长度越界或没有图像数据块同理）与「凭证内容与声明的类型不一致，已拒绝保存。」（改名伪装，例如把 JPEG 存成 `.png`）。顺序不变：按声明类型校验签名 → 规范化 → 再校验一次签名 → 落库 → 扫描。
 - 每个上传者每小时有提交次数上限（`evidence.uploadsPerUserPerHour`，默认 60），超限返回 `422` 并给出当前上限；计数来自数据库，多实例部署同样生效。
 - 对象存储模式下还可以走两步流程：`GET /api/v1/evidence/{id}/download-url` 返回短时签名地址（有效期由 `evidence.downloadUrlLifetimeSeconds` 决定，默认 120 秒），客户端直接向私有 Bucket 取字节，省掉一次转发。地址里签了对象路径、有效期与 `response-content-disposition`，改动任何一项都会被对象存储拒绝（`403`）；权限与扫描门禁的判定和 `/content` 完全一致。列表响应里的 `presignedDownloadAvailable` 表明当前存储是否支持这条路径，本机目录存储申请地址会返回 `422` 并提示改用 `/content`。
 - 切换存储 provider 不会迁移已有对象：切回本机目录后，之前写在对象存储里的凭证下载会返回 `404`。
@@ -262,7 +265,7 @@ GET /api/v1/tasks?category=pickup&district=chaoyang&limit=20&cursor=...
 
 ## 10. 运营配置接口
 
-运营接口挂在 `/api/v1/admin` 下（配置类在 `/admin/settings`，人工兜底类在 `/admin/tasks`、`/admin/orders`、`/admin/users`、`/admin/risk`，审计在 `/admin/audits`），都要求管理员身份（部署配置里的 `Admin__UserIds` / `Admin__Emails`，或 `admin` 角色声明）；未配置管理员时一律 `403`。
+运营接口挂在 `/api/v1/admin` 下（配置类在 `/admin/settings`，人工兜底类在 `/admin/tasks`、`/admin/orders`、`/admin/users`、`/admin/risk`，精确地址留痕在 `/admin/address-access`，审计在 `/admin/audits`），都要求管理员身份（部署配置里的 `Admin__UserIds` / `Admin__Emails`，或 `admin` 角色声明）；未配置管理员时一律 `403`。
 
 ```text
 GET    /api/v1/admin/settings                  列出全部可配置项（含生效值、来源、默认值、可选值）
@@ -299,4 +302,4 @@ GET    /api/v1/admin/settings/audits?limit=50  变更审计，按时间倒序
 }
 ```
 
-前端：运营相关的接口都由**独立页面 `/ops.html`**（`frontend/src/ops/OpsConsole.vue`）调用；主应用顶栏只对 `GET /api/v1/auth/me` 返回 `isAdmin=true` 的账户展示一个跳转链接（服务端仍会独立校验，前端隐藏不构成安全边界）。运营页面自己要求登录并向 `/auth/me` 确认管理员身份，非管理员只显示一句说明、不会去请求运营接口。客户端封装在 `frontend/src/api/settings.ts` 与 `frontend/src/api/admin.ts`；机密项在界面上只显示掩码，必须输入新值才能保存，清空需要显式操作。风险相关的两个新入口也在这个页面里：风险复核页签的「立即复检在线任务」按钮调用 `POST /api/v1/admin/risk/recheck`（回显本轮扫描与各处置条数），误拦申诉页签每条显示这条任务累计申诉次数并提供「申诉轨迹」展开（按需调用 `/risk/appeals/{taskId}/history`）。
+前端：运营相关的接口都由**独立页面 `/ops.html`**（`frontend/src/ops/OpsConsole.vue`）调用；主应用顶栏只对 `GET /api/v1/auth/me` 返回 `isAdmin=true` 的账户展示一个跳转链接（服务端仍会独立校验，前端隐藏不构成安全边界）。运营页面自己要求登录并向 `/auth/me` 确认管理员身份，非管理员只显示一句说明、不会去请求运营接口。客户端封装在 `frontend/src/api/settings.ts` 与 `frontend/src/api/admin.ts`；机密项在界面上只显示掩码，必须输入新值才能保存，清空需要显式操作。风险相关的两个新入口也在这个页面里：风险复核页签的「立即复检在线任务」按钮调用 `POST /api/v1/admin/risk/recheck`（回显本轮扫描与各处置条数），误拦申诉页签每条显示这条任务累计申诉次数并提供「申诉轨迹」展开（按需调用 `/risk/appeals/{taskId}/history`）。**地址留痕**是另一个页签：可按任务 ID 或查看者 ID 过滤调用 `GET /api/v1/admin/address-access`，列出每次读取的身份、结论、时间与查看者邮箱，并单独标出当前过滤条件下的拒绝次数。

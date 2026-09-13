@@ -141,6 +141,7 @@ public sealed class PostgresWorld : IDisposable
         services.AddScoped<IAdminOrderQuery, EfAdminOrderQuery>();
         services.AddScoped<IUserDirectory, EfUserDirectory>();
         services.AddScoped<IAdminAuditRepository, EfAdminAuditRepository>();
+        services.AddScoped<IAddressAccessRepository, EfAddressAccessRepository>();
         services.AddScoped<IIdempotencyStore, EfIdempotencyStore>();
         services.AddScoped<IRiskRuleCatalogStore, EfRiskRuleCatalogStore>();
         services.AddScoped<IRiskAppealRepository, EfRiskAppealRepository>();
@@ -153,7 +154,7 @@ public sealed class PostgresWorld : IDisposable
         services.AddScoped<RiskAppealService>();
         services.AddScoped<RiskRuleCatalogService>();
         services.AddScoped<RiskEnforcementService>();
-
+        services.AddScoped<AddressAccessService>();
         provider = services.BuildServiceProvider();
         scope = provider.CreateScope();
     }
@@ -171,6 +172,8 @@ public sealed class PostgresWorld : IDisposable
     public RiskEnforcementService Enforcement => Services.GetRequiredService<RiskEnforcementService>();
     public IRiskRuleCatalogStore RuleStore => Services.GetRequiredService<IRiskRuleCatalogStore>();
     public IRiskAppealRepository AppealRecords => Services.GetRequiredService<IRiskAppealRepository>();
+    public AddressAccessService AddressAccess => Services.GetRequiredService<AddressAccessService>();
+    public IAddressAccessRepository AddressAccessRecords => Services.GetRequiredService<IAddressAccessRepository>();
     public NotificationService Notifications => Services.GetRequiredService<NotificationService>();
     public ITaskRepository Tasks => Services.GetRequiredService<ITaskRepository>();
     public IOrderRepository Orders => Services.GetRequiredService<IOrderRepository>();

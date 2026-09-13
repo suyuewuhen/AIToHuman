@@ -21,7 +21,8 @@
 | `Application` | ⚠️ | `TaskApplication` 已实现；服务者可撤回自己仍处于 `Pending` 的报名（`Withdrawn`，之后可重新报名），订单取消把选中的报名置为 `Rejected`、任务过期把 `Pending` 置为 `Expired`；报名列表内联该服务者的公开评价摘要（`WorkerAverageRating`/`WorkerReviewCount`，只统计已公开评价）；仍无预计到达时间，也没有选人时固化的报名快照 |
 | `Order` | ✅ | `Order` 已实现，含参与者校验、状态机、取消（`Cancelled` + 取消人、取消时间、取消原因）与争议（`Disputed` + 发起人、原因、发起时间、处置结果、处置依据与处置时间）；平台按风控冻结走 `SuspendByRisk`/`CanBeSuspendedForRisk`，复用争议路径且 `DisputeOpenedBy` 留空表示平台动作 |
 | 风险模型（`RiskRule`/`RiskAssessment`/`RiskAppealStatus`） | ⚠️ | 规则目录已是**实例类型**：代码内置目录 `RiskRuleCatalog.BuiltIn`（版本 1、12 个原因代码）是硬底线，运营可在后台编辑出覆盖版本（只追加的版本快照 + 依据必填 + 运营审计 + 可恢复内置）；判定接入创建草稿、编辑草稿、回滚、发布与已发布任务加价五个门禁，都传当下生效的那一版目录，另对仍在线任务做**发布后复检**（`RiskEnforcementStatus`/`RiskEnforcementOutcome`）。`RiskReviewStatus` 记录人工复核结论，`RiskAppealStatus` 记录误拦申诉（禁止类别的申诉成立也不放行），申诉另有 `RiskAppealPolicy` 节流与 `RiskAppealRecord` 留档；缺模型辅助分类、追加式决策历史、规则命中统计与规则目录编辑的双人复核，见第 10 节 |
-| `Evidence` | ⚠️ | `OrderEvidence` + `evidence` 表已实现：类型白名单与文件签名校验、扫描状态机与退避重扫、上传时元数据剥离、按人小时配额，存储走 `IFileStorage`（本机目录或 S3 兼容对象存储，支持短时直连下载地址）；订单上的 `EvidenceNote` 仍作为“完成说明”文本框与凭证文件并存。仍缺图片像素级重编码与“凭证关联到具体验收项” |
+| `Evidence` | ⚠️ | `OrderEvidence` + `evidence` 表已实现：类型白名单与文件签名校验、扫描状态机与退避重扫、上传时**容器白名单化与结构 fail-closed**（非白名单的扩展段/块一律丢弃，结构不合法一律 `422`）、按人小时配额，存储走 `IFileStorage`（本机目录或 S3 兼容对象存储，支持短时直连下载地址）；订单上的 `EvidenceNote` 仍作为“完成说明”文本框与凭证文件并存。仍缺图片像素级重编码（需图像编解码库）与“凭证关联到具体验收项” |
+| `AddressAccessEntry` | ✅ | 精确执行地址的**只追加**访问留痕：`address_access_entries`（迁移 27）一次读取一行，身份（`Owner`/`SelectedWorker`/`Other`）与结论（`Granted`/`Denied`/`NotSet`）全部由任务本身推出，匿名只记“没有 viewer id”；先留痕再判断，被拒绝的尝试同样落库，见第 7 节 |
 | `Review` | ⚠️ | `Review` 已实现；无状态字段（盲期按时间动态判定），单一评分维度 |
 | `Dispute` | ✅ | 已接入但不单独建表：争议状态与处置信息记在 `orders` 上（`DisputeReason`/`DisputeOpenedBy`/`DisputeOpenedAt`/`DisputeResolution`/`DisputeResolutionNote`/`DisputeResolvedAt`）；参与者按阶段发起，运营三种处置，见第 4 节 |
 | `AuditEvent` | ⚠️ | 没有通用业务审计表；运营侧有 `admin_audit_entries`（人工下架与争议处置的三种动作）与配置审计 `system_setting_audits`，其它关键操作仍只体现为实体上的时间戳 |
@@ -57,7 +58,7 @@ AI 与用户共同编辑的临时结构。保存字段完整性、风险检查�
 
 用户公开发布的需求，包含公开信息、私密执行信息、步骤、验收条件、单一固定悬赏和截止时间。建议价格区间只属于草稿辅助信息，不进入已发布任务的交易条件。
 
-> 实现现状（✅）：`TaskItem` 已实现标题（≤80 字）、描述（≤4000 字）、`District`（≤120 字）、截止时间、`Money` 悬赏和验收标准集合（≤12 条、每条 ≤200 字），并校验所有者非空、截止时间晚于创建时间、至少一项验收标准。精确执行地址也已实现：`tasks.ExecutionAddress` 由 `ExecutionAddressFor(viewer)` 决定是否披露，只给所有者与**被选中**的服务者，订单取消把选中报名置为 `Rejected` 后立即收回；接口是 `GET /api/v1/tasks/{id}/execution-address`，大厅与公开详情只暴露 `hasExecutionAddress`。风险判定也已落地：`tasks` 上保存 `RiskVerdict`/`RiskRuleCode`/`RiskCategory`/`RiskSummary`/`RiskRuleVersion`/`RiskAssessedAt`/`RiskReviewStatus`/`RiskReviewedBy`/`RiskReviewedAt`/`RiskReviewNote` 十个字段，创建草稿、编辑草稿与发布前各判定一次（见第 10 节）。草稿字段编辑也已接入：`PUT /api/v1/tasks/{id}` 只对 `ReadyToPublish` 开放（其它状态 `422`），响应里的 `draftEditable` 由服务端判定，执行地址仍只走独立接口、不随任务响应返回（`TaskResponse` 也会返回给申请报名的服务者）。每次创建与编辑还会向 `task_draft_revisions` 追加一版只读快照（该版原文 + 该版风险结论，仅所有者可读，见 `TaskDraft`）。尚无：联系方式、任务步骤、分类、隐私等级、取消条件。
+> 实现现状（✅）：`TaskItem` 已实现标题（≤80 字）、描述（≤4000 字）、`District`（≤120 字）、截止时间、`Money` 悬赏和验收标准集合（≤12 条、每条 ≤200 字），并校验所有者非空、截止时间晚于创建时间、至少一项验收标准。精确执行地址也已实现：`tasks.ExecutionAddress` 由 `ExecutionAddressFor(viewer)` 决定是否披露，只给所有者与**被选中**的服务者，订单取消把选中报名置为 `Rejected` 后立即收回；接口是 `GET /api/v1/tasks/{id}/execution-address`，大厅与公开详情只暴露 `hasExecutionAddress`。**每次读取都由 `AddressAccessEntry` 留痕**（含被拒绝的尝试，见第 7 节），任务服务里原来那条不留痕的读取已删除，不留“读了不记”的旁路。风险判定也已落地：`tasks` 上保存 `RiskVerdict`/`RiskRuleCode`/`RiskCategory`/`RiskSummary`/`RiskRuleVersion`/`RiskAssessedAt`/`RiskReviewStatus`/`RiskReviewedBy`/`RiskReviewedAt`/`RiskReviewNote` 十个字段，创建草稿、编辑草稿与发布前各判定一次（见第 10 节）。草稿字段编辑也已接入：`PUT /api/v1/tasks/{id}` 只对 `ReadyToPublish` 开放（其它状态 `422`），响应里的 `draftEditable` 由服务端判定，执行地址仍只走独立接口、不随任务响应返回（`TaskResponse` 也会返回给申请报名的服务者）。每次创建与编辑还会向 `task_draft_revisions` 追加一版只读快照（该版原文 + 该版风险结论，仅所有者可读，见 `TaskDraft`）。尚无：联系方式、任务步骤、分类、隐私等级、取消条件。
 
 ### Application
 
@@ -79,7 +80,7 @@ AI 与用户共同编辑的临时结构。保存字段完整性、风险检查�
 
 > 实现现状（⚠️）：`OrderEvidence` 实体已实现，包含订单、上传者、展示用文件名、MIME、系统生成的存储键、字节数、SHA-256 摘要、创建时间、扫描状态（`Pending`/`Clean`/`Rejected`，终态）以及扫描记账（尝试次数、最近一次说明、最近尝试时间）。类型白名单（JPEG/PNG/WebP/PDF）与文件签名双重校验；单份大小与每单份数默认 5 MB / 10 份，可由运营在硬上限（25 MB / 50 份）内收紧。只有订单服务者能上传，只有订单双方能在扫描通过后通过鉴权下载。
 >
-> 文件内容走可插拔的 `IFileStorage`：`local` 写本机私有目录，`s3` 走 S3 兼容对象存储（自研 SigV4、路径风格、无 SDK 依赖），并能签发短时直连下载地址（有效期可配 5 至 900 秒）。上传限额（单份大小、每单份数）与按人小时配额都是运营可配置的，但大小与份数只能在领域硬上限（25 MB / 50 份）内收紧；类型白名单刻意留在代码里。`EvidenceContentSanitizer` 会在上传时剥掉 JPEG/PNG/WebP 的元数据段（EXIF/GPS、文本块），像素数据不动，结果记在 `MetadataRemoved` 上。`IEvidenceScanner` 由 `HttpEvidenceScanner` 实现：`provider=none` 时显式放行并打警告，`provider=http` 时调用外部扫描服务，扫描没有结论时凭证保持“待扫描、不可下载”并由后台任务退避重扫（30 秒退避、最多 5 次，文件缺失直接判拒绝）。真实的病毒/内容扫描服务、图片像素级重编码、凭证与验收项关联、以及访问审计都还未实现。
+> 文件内容走可插拔的 `IFileStorage`：`local` 写本机私有目录，`s3` 走 S3 兼容对象存储（自研 SigV4、路径风格、无 SDK 依赖），并能签发短时直连下载地址（有效期可配 5 至 900 秒）。上传限额（单份大小、每单份数）与按人小时配额都是运营可配置的，但大小与份数只能在领域硬上限（25 MB / 50 份）内收紧；类型白名单刻意留在代码里。`EvidenceContentSanitizer` 现在按**白名单 + 结构校验**做容器规范化：JPEG 只保留结构段（DQT/SOF/DHT/DRI/SOS 等）与熵编码数据、丢掉**全部** APPn（`0xE0`–`0xEF`，含 JFIF 与 ICC）与 COM（这些都是可选段，丢掉后文件仍然合法）；PNG 只保留结构必需的 `IHDR`/`PLTE`/`tRNS`/`IDAT`/`IEND`，其余（含未知私有块）一律丢弃；WebP 只保留 `VP8 `/`VP8L`/`VP8X`/`ALPH`/`ANIM`/`ANMF`，EXIF/XMP 与未知块一律丢弃，并照旧修正 VP8X 标志位与 RIFF 总长度。像素数据逐字节保留（做的是**容器规范化，不是像素级重编码**），丢弃了什么记在 `MetadataRemoved` 上——已知元数据用原名（`EXIF/XMP`、`JPEG 注释`、`PNG tEXt`…），其余标成 `JPEG APP13`、`PNG 未知块(prVt)`、`WebP 未知块(xxxx)`。**fail closed**：容器结构坏了不再原样放行，而是抛 `DomainException`（上传 `422`）——JPEG 段长度越界或缺少 SOS 之后的结束标记、PNG 缺少 `IEND` 或没有 `IDAT`、WebP 块长度越界或没有图像数据块。顺序不变：先按声明类型校验签名 → 规范化（`evidence.stripMetadata` 可关，默认开）→ 再校验一次签名 → 落库 → 扫描。`IEvidenceScanner` 由 `HttpEvidenceScanner` 实现：`provider=none` 时显式放行并打警告，`provider=http` 时调用外部扫描服务，扫描没有结论时凭证保持“待扫描、不可下载”并由后台任务退避重扫（30 秒退避、最多 5 次，文件缺失直接判拒绝）。真实的病毒/内容扫描服务、图片像素级重编码（需要图像编解码库，现在真正兜底的是内容扫描）、凭证与验收项关联，以及**凭证访问审计**都还未实现。
 
 ### OrderMessage（订单会话消息）
 
@@ -141,7 +142,7 @@ Pending
 >
 > - 服务者声明的报名有效期仍没有字段；代替它的是任务级的报名截止时间 `ApplicationDeadline`（可选），到点只关闭新报名、**已有报名仍可被选中**，所以它不是“报名失效时间”。报名失效只发生在任务过期时（`Pending → Expired`）。
 > - 撤回只允许自己的 `Pending` 报名：`Selected` 之后要退出只能走订单取消（`422`）；撤回是状态迁移而不是删除，记录保留（`Withdrawn`），服务者之后可以重新报名，重复报名仍被拦。撤回后任务所有者收到 `task.applicationWithdrawn`。
-> - 订单取消时把选中报名置为 `Rejected` 不只是状态清理：执行地址只对当前被选中的服务者披露，留着 `Selected` 会继续向他泄露地址。
+> - 订单取消时把选中报名置为 `Rejected` 不只是状态清理：执行地址只对当前被选中的服务者披露，留着 `Selected` 会继续向他泄露地址（反过来，每次地址读取都会留痕，见第 7 节）。
 > - 选择报名的并发安全由任务行的 `Version` 乐观并发令牌 + 显式数据库事务保证（选人与建订单同一事务），并有 `orders.TaskId` 唯一索引兜底；并发选单的“最多一份成功”已用 12 路并行请求在真实 PostgreSQL 上验证。
 > - 选中后在同一次调用中直接创建 `Accepted` 订单，与设计一致。
 
@@ -194,6 +195,7 @@ Disputed
 - ⚠️ 已发布 Task 的悬赏只能在分配前提高。`IncreaseReward` 已校验“仅 `Published` 状态、同币种、金额只能提高”，并受任务行并发令牌保护；`TaskRewardIncreased` 事件仍未实现，加价也不通知已报名者。
 - ⚠️ Order 的用户、服务者、任务快照和报名快照创建后不可替换。参与者创建后不可替换，但只固化了标题和悬赏，验收条件、执行说明和报名快照未进入订单。
 - ✅ 状态转换必须同时验证操作者、当前状态和必要材料。`EnsureWorker`/`EnsureOwner` 区分服务者与需求方动作，`EnsureStatus` 校验当前状态；提交凭证和驳回验收均要求必填说明。
+- ✅ 上传即规范化，且结构坏了不放过。凭证上传的顺序固定为：按声明类型校验签名 → 容器白名单化（丢掉一切非白名单的扩展段/块：JPEG 的 APPn 与 COM、PNG 的非结构块、WebP 的 EXIF/XMP 与未知块）→ 再校验一次签名 → 落库 → 扫描。容器结构不合法一律 `422`（fail closed），**不再把坏文件原样放行**；像素数据逐字节保留，因此这是**容器规范化，不是像素级重编码**，真正兜底的是内容扫描。
 - ⚠️ AwaitingReview 必须至少有一份通过安全检查的 Evidence。当前只要求 `EvidenceNote` 非空文本，没有文件、类型/大小校验或扫描状态。
 - ⚠️ Completed、Cancelled 是普通流程下的终态。订单终态目前是 `Approved`（不可重开）与 `Cancelled`（参与者取消或运营在争议中处置），任务终态是 `Closed`、`Cancelled` 与 `Expired`；`Disputed` 不是终态，运营处置会把订单带到 `Approved`/`InProgress`/`Cancelled`。纠错用的受控运营命令和“复制字段创建新任务”的流程未实现。
 - ✅ 所有领域时刻以 UTC 保存。`TaskItem`、`Order`、`TaskApplication`、`Review` 的构造函数统一调用 `UtcTimestamp.Normalize`，因为 PostgreSQL 的 `timestamp with time zone` 只接受零偏移量；此前客户端或 AI 提交带 `+08:00` 的 `deadline` 会让创建任务返回 `500`。
@@ -226,14 +228,18 @@ Disputed
 - 执行位置：加密的精确地址和坐标。
 - 披露策略：何种订单状态、何种角色可以访问。
 
-所有访问精确位置的行为进入安全审计，接口不得因序列化实体而意外泄露字段。
+所有访问精确位置的行为进入安全审计（✅ 已实现，见本节末尾的访问留痕），接口不得因序列化实体而意外泄露字段。
 
 > 实现现状（⚠️）：只实现了“大厅位置”的最简形式——`TaskItem.District` 字符串，公开大厅和公开详情只返回区域名、悬赏、验收标准和报名数。
 >
 > - 执行位置已实现为 `TaskItem.ExecutionAddress`（≤200 字、可空），只在订单成立后向所有者与被选中的服务者披露；已报名但未被选中的服务者和匿名访问者返回 `403`，大厅与公开详情只暴露 `hasExecutionAddress` 布尔值。
 > - 没有坐标、地理围栏和距离计算，也没有联系人或联系方式代理。
-> - 没有位置访问审计。加价、选人、验收等关键操作同样缺少独立审计事件（只有部分实体时间戳）。
-> - 由于精确位置只在参与者层披露，目前“未采集”不再是主要风险；但访问审计缺失意味着无法回答“谁在什么时候看过这个地址”。
+> - ✅ **精确地址访问留痕（`AddressAccessEntry` + 迁移 27 `AddAddressAccessEntries`）**：执行地址是系统里最敏感的用户数据，所以除了“只给谁看”之外还记下“谁看过”。`address_access_entries` **只追加**、一次读取一行，字段是 `Id`/`TaskId`/`ViewerId`（可空，空表示匿名）/`ViewerRole`/`Outcome`/`OccurredAt`，并给 `(TaskId, OccurredAt)` 与 `(ViewerId, OccurredAt)` 各建一条索引，分别服务“看某条任务被谁读过”和“看某个人读过哪些任务”。
+> - ✅ **身份与结论都由任务推出，不接受调用方传进来的角色**：`AddressAccessEntry.Record(TaskItem, viewerId, now)` 里，所有者 → `Owner`、被选中的服务者（只认“这条报名被选中”这一个事实）→ `SelectedWorker`、其余（含匿名）→ `Other`；结论是 `Granted`（有地址且请求者是参与者）、`Denied`（有地址但请求者不是参与者）、`NotSet`（任务本来没有登记地址，**不算越权尝试**）。匿名请求（`viewerId` 为 `null` 或 `Guid.Empty`）记成“没有 viewer id”，**不占用任何真实用户**。
+> - ✅ **先留痕再判断**：`AddressAccessService.Read(taskId, viewerId)` 无论最终给不给，都先把这次读取落库，然后才抛 `403` 或返回地址——被拒绝的尝试才是审计里最该看的信号；披露口径完全不变（所有者与被选中的服务者，其余 `403`、任务不存在 `404`）。`TaskService` 里原来那个不留痕的 `GetExecutionAddress` 已删除，避免留下一条“读了不记”的旁路。
+> - 运营查询：`GET /api/v1/admin/address-access?taskId=&viewerId=&limit=`（匿名 `401`、非管理员 `403`），`limit` 默认 **50**、上限 **200**，返回条目（含查看者邮箱，取不到时为 `null`）与**同一过滤条件下的拒绝次数**。前端在运营后台的「地址留痕」页签里按任务 ID / 查看者 ID 过滤，并单独显示拒绝次数。
+> - 加价、选人、验收等其它关键操作仍缺少独立审计事件（只有部分实体时间戳）。
+> - 由于精确位置只在参与者层披露，访问审计补上之后，“谁在什么时候看过这个地址、有没有被拒绝”已经可以回答，“未采集”也不再是主要风险。
 
 ## 8. 金额建模
 

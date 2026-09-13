@@ -1,5 +1,6 @@
 using AIToHuman.Application.Idempotency;
 using AIToHuman.Application.Risk;
+using AIToHuman.Application.Tasks;
 using AIToHuman.Contracts.Admin;
 using AIToHuman.Contracts.Tasks;
 using AIToHuman.Domain.Admin;
@@ -613,6 +614,40 @@ public sealed class PostgresRegressionTests(PostgresRegressionFixture fixture) :
         Assert.Equal(world.AdminId, row.DecidedBy);
         Assert.NotNull(row.DecidedAt);
         Assert.Equal("维持原判：标题写的就是代考", row.DecisionNote);
+    }
+
+    /// <summary>
+    /// 精确地址访问留痕在真库上的往返：披露与被拒绝的读取都要落库，换一个作用域读回来仍然正确，
+    /// 且按任务的拒绝次数能被算出来（运营靠它发现有人在试探）。
+    /// </summary>
+    [PostgresFact]
+    public async Task Address_access_entries_round_trip_including_denied_attempts()
+    {
+        using var world = new PostgresWorld(fixture.ConnectionString, Now);
+        var task = world.Service.Create(world.DraftRequest("代取文件", executionAddress: "世纪大道 100 号前台"));
+        world.Service.Publish(task.Id, world.Owner);
+        var taskId = task.Id;
+        var stranger = Guid.NewGuid();
+
+        Assert.NotNull(world.AddressAccess.Read(taskId, world.Owner).Address);
+        Assert.Throws<UnauthorizedAccessException>(() => world.AddressAccess.Read(taskId, stranger));
+
+        using (var freshScope = world.NewScope())
+        {
+            var records = freshScope.ServiceProvider.GetRequiredService<IAddressAccessRepository>();
+            var entries = records.List(taskId, null, 20);
+            Assert.Equal(2, entries.Count);
+            Assert.Contains(entries, item => item.Role == AddressAccessRole.Owner && item.Outcome == AddressAccessOutcome.Granted);
+            Assert.Contains(entries, item => item.ViewerId == stranger && item.Outcome == AddressAccessOutcome.Denied);
+            Assert.Equal(1, records.CountDenied(taskId, null));
+            Assert.Single(records.List(null, stranger, 20));
+        }
+
+        await using var context = fixture.CreateContext();
+        var rows = await context.AddressAccessEntries.AsNoTracking().OrderBy(item => item.OccurredAt).ToListAsync();
+        Assert.Equal(2, rows.Count);
+        Assert.Contains(rows, item => item.Outcome == "Granted" && item.ViewerRole == "Owner" && item.ViewerId == world.Owner);
+        Assert.Contains(rows, item => item.Outcome == "Denied" && item.ViewerRole == "Other" && item.ViewerId == stranger);
     }
 
     /// <summary>带时区偏移的截止时间与中文文本在真库上的往返：领域层统一归一化成 UTC，文本原样保存。</summary>
