@@ -98,23 +98,16 @@ public sealed class EfTaskRepository(TaskDbContext db) : ITaskRepository
     public void Save(TaskItem task)
     {
         var record = db.Tasks.Single(item => item.Id == task.Id);
-        record.Status = task.Status.ToString();
-        record.RewardAmount = task.Reward.Amount;
-        record.RewardCurrency = task.Reward.Currency;
-        record.ExpiredAt = task.ExpiredAt;
-        record.CancelledAt = task.CancelledAt;
-        record.CancellationReason = task.CancellationReason;
-        record.ApplicationDeadline = task.ApplicationDeadline;
-        record.RiskVerdict = task.RiskVerdict.ToString();
-        record.RiskRuleCode = task.RiskRuleCode;
-        record.RiskCategory = task.RiskCategory;
-        record.RiskSummary = task.RiskSummary;
-        record.RiskRuleVersion = task.RiskRuleVersion;
-        record.RiskAssessedAt = task.RiskAssessedAt;
-        record.RiskReviewStatus = task.RiskReviewStatus.ToString();
-        record.RiskReviewedBy = task.RiskReviewedBy;
-        record.RiskReviewedAt = task.RiskReviewedAt;
-        record.RiskReviewNote = task.RiskReviewNote;
+
+        // 用 SetValues 整体覆盖，而不是逐列手写复制：草稿字段现在是可编辑的，
+        // 手写列表极容易漏掉某一列（本仓库就出现过“编辑草稿后正文没落库”的真机缺陷——
+        // 内存仓储保存的是同一个对象引用，所以单元测试完全看不出来）。
+        // 这样写还有一个好处：以后给 tasks 加列，只要 ToRecord 填了值就会自动带上。
+        var version = record.Version;
+        db.Entry(record).CurrentValues.SetValues(ToRecord(task));
+        // 并发令牌不参与覆盖：下面按加载时的原值自增，EF 会用它做 WHERE。
+        record.Version = version + 1;
+
         var storedApplications = db.Applications.Where(item => item.TaskId == task.Id).ToDictionary(item => item.Id);
         foreach (var current in task.Applications)
         {
@@ -130,8 +123,6 @@ public sealed class EfTaskRepository(TaskDbContext db) : ITaskRepository
             }
         }
 
-        // 自增并发令牌：EF 会用加载时的原值做 WHERE，并发写入时后到者拿到 0 行更新并抛冲突。
-        record.Version += 1;
         db.SaveChanges();
     }
 

@@ -302,6 +302,13 @@ tasks.MapPost("/{id:guid}/publish", (Guid id, Guid? ownerId, ClaimsPrincipal use
     EnsureRole(user, "owner", environment);
     return Results.Ok(service.Publish(id, ResolveUserId(user, ownerId ?? Guid.Empty, environment)));
 });
+// 编辑草稿：只有所有者、且只有还没发布的草稿可以改；改完会重新判定风险并清空人工复核结论。
+tasks.MapPut("/{id:guid}", (Guid id, UpdateTaskDraftRequest request, ClaimsPrincipal user, IHostEnvironment environment, TaskService service) =>
+{
+    EnsureRole(user, "owner", environment);
+    var ownerId = ResolveUserId(user, request.OwnerId, environment);
+    return Results.Ok(service.UpdateDraft(id, ownerId, request with { OwnerId = ownerId }));
+});
 tasks.MapPost("/{id:guid}/increase-reward", (Guid id, Guid? ownerId, IncreaseRewardRequest request, ClaimsPrincipal user, IHostEnvironment environment, TaskService service) =>
 {
     EnsureRole(user, "owner", environment);

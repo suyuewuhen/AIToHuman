@@ -341,3 +341,14 @@ h1 em { color: var(--acid); font-style: normal; }
 
 /* 运营争议处置行的下拉框与输入框保持同一行高 */
 .admin-row select { flex: 0 0 auto; min-width: 120px; padding: 8px 10px; border: 1px solid var(--line); background: #fffdf7; color: var(--ink); }
+
+/* 草稿编辑：内联展开在“我的任务”行里，字段与创建草稿时一致 */
+.draft-edit { display: grid; gap: 8px; margin-top: 12px; padding: 12px; border: 1px dashed var(--line); background: #fffdf7; }
+.draft-edit-hint { margin: 0; color: #747b77; font-size: 11px; line-height: 1.6; }
+.draft-edit-field { display: grid; gap: 4px; }
+.draft-edit-field span { color: #626b66; font-size: 10px; }
+.draft-edit-field input,
+.draft-edit-field textarea { width: 100%; padding: 8px 10px; border: 1px solid var(--line); background: #fff; color: var(--ink); font-size: 11px; font-family: inherit; }
+.draft-edit-field textarea { resize: vertical; }
+.draft-edit .cancel-error { color: #9a321f; font-size: 11px; }
+.draft-edit-notice { color: #4b6b4b; font-size: 11px; }

@@ -43,6 +43,8 @@ export interface TaskItem {
   riskReviewNote?: string | null
   /** 发布这一关是否被风险处置卡住，由服务端判定，客户端不要自己推算。 */
   riskPublishBlocked?: boolean
+  /** 还能不能编辑草稿（只有 ReadyToPublish 可以），同样由服务端判定。 */
+  draftEditable?: boolean
 }
 
 export interface OrderItem {
@@ -184,6 +186,19 @@ export async function publishTask(taskId: string, ownerId: string): Promise<Task
   return parseResponse<TaskItem>(await fetch(`/api/v1/tasks/${taskId}/publish?ownerId=${encodeURIComponent(ownerId)}`, {
     method: 'POST',
     headers: authHeaders(),
+  }))
+}
+
+/**
+ * 编辑草稿：字段与创建任务完全一致，只有还没发布的草稿能改。
+ * 服务端会在保存后重新判定风险并清空原有的人工复核结论，所以返回的任务里
+ * `riskReviewStatus` 可能从 Approved 变回 Pending——页面要按返回值刷新提示。
+ */
+export async function updateTaskDraft(taskId: string, input: CreateTaskInput): Promise<TaskItem> {
+  return parseResponse<TaskItem>(await fetch(`/api/v1/tasks/${taskId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify(input),
   }))
 }
 

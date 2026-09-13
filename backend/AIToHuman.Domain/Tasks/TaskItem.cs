@@ -27,19 +27,11 @@ public sealed class TaskItem
         string? executionAddress = null,
         DateTimeOffset? applicationDeadline = null)
     {
-        var criteria = acceptanceCriteria
-            .Where(item => !string.IsNullOrWhiteSpace(item))
-            .Select(item => item.Trim())
-            .Distinct()
-            .ToArray();
+        var criteria = NormalizeCriteria(acceptanceCriteria);
 
         if (ownerId == Guid.Empty) throw new DomainException("任务必须有所有者。");
-        if (string.IsNullOrWhiteSpace(title) || title.Trim().Length > 80) throw new DomainException("任务标题必须为 1 到 80 个字符。");
-        if (string.IsNullOrWhiteSpace(description)) throw new DomainException("任务描述不能为空。");
-        if (string.IsNullOrWhiteSpace(district)) throw new DomainException("任务必须包含公开区域。");
+        EnsureDraftFields(title, description, district, criteria, executionAddress);
         if (UtcTimestamp.Normalize(deadline) <= UtcTimestamp.Normalize(createdAt)) throw new DomainException("截止时间必须晚于创建时间。");
-        if (criteria.Length == 0) throw new DomainException("任务至少需要一项验收标准。");
-        if (executionAddress?.Trim().Length > MaxExecutionAddressLength) throw new DomainException($"执行地址不能超过 {MaxExecutionAddressLength} 个字符。");
 
         Id = Guid.NewGuid();
         OwnerId = ownerId;
@@ -61,6 +53,66 @@ public sealed class TaskItem
     /// <summary>执行地址属于订单参与者层信息，最长 200 字。</summary>
     public const int MaxExecutionAddressLength = 200;
 
+    /// <summary>验收标准：去掉空白项、逐个 trim 并去重。</summary>
+    private static string[] NormalizeCriteria(IEnumerable<string> acceptanceCriteria) =>
+        acceptanceCriteria
+            .Where(item => !string.IsNullOrWhiteSpace(item))
+            .Select(item => item.Trim())
+            .Distinct()
+            .ToArray();
+
+    /// <summary>
+    /// 标题、描述、区域、验收标准与执行地址的校验。创建草稿和编辑草稿共用这一套，
+    /// 否则很容易出现“创建时拦得住的字段，编辑时能绕过去”的缺口。
+    /// </summary>
+    private static void EnsureDraftFields(string title, string description, string district, string[] criteria, string? executionAddress)
+    {
+        if (string.IsNullOrWhiteSpace(title) || title.Trim().Length > 80) throw new DomainException("任务标题必须为 1 到 80 个字符。");
+        if (string.IsNullOrWhiteSpace(description)) throw new DomainException("任务描述不能为空。");
+        if (string.IsNullOrWhiteSpace(district)) throw new DomainException("任务必须包含公开区域。");
+        if (criteria.Length == 0) throw new DomainException("任务至少需要一项验收标准。");
+        if (executionAddress?.Trim().Length > MaxExecutionAddressLength) throw new DomainException($"执行地址不能超过 {MaxExecutionAddressLength} 个字符。");
+    }
+
+    /// <summary>
+    /// 编辑草稿：只有还没发布的草稿可以改，字段校验与创建时完全一致，改完立即重跑风险规则。
+    ///
+    /// 这里最要紧的一条是**清空原有的人工复核结论**：审核是针对某一版文本做出的，
+    /// 如果编辑后保留“已放行”，那么“先提一份干净文案过审、再改成代考”就是一条现成的绕过路径。
+    /// 反过来，被运营驳回的草稿只要改掉了敏感内容，也会重新进入新一轮复核，而不是被永久钉死。
+    /// </summary>
+    public void UpdateDraft(
+        string title,
+        string description,
+        string district,
+        DateTimeOffset deadline,
+        Money reward,
+        IEnumerable<string> acceptanceCriteria,
+        string? executionAddress,
+        DateTimeOffset? applicationDeadline,
+        DateTimeOffset now)
+    {
+        EnsureStatus(TaskStatus.ReadyToPublish);
+
+        var criteria = NormalizeCriteria(acceptanceCriteria);
+        EnsureDraftFields(title, description, district, criteria, executionAddress);
+
+        var normalizedNow = UtcTimestamp.Normalize(now);
+        var normalizedDeadline = UtcTimestamp.Normalize(deadline);
+        if (normalizedDeadline <= normalizedNow) throw new DomainException("截止时间必须晚于当前时间。");
+
+        Title = title.Trim();
+        Description = description.Trim();
+        District = district.Trim();
+        Deadline = normalizedDeadline;
+        Reward = reward;
+        AcceptanceCriteria = criteria;
+        ExecutionAddress = NormalizeExecutionAddress(executionAddress);
+        ApplicationDeadline = NormalizeApplicationDeadline(applicationDeadline, normalizedDeadline, normalizedNow, "当前时间");
+
+        AssessRisk(normalizedNow, resetHumanDecision: true);
+    }
+
     /// <summary>报名截止时间：可选。到点后不再接受新报名，但已经报名的服务者仍然可以被选中。</summary>
     public DateTimeOffset? ApplicationDeadline { get; private set; }
 
@@ -68,12 +120,12 @@ public sealed class TaskItem
     /// 报名截止时间必须晚于创建时间、且不晚于任务截止时间——否则要么一发布就报不了名，
     /// 要么出现“任务还能干但报不了名”的怪状态。
     /// </summary>
-    private static DateTimeOffset? NormalizeApplicationDeadline(DateTimeOffset? applicationDeadline, DateTimeOffset deadline, DateTimeOffset createdAt)
+    private static DateTimeOffset? NormalizeApplicationDeadline(DateTimeOffset? applicationDeadline, DateTimeOffset deadline, DateTimeOffset floor, string floorLabel = "创建时间")
     {
         if (applicationDeadline is not { } value) return null;
 
         var normalized = UtcTimestamp.Normalize(value);
-        if (normalized <= createdAt) throw new DomainException("报名截止时间必须晚于创建时间。");
+        if (normalized <= floor) throw new DomainException($"报名截止时间必须晚于{floorLabel}。");
         if (normalized > deadline) throw new DomainException("报名截止时间不能晚于任务截止时间。");
         return normalized;
     }
@@ -402,11 +454,20 @@ public sealed class TaskItem
     /// <summary>
     /// 跑一遍确定性规则并把结论记在任务上。已有人工结论时不让规则覆盖：
     /// 运营驳回过的任务不会因为后续字段变化又变回可发布。
+    /// <paramref name="resetHumanDecision"/> 用于“文本被改过”的场景：审核针对的是某一版文本，
+    /// 文本一变就作废，重新按新文本判定。
     /// </summary>
-    private void AssessRisk(DateTimeOffset now)
+    private void AssessRisk(DateTimeOffset now, bool resetHumanDecision = false)
     {
+        if (resetHumanDecision)
+        {
+            RiskReviewedBy = null;
+            RiskReviewedAt = null;
+            RiskReviewNote = null;
+        }
+
         var assessment = RiskRuleCatalog.Evaluate(Title, Description, AcceptanceCriteria, ExecutionAddress, Reward.Amount, Deadline);
-        var humanDecisionExists = RiskReviewStatus is RiskReviewStatus.Approved or RiskReviewStatus.Rejected;
+        var humanDecisionExists = !resetHumanDecision && RiskReviewStatus is RiskReviewStatus.Approved or RiskReviewStatus.Rejected;
 
         RiskVerdict = assessment.Verdict;
         RiskRuleCode = assessment.RuleCode;
@@ -419,8 +480,8 @@ public sealed class TaskItem
         {
             RiskVerdict.NeedsReview when humanDecisionExists => RiskReviewStatus,
             RiskVerdict.NeedsReview => RiskReviewStatus.Pending,
-            // 人工驳回是终态：即便规则不再命中，也不让它自己变回可发布。
-            _ when RiskReviewStatus == RiskReviewStatus.Rejected => RiskReviewStatus.Rejected,
+            // 人工驳回是终态：即便规则不再命中，也不让它自己变回可发布（除非文本被改过，那时已清空结论）。
+            _ when !resetHumanDecision && RiskReviewStatus == RiskReviewStatus.Rejected => RiskReviewStatus.Rejected,
             _ => RiskReviewStatus.NotRequired
         };
     }

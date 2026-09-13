@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { getDevSession, type DevSession } from './api/session'
 import { clearAccessToken, getAccessToken, getCurrentUser, login, register, switchRole, type ActiveRole, type CurrentUser } from './api/auth'
-import { applyForTask, approveOrder, cancelOrder, cancelTask, createOrderReview, createTask, getExecutionAddress, getReviewSummary, increaseTaskReward, listMyApplications, listMyOrders, listMyTasks, listOrderReviews, listPublishedTasks, listTaskApplications, openDispute, publishTask, rejectOrder, resumeOrder, selectTaskApplication, startOrder, submitOrder, withdrawApplication, type MyApplicationItem, type OrderItem, type ReviewItem, type TaskApplication, type TaskItem, type ReviewSummary } from './api/tasks'
+import { applyForTask, approveOrder, cancelOrder, cancelTask, createOrderReview, createTask, getExecutionAddress, getReviewSummary, increaseTaskReward, listMyApplications, listMyOrders, listMyTasks, listOrderReviews, listPublishedTasks, listTaskApplications, openDispute, publishTask, rejectOrder, resumeOrder, selectTaskApplication, startOrder, submitOrder, updateTaskDraft, withdrawApplication, type MyApplicationItem, type OrderItem, type ReviewItem, type TaskApplication, type TaskItem, type ReviewSummary } from './api/tasks'
 import { connectNotifications as connectNotificationHub, disconnectNotifications, listNotifications, markNotificationsRead, type NotificationEnvelope, type NotificationItem } from './api/notifications'
 import { listOrderMessages, markOrderMessagesRead, sendOrderMessage, type OrderMessage } from './api/messages'
 import { absoluteMaxEvidenceBytes, allowedEvidenceTypes, downloadEvidence, listOrderEvidence, uploadOrderEvidence, type EvidenceItem } from './api/evidence'
@@ -495,6 +495,94 @@ function taskRiskNotice(task: TaskItem | null): string {
   if (task.riskReviewStatus === 'Rejected') return `未通过人工复核：${task.riskReviewNote ?? ''}`
   if (task.riskReviewStatus === 'Pending') return `正在等待人工复核，通过后才能发布：${task.riskSummary ?? ''}`
   return task.riskSummary ?? ''
+}
+
+// 草稿编辑：只有 ReadyToPublish 的草稿可改（服务端判定，页面只按 draftEditable 显示入口）。
+// 保存后服务端会重新判定风险并清空原有的人工复核结论——正文变了，审核就得重来。
+const draftEditId = ref('')
+const draftEditBusy = ref(false)
+const draftEditError = ref('')
+const draftEditNotice = ref('')
+const draftEditForm = ref({
+  title: '',
+  description: '',
+  district: '',
+  deadline: '',
+  reward: 0,
+  criteria: '',
+  executionAddress: '',
+  applicationDeadline: '',
+})
+
+async function startDraftEdit(task: TaskItem) {
+  draftEditId.value = task.id
+  draftEditError.value = ''
+  draftEditNotice.value = ''
+  draftEditForm.value = {
+    title: task.title,
+    description: task.description,
+    district: task.district,
+    deadline: toDateTimeLocal(task.deadline),
+    reward: task.reward,
+    criteria: task.acceptanceCriteria.join('\n'),
+    executionAddress: '',
+    applicationDeadline: task.applicationDeadline ? toDateTimeLocal(task.applicationDeadline) : '',
+  }
+
+  // 执行地址属于参与者层信息，任务列表里不带；由所有者单独读取，读不到就留空（不影响其它字段）。
+  try {
+    const result = await getExecutionAddress(task.id, authUser.value?.userId ?? task.ownerId)
+    if (draftEditId.value === task.id) draftEditForm.value.executionAddress = result.executionAddress ?? ''
+  } catch {
+    // 读不到地址就不预填，用户仍可编辑其它字段。
+  }
+}
+
+function cancelDraftEdit() {
+  draftEditId.value = ''
+  draftEditError.value = ''
+}
+
+async function saveDraftEdit(task: TaskItem) {
+  const form = draftEditForm.value
+  const criteria = form.criteria
+    .split('\n')
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0)
+
+  if (!form.title.trim() || !form.description.trim() || !form.district.trim()) {
+    draftEditError.value = '标题、描述与区域都不能为空。'
+    return
+  }
+  if (criteria.length === 0) {
+    draftEditError.value = '至少保留一项验收标准。'
+    return
+  }
+
+  draftEditBusy.value = true
+  draftEditError.value = ''
+  try {
+    const updated = await updateTaskDraft(task.id, {
+      ownerId: authUser.value?.userId ?? task.ownerId,
+      title: form.title.trim(),
+      description: form.description.trim(),
+      district: form.district.trim(),
+      deadline: new Date(form.deadline).toISOString(),
+      reward: Number(form.reward),
+      acceptanceCriteria: criteria,
+      executionAddress: form.executionAddress.trim() || undefined,
+      applicationDeadline: form.applicationDeadline.trim() ? new Date(form.applicationDeadline).toISOString() : undefined,
+    })
+    draftEditNotice.value = updated.riskPublishBlocked
+      ? `草稿已保存，但仍被风险规则拦住：${taskRiskNotice(updated)}`
+      : `草稿「${updated.title}」已保存，可以发布。`
+    draftEditId.value = ''
+    await loadMyTasks()
+  } catch (error) {
+    draftEditError.value = error instanceof Error ? error.message : '保存草稿失败'
+  } finally {
+    draftEditBusy.value = false
+  }
 }
 
 const completion = computed(() => !aiPlan.value || steps.value.length === 0
@@ -1619,6 +1707,7 @@ onMounted(async () => {
               <p v-if="task.riskPublishBlocked" class="order-note rejection"><b>风险拦截（{{ riskVerdictLabel(task.riskVerdict ?? 'Allowed') }}）：</b>{{ taskRiskNotice(task) }}<span v-if="task.riskRuleCode"> · {{ task.riskRuleCode }} · 规则第 {{ task.riskRuleVersion }} 版 · {{ riskReviewStatusLabel(task.riskReviewStatus ?? 'NotRequired') }}</span></p>
               <div class="order-actions">
                 <button v-if="task.status === 'ReadyToPublish'" type="button" :disabled="publishingTaskId === task.id" @click="publishMyTask(task)">{{ publishingTaskId === task.id ? '发布中…' : '发布到任务大厅' }}</button>
+                <button v-if="task.draftEditable && draftEditId !== task.id" type="button" class="secondary-action" @click="startDraftEdit(task)">编辑草稿</button>
                 <button v-if="task.status === 'Published' && task.applicationCount > 0" type="button" class="secondary-action" @click="openMyTaskApplications(task)">查看报名</button>
                 <button v-else-if="task.status === 'Published'" type="button" class="secondary-action" @click="hallTab = 'public'">去大厅查看</button>
                 <button v-if="task.status === 'Published'" type="button" :disabled="raisingTaskId === task.id" @click="raiseTaskReward(task)">{{ raisingTaskId === task.id ? '加价中…' : '加价' }}</button>
@@ -1631,6 +1720,23 @@ onMounted(async () => {
                 <button type="button" class="danger" :disabled="taskCancelBusy" @click="confirmTaskCancel(task)">{{ taskCancelBusy ? '撤销中…' : '确认撤销' }}</button>
                 <button type="button" class="secondary-action" :disabled="taskCancelBusy" @click="taskCancelId = ''">放弃</button>
                 <span v-if="taskCancelError" class="cancel-error">{{ taskCancelError }}</span>
+              </div>
+              <div v-if="draftEditId === task.id" class="draft-edit">
+                <p class="draft-edit-hint">编辑保存后会重新跑一遍风险规则；如果之前已经人工复核过，这次改动会让复核作废、按新内容重新排队。</p>
+                <label class="draft-edit-field"><span>标题</span><input v-model="draftEditForm.title" type="text" maxlength="80" /></label>
+                <label class="draft-edit-field"><span>描述</span><textarea v-model="draftEditForm.description" rows="3"></textarea></label>
+                <label class="draft-edit-field"><span>公开区域</span><input v-model="draftEditForm.district" type="text" maxlength="60" /></label>
+                <label class="draft-edit-field"><span>任务截止时间</span><input v-model="draftEditForm.deadline" type="datetime-local" /></label>
+                <label class="draft-edit-field"><span>固定悬赏</span><input v-model.number="draftEditForm.reward" type="number" min="1" step="5" /></label>
+                <label class="draft-edit-field"><span>验收标准（一行一条）</span><textarea v-model="draftEditForm.criteria" rows="3"></textarea></label>
+                <label class="draft-edit-field"><span>精确执行地址（可选，仅参与者可见）</span><input v-model="draftEditForm.executionAddress" type="text" maxlength="200" /></label>
+                <label class="draft-edit-field"><span>报名截止时间（可选）</span><input v-model="draftEditForm.applicationDeadline" type="datetime-local" /></label>
+                <div class="order-actions">
+                  <button type="button" :disabled="draftEditBusy" @click="saveDraftEdit(task)">{{ draftEditBusy ? '保存中…' : '保存草稿' }}</button>
+                  <button type="button" class="secondary-action" :disabled="draftEditBusy" @click="cancelDraftEdit()">放弃</button>
+                </div>
+                <span v-if="draftEditError" class="cancel-error">{{ draftEditError }}</span>
+                <span v-if="draftEditNotice" class="draft-edit-notice">{{ draftEditNotice }}</span>
               </div>
             </div>
             <strong>¥{{ task.reward }}</strong>

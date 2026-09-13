@@ -30,6 +30,27 @@ public sealed class TaskService(ITaskRepository repository, IOrderRepository ord
         return Map(task);
     }
 
+    /// <summary>
+    /// 编辑草稿：只有所有者、且只有还没发布的草稿可以改。字段校验与创建时同一套，
+    /// 改完会重新判定风险并清空原有的人工复核结论（审核绑定的是当时那份文本）。
+    /// </summary>
+    public TaskResponse UpdateDraft(Guid id, Guid ownerId, UpdateTaskDraftRequest request)
+    {
+        var task = GetOwned(id, ownerId);
+        task.UpdateDraft(
+            request.Title,
+            request.Description,
+            request.District,
+            request.Deadline,
+            new Money(request.Reward),
+            request.AcceptanceCriteria,
+            request.ExecutionAddress,
+            request.ApplicationDeadline,
+            timeProvider.GetUtcNow());
+        repository.Save(task);
+        return Map(task);
+    }
+
     public TaskResponse IncreaseReward(Guid id, Guid ownerId, IncreaseRewardRequest request)
     {
         var task = GetOwned(id, ownerId);
@@ -372,6 +393,12 @@ public sealed class TaskService(ITaskRepository repository, IOrderRepository ord
         return new(suggested, Math.Max(15m, suggested - 10m), suggested + 20m, "CNY", ["预计距离", "预计耗时", request.IsPeakHours ? "高峰时段" : "普通时段", "任务类别"], "cold-start");
     }
 
+    /// <summary>
+    /// 草稿能不能编辑：只有还没发布的草稿可以改。判定放在服务端，
+    /// 前端只负责按这个标志显示/隐藏“编辑草稿”，不自己推算状态。
+    /// </summary>
+    private static bool CanEditDraft(TaskItem task) => task.Status == DomainTaskStatus.ReadyToPublish;
+
     private TaskItem GetOwned(Guid id, Guid ownerId)
     {
         var task = GetRequired(id);
@@ -408,7 +435,7 @@ public sealed class TaskService(ITaskRepository repository, IOrderRepository ord
     }
 
     private TaskResponse Map(TaskItem task) => new(task.Id, task.OwnerId, task.Title, task.Description, task.District, task.Deadline, task.Reward.Amount, task.Reward.Currency, task.Status.ToString(), task.AcceptanceCriteria, task.Applications.Select(MapApplication).ToArray(), task.ExpiredAt, task.CancelledAt, task.CancellationReason, task.ApplicationDeadline, task.AcceptingApplications(timeProvider.GetUtcNow()),
-        task.RiskVerdict.ToString(), task.RiskRuleCode, task.RiskCategory, task.RiskSummary, task.RiskRuleVersion, task.RiskAssessedAt, task.RiskReviewStatus.ToString(), task.RiskReviewedAt, task.RiskReviewNote, task.IsPublishBlockedByRisk);
+        task.RiskVerdict.ToString(), task.RiskRuleCode, task.RiskCategory, task.RiskSummary, task.RiskRuleVersion, task.RiskAssessedAt, task.RiskReviewStatus.ToString(), task.RiskReviewedAt, task.RiskReviewNote, task.IsPublishBlockedByRisk, CanEditDraft(task));
     private static TaskApplicationResponse MapApplication(TaskApplication application) => new(application.Id, application.WorkerId, application.Note, application.Status.ToString(), application.SubmittedAt);
 
     private TaskSummaryResponse MapSummary(TaskItem task, bool includeCancellationTrail = false) => new(
@@ -421,7 +448,7 @@ public sealed class TaskService(ITaskRepository repository, IOrderRepository ord
         // 风险字段对“别人的任务”没有意义：被拦截或待复核的任务一律停留在草稿，公开详情与大厅根本看不到它，
         // 能读到的已发布任务结论必然是 Allowed。所以这里不需要像撤销原因那样按调用方分流。
         task.RiskVerdict.ToString(), task.RiskRuleCode, task.RiskCategory, task.RiskSummary, task.RiskRuleVersion,
-        task.RiskReviewStatus.ToString(), task.RiskReviewNote, task.IsPublishBlockedByRisk);
+        task.RiskReviewStatus.ToString(), task.RiskReviewNote, task.IsPublishBlockedByRisk, CanEditDraft(task));
     private static OrderResponse Map(Order order) => new(order.Id, order.TaskId, order.OwnerId, order.WorkerId, order.Title, order.Reward.Amount, order.Reward.Currency, order.Status.ToString(), order.CreatedAt, order.EvidenceNote, order.ReviewNote, order.SubmittedAt, order.ReviewedAt, order.ReworkCount, order.RejectionNote, 0, order.CancelledAt, order.CancelledBy, order.CancellationReason, order.DisputeReason, order.DisputeOpenedBy, order.DisputeOpenedAt, order.DisputeResult, order.DisputeResolutionNote, order.DisputeResolvedAt);
     private static ReviewResponse MapReview(Review review, bool visible) => new(review.Id, review.OrderId, review.ReviewerId, review.RevieweeId, review.Rating, visible ? review.Comment : "评价将在双方完成后公开", review.CreatedAt, visible);
     private static void EnsureParticipant(Order order, Guid actorId) { if (order.OwnerId != actorId && order.WorkerId != actorId) throw new UnauthorizedAccessException("只有订单参与者可以执行该操作。"); }
