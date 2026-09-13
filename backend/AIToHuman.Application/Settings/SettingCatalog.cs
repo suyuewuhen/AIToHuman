@@ -36,6 +36,10 @@ public static class SettingKeys
 
     public const string NotificationFanoutEnabled = "notifications.fanout.enabled";
 
+    public const string RateLimitEnabled = "ratelimit.enabled";
+    public const string RateLimitWritesPerMinute = "ratelimit.writesPerMinute";
+    public const string ReadinessTimeoutSeconds = "readiness.timeoutSeconds";
+
     public const string PaymentProvider = "payment.provider";
 
     /// <summary>模拟网关：资金动作全部走本地确定性实现，用于开发、联调与回归。</summary>
@@ -87,7 +91,11 @@ public static class SettingCatalog
 
         new(SettingKeys.NotificationFanoutEnabled, "通知推送", "多实例扇出", "多实例部署时用 Redis 发布/订阅广播通知，用户连在哪个实例上都能实时收到。启用前部署配置里必须有 ConnectionStrings__Redis；没配连接串时这个开关不生效，应用按单实例推送运行。远端实例重启或 Redis 抖动时通知仍会落库，客户端重连后从收件箱补齐。", SettingValueKind.Bool, "false", "Settings:notifications:fanout:enabled"),
 
-        new(SettingKeys.PaymentProvider, "资金托管", "托管通道", "simulated：本地模拟网关（资金动作确定、可回归，订单会冻结悬赏并在验收时放款、取消时退款，每一步都写资金流水）；disabled：关闭托管，订单不带托管信息也不写流水，行为与托管功能上线之前一致。接真实支付服务商时会在这里出现新的取值。", SettingValueKind.Choice, SettingKeys.PaymentProviderSimulated, "Settings:payment:provider", Choices: [SettingKeys.PaymentProviderSimulated, SettingKeys.PaymentProviderDisabled])
+        new(SettingKeys.PaymentProvider, "资金托管", "托管通道", "simulated：本地模拟网关（资金动作确定、可回归，订单会冻结悬赏并在验收时放款、取消时退款，每一步都写资金流水）；disabled：关闭托管，订单不带托管信息也不写流水，行为与托管功能上线之前一致。接真实支付服务商时会在这里出现新的取值。", SettingValueKind.Choice, SettingKeys.PaymentProviderSimulated, "Settings:payment:provider", Choices: [SettingKeys.PaymentProviderSimulated, SettingKeys.PaymentProviderDisabled]),
+
+        new(SettingKeys.RateLimitEnabled, "运维与限流", "写接口限流", "按用户（未登录按来源 IP）限制写请求的速率，超限返回 429 与 Retry-After。只压在写请求上，读接口与 /health 不受影响；抢到限流时运营可以在这里一键关闭作为应急手段（关闭后完全不做限流）。", SettingValueKind.Bool, "true", "Settings:ratelimit:enabled"),
+        new(SettingKeys.RateLimitWritesPerMinute, "运维与限流", "每分钟写请求上限", "单个用户在固定一分钟窗口内允许的写请求数；未登录请求按来源 IP 单独计数。默认 240，对正常使用（含批量运营操作）足够宽，只挡脚本刷接口。多实例部署时每个实例各记一份，真正的跨实例配额要等 Redis 计数器。", SettingValueKind.Int, "240", "Settings:ratelimit:writesPerMinute", MinInt: 1, MaxInt: 100000),
+        new(SettingKeys.ReadinessTimeoutSeconds, "运维与限流", "就绪检查超时（秒）", "GET /health/ready 里单项依赖探测（数据库、Redis、对象存储）的等待上限，超时按该项不健康处理；把超时配小一点可以让编排系统更快看到“依赖挂了”，配大一点则能容忍依赖偶发抖动。", SettingValueKind.Int, "3", "Settings:readiness:timeoutSeconds", MinInt: 1, MaxInt: 30)
     ];
 
     private static readonly Dictionary<string, SettingDefinition> ByKey = All.ToDictionary(item => item.Key, StringComparer.Ordinal);

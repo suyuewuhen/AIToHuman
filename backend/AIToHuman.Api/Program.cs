@@ -22,6 +22,9 @@ using AIToHuman.Api.Notifications;
 using AIToHuman.Api.Orders;
 using AIToHuman.Api.Settings;
 using AIToHuman.Api.Idempotency;
+using AIToHuman.Api.Operations;
+using AIToHuman.Application.Operations;
+using AIToHuman.Infrastructure.Operations;
 using AIToHuman.Application.Idempotency;
 using AIToHuman.Application.Risk;
 using AIToHuman.Infrastructure.Idempotency;
@@ -143,6 +146,14 @@ else
     builder.Services.AddSingleton<IUnitOfWork, InMemoryUnitOfWork>();
 }
 builder.Services.AddSingleton(TimeProvider.System);
+// 写接口限流：单例持有进程内固定窗口计数；口径（开关与每分钟上限）每次请求现读设置，运营改完立即生效。
+builder.Services.AddSingleton<WriteRateLimiter>();
+// 依赖感知的就绪检查：三项探测并行执行、各自超时，任一不健康 => /health/ready 返回 503。
+// 检查注册成 scoped（数据库与文件存储都是 scoped），端点每次请求解析一次。
+builder.Services.AddScoped<IReadinessCheck, PostgresReadinessCheck>();
+builder.Services.AddScoped<IReadinessCheck, RedisReadinessCheck>();
+builder.Services.AddScoped<IReadinessCheck, StorageReadinessCheck>();
+builder.Services.AddScoped<ReadinessService>();
 builder.Services.AddSignalR();
 builder.Services.AddScoped<NotificationService>();
 builder.Services.AddScoped<OrderChatService>();
@@ -312,11 +323,37 @@ app.UseExceptionHandler(errorApp => errorApp.Run(async context =>
 app.UseCors(FrontendCorsPolicy);
 app.UseAuthentication();
 app.UseAuthorization();
+// 写接口限流：必须排在幂等中间件之前——否则被限流的 429 会被幂等中间件当成"这个键的正常结果"缓存下来，
+// 客户端之后的重试会一直拿到 429（原因见 WriteRateLimitMiddleware 的注释）。
+app.UseMiddleware<WriteRateLimitMiddleware>();
 // 写接口的幂等键：带 Idempotency-Key 的请求会回放上次的响应，避免重试把动作做两遍。
 app.UseMiddleware<IdempotencyMiddleware>();
 app.MapHub<NotificationsHub>("/hubs/notifications");
 
 app.MapGet("/health", () => Results.Ok(new { status = "healthy", service = "AIToHuman.Api", utc = DateTimeOffset.UtcNow }));
+
+// 就绪探针（依赖感知）：逐项探测数据库、Redis（仅在开扇出时）与文件存储，任一不健康返回 503，
+// 编排系统据此摘流量。/health 保持"只看进程活没活"，不被依赖拖下水——依赖挂了重启进程没有意义。
+app.MapGet("/health/ready", async (ReadinessService readiness, ISettingsProvider settings, CancellationToken cancellationToken) =>
+{
+    var report = await readiness.CheckAsync(ReadinessService.ResolveTimeoutSeconds(settings), cancellationToken);
+    var payload = new
+    {
+        status = report.Healthy ? "healthy" : "unhealthy",
+        service = "AIToHuman.Api",
+        utc = report.CheckedAt,
+        durationMs = report.DurationMs,
+        checks = report.Checks.Select(check => new
+        {
+            name = check.Name,
+            status = check.Status.ToString().ToLowerInvariant(),
+            detail = check.Detail,
+            durationMs = check.DurationMs
+        })
+    };
+
+    return report.Healthy ? Results.Ok(payload) : Results.Json(payload, statusCode: StatusCodes.Status503ServiceUnavailable);
+});
 
 app.MapGet("/api/v1/session/dev", (IHostEnvironment environment) =>
 {

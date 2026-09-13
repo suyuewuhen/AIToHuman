@@ -42,6 +42,9 @@
   - **赔付金额越界会 `422`**：超过托管额时返回「赔付金额必须在 0 到托管金额（X）之间。」（例如托管 100 时报「赔付金额必须在 0 到托管金额（100）之间。」），这是领域层在挡金额，不是接口坏了。
   - **看流水、关托管做对比**：资金流水走 `GET /api/v1/orders/{id}/ledger`（**仅订单参与者**；外人 `403`、订单不存在 `404`；返回裸数组，金额恒为正、方向看 `debitAccount → creditAccount`），运营侧对应 `GET /api/v1/admin/orders/{id}/ledger`。把运营配置 `payment.provider` 改成 `disabled` 之后新建的订单应当是 `None`、金额 0、**没有任何流水**，改回 `simulated` 即恢复托管——联调时用它对一下“托管关掉时行为与上线前一致”。
 - **凭证规范化的三种联调样本**（用来验证剥离与拒绝两条路径）：① **带私有块的 PNG**——在 `IDAT` 前塞一个载荷是 ZIP 魔数的未知块 `prVt`，上传后应当变小（本轮样本 89 字节存成 62 字节），响应的 `metadataRemoved` 是 `PNG 未知块(prVt)`；② **截断的 PNG**（删掉 `IEND`）——`422`「凭证内容不是合法的 PNG（缺少结束块 IEND），已拒绝保存。」；③ **改名文件**（把 JPEG 存成 `.png`）——`422`「凭证内容与声明的类型不一致，已拒绝保存。」。三种样本都要顺手回读一次凭证列表，确认没有多出半份文件。
+- **就绪探针的本地联调（两个探针分工不同，别只看一个）**：`GET /health` 永远 `200`，只说明进程还在跑；`GET /health/ready` 才会逐项探测依赖——正常时 `200`，`checks` 里 postgres 显示“已应用的迁移 29 个，没有待应用的迁移”、未开扇出时 redis 为 `skipped`、storage 为 `ok`（本机目录会写入再删掉 `readiness/probe.txt`）。想让某一项变红（顺带验证 `503` 与“摘流量”这条路径）：最直接的是**停掉 PostgreSQL**（postgres 项 `failed`，`/health/ready` 返回 `503`）；想验证 redis 项，就把运营开关 `notifications.fanout.enabled` 打开但**不配** `ConnectionStrings__Redis`（该项直接 `failed`，文案会提示补连接串或关掉开关）；storage 项要变红则必须是目标真的不可写（本机目录会自动创建缺失的目录，只有在权限不足或磁盘满时会失败）。注意就绪失败**不等于接口全挂**：`/health` 仍是 `200`，业务接口各自按依赖报错。
+- **写接口限流的本地联调**：把运营配置 `ratelimit.writesPerMinute` 临时改成 2（`PUT /api/v1/admin/settings/ratelimit.writesPerMinute`），连打三个写请求就能看到第三个 `429` + `Retry-After` + `X-RateLimit-Limit`/`Remaining`/`Partition`（已登录时分区是 `user:{你的 id}`，未登录是 `ip:127.0.0.1`）；读接口、`/health*` 完全不受影响，而 `/api/v1/admin/settings` 的写入也不受影响——正是用这条通道把上限改回 240。窗口是自然分钟，等下一分钟自动恢复，不需要重启进程（进程重启也会清零，计数只在内存里）。**多实例下注意**：每个实例各记一份额度，跨实例的全局配额还没有实现。
+- **备份与恢复演练**：[备份、恢复与演练](../operations/backup-and-restore.md) 给出备份对象清单（数据库、凭证文件、**Data Protection 密钥环**、部署配置，缺一不可）、RPO/RTO 口径、可照抄执行的 `pg_dump -Fc` / `pg_restore` / 行数与迁移数核对 / `mc mirror` 回灌步骤，以及定期演练清单。改过加密配置或动过迁移之后建议按它跑一遍：用恢复库起 API 并**通过 `/health/ready`**、能读回运营配置，才算真的恢复成功。
 - 数据库结构只通过 EF Core Migration 演进。
 - **前端不要自己拼 API 地址**：所有请求走 `frontend/src/api/base.ts` 的 `apiFetch()`（SignalR 用 `hubUrl()`），两个入口之间的跳转用 `APP_HOME_URL` / `OPS_HOME_URL`。默认是相对路径（同源 + 反向代理），跨域部署时才由构建期变量给出绝对地址：`VITE_API_BASE_URL`、`VITE_HUB_BASE_URL`、`VITE_APP_HOME_URL`、`VITE_OPS_HOME_URL`（声明在 `frontend/env.d.ts`）。
 - 跨源部署必须让后端放行来源：`Cors__AllowedOrigins=https://ops.example.com,https://app.example.com`（也接受数组写法）。没配置时的兜底按环境区分：开发环境放行本机 5173 / 4173，其它环境一个都不放行（同源部署本来不需要 CORS）；生效清单每次启动都打进日志。策略里**必须保留 `AllowCredentials()`**：SignalR 协商默认带 credentials，漏掉它会出现“接口都正常、只有通知订阅报 CORS 错误”。想在没有域名的前提下复现跨源，用两个本机端口就够：`npm run build` 后用 `npm run preview`（4173）或任意静态服务器当第二个源、API 仍在本机 5188，再把该来源填进 `Cors__AllowedOrigins`。
@@ -81,15 +84,16 @@
     - 用例用 `[RedisFact]` / `[MinioFact]` 标注，依赖不可用时**标记为跳过而不是失败**（与 `[PostgresFact]` 同一套取舍）。
     - Redis 侧覆盖：广播的消息按字段原样到达订阅方（含 `PayloadJson` 原样跨进程传递）；处理函数抛异常不会中断订阅（第二条消息仍能收到）；开关关闭时 `Enabled=false` 且 `PublishAsync` 抛 `InvalidOperationException`（派发方据此退回单实例推送）、`SubscribeAsync` 立即返回；**配了一个连不上的 Redis 时 `PublishAsync` 会失败并返回**，断言的是"不会把派发周期无限卡住"（上限 30 秒）。
     - 对象存储侧覆盖：对象往返读写与存在性判断、删除后不存在（读不存在的对象返回 `null` 而不抛异常）；预签名地址**不带任何鉴权头**就能取回字节，且 `Content-Disposition` 的附件名生效；**篡改签名末位 → 403**；**拿 A 的签名去取 B 的路径 → 403**（路径参与签名）；**过期之后取 → 403**。过期这条只能真实等待：有效期由对象存储按 `X-Amz-Date + X-Amz-Expires` 与它自己的时钟判定，**改客户端时钟没用**，所以用的是"签 5 秒 → 立刻取应当 200 → 真等 7 秒 → 再取应当 403"，S3 那批约 21 秒。
-  - **主机级端到端用例也已经建立**（`backend/tests/AIToHuman.IntegrationTests/Host/`，集合名 `host-e2e`，7 条）：它把**已构建的** `AIToHuman.Api.dll` 当子进程起起来（`ASPNETCORE_ENVIRONMENT=Development`、随机空闲端口、随机命名的临时库、临时 Data Protection 密钥环与对象存储目录、通知扇出关闭），然后用**真实 HTTP** 打这个进程，因此覆盖到的是单元测试与真库用例都碰不到的**路由注册、DI 装配、中间件顺序、JSON 契约与启动期迁移**（临时库不提前创建，由应用启动时的 `Migrate()` 自己建库并应用全部 29 个迁移）。刻意不用 `WebApplicationFactory`：它需要 `Microsoft.AspNetCore.Mvc.Testing` 包，本机离线取不到（见 `handoff.md` 第 7 节），而子进程 + 真 HTTP 不依赖任何新包。
-    - 怎么跑：先 `dotnet build`（本机默认 Debug，Release 下找的是 `backend/AIToHuman.Api/bin/Release/net10.0/AIToHuman.Api.dll`），再按配置提供 `AITOHUMAN_TEST_POSTGRES`（与真库用例同一个变量，也可以只在 `backend/AIToHuman.Api/appsettings.Development.json` 里配 `ConnectionStrings:Postgres`），然后正常 `dotnet test` 即可。7 条用例共用一个进程与一个临时库，整组只需数秒（不为每条用例重启应用）。
+  - **主机级端到端用例也已经建立**（`backend/tests/AIToHuman.IntegrationTests/Host/`，集合名 `host-e2e`，9 条）：它把**已构建的** `AIToHuman.Api.dll` 当子进程起起来（`ASPNETCORE_ENVIRONMENT=Development`、随机空闲端口、随机命名的临时库、临时 Data Protection 密钥环与对象存储目录、通知扇出关闭），然后用**真实 HTTP** 打这个进程，因此覆盖到的是单元测试与真库用例都碰不到的**路由注册、DI 装配、中间件顺序、JSON 契约与启动期迁移**（临时库不提前创建，由应用启动时的 `Migrate()` 自己建库并应用全部 29 个迁移）。刻意不用 `WebApplicationFactory`：它需要 `Microsoft.AspNetCore.Mvc.Testing` 包，本机离线取不到（见 `handoff.md` 第 7 节），而子进程 + 真 HTTP 不依赖任何新包。
+    - 怎么跑：先 `dotnet build`（本机默认 Debug，Release 下找的是 `backend/AIToHuman.Api/bin/Release/net10.0/AIToHuman.Api.dll`），再按配置提供 `AITOHUMAN_TEST_POSTGRES`（与真库用例同一个变量，也可以只在 `backend/AIToHuman.Api/appsettings.Development.json` 里配 `ConnectionStrings:Postgres`），然后正常 `dotnet test` 即可。9 条用例共用一个进程与一个临时库，整组只需数秒（不为每条用例重启应用）。本轮新增的两条打的是**运维面**：一条探 `/health` 与 `/health/ready`（断言 postgres 与 storage 为 `ok`、未开扇出时 redis 为 `skipped`、`/health` 仍 200），一条把运营配置 `ratelimit.writesPerMinute` 改成 2 后连打三个写请求，断言第三个是 `429` 且带 `Retry-After`/`X-RateLimit-*`、读接口不受影响、`/api/v1/admin/settings` 的写入不被限流（用例结束会把上限改回 240，避免污染同一个临时库里的后续用例）。
     - 怎么跳过：`AITOHUMAN_TEST_HOST=0`（或 `false`）显式关掉这组用例；缺 PostgreSQL 或找不到已构建的 API 程序集时同样**整组跳过而不是失败**，跳过原因写在用例的跳过信息里（与 `[PostgresFact]`/`[RedisFact]` 同一套取舍）。
     - 怎么排查：就绪探测只认 `/health` 返回 200，最多等 90 秒；超时或进程刚起就退出时，异常消息里会带上**子进程的 stdout/stderr**（最多 400 行），不用另开窗口抓日志。用例跑完会杀掉整个进程树、`DROP DATABASE` 并删掉临时目录，清理失败只记一行日志、不影响结果。
   - 仍**未**自动化的是**两个真实 API 实例 + 客户端之间的通知扇出整链路**——自动化覆盖的是"广播能到达订阅方"这一层，"两个实例 + 两个客户端"的全链路仍靠手工端到端；其余关键路径仍靠 `handoff.md` 第 11 节列出的手工步骤。
-- AI 协议集成测试：`backend/tests/AIToHuman.IntegrationTests` 用替身上游覆盖 SSE 分片、转义、缺少结束标记、超时与上游错误，不联网也不依赖数据库。
+  - 运维面（就绪检查与写接口限流）的集成用例本轮建在 `backend/tests/AIToHuman.IntegrationTests/Operations/`：`ReadinessServiceTests.cs`（7 条——任一依赖失败即整体不健康并回传原因、`skipped` 不算失败、探测抛异常被折成该项 `failed` 而不是让端点 500、忽略取消令牌的探测也被单项超时封顶、超时配置的默认值与 1–30 夹取）与 `WriteRateLimiterTests.cs`（6 条——上限内的请求放行、超限时给出 `Retry-After`；不同分区（用户与 IP）各算各的、互不牵连；跨到下一分钟窗口自动重置并清掉旧窗口；`ratelimit.enabled=false` 时完全不计数；上限缺失、写成非数字或小于 1 时退回默认值或夹到 1；运营改完上限**下一个请求即生效**，因为策略不缓存）。它们不依赖真实数据库或 Redis，因此任何机器上都会真跑（13 条）。
+  - AI 协议集成测试：`backend/tests/AIToHuman.IntegrationTests` 用替身上游覆盖 SSE 分片、转义、缺少结束标记、超时与上游错误，不联网也不依赖数据库。
 - 契约测试：OpenAPI、生成客户端和 Problem Details。
 - 端到端测试：AI 草稿到任务完成的关键路径。
-- 安全测试：跨用户访问、角色提升、文件 ID 枚举、状态绕过和速率限制。
+- 安全测试：跨用户访问、角色提升、文件 ID 枚举、状态绕过和速率限制（写接口限流已有 6 条集成用例 + 1 条主机级用例覆盖，见上文的 `WriteRateLimiterTests.cs` 与主机级 E2E）。
 - AI 评估：固定测试集验证必填字段、禁止类别、提示注入和结构化输出。
 
 模型相关测试分为：不联网的适配器/模式测试，以及受控执行的真实供应商评估；普通 CI 不依赖随机模型响应。
@@ -98,7 +102,8 @@
 
 - 每个结构变化附 EF Core Migration。
 - Migration 名称描述业务变化。
-- 生产环境由部署流程执行迁移，不由每个 API 实例启动时自动执行；Development 启动时自动应用迁移。
+- 生产环境由部署流程执行迁移，不由每个 API 实例启动时自动执行；Development 启动时自动应用迁移。**有没有漏跑迁移可以被探针发现**：`GET /health/ready` 的 postgres 项会检查待应用迁移数，有漏跑就报不健康并返回 `503`，因此“新版本起来了但迁移没跑完”不会静默放流量进来。
+- 备份与恢复演练见 [备份、恢复与演练](../operations/backup-and-restore.md)：其中的核对步骤就用迁移数当基线（恢复后 `__EFMigrationsHistory` 的行数应与迁移总数一致，当前 **29**）。
 - 破坏性变化先扩展、迁移数据、再收缩，明确回滚方案。
 
 ## 6. API 开发流程
@@ -138,6 +143,9 @@ Settings__evidence__stripMetadata
 Settings__evidence__uploadsPerUserPerHour
 Settings__evidence__downloadUrlLifetimeSeconds
 Settings__payment__provider
+Settings__ratelimit__enabled
+Settings__ratelimit__writesPerMinute
+Settings__readiness__timeoutSeconds
 Admin__UserIds
 Admin__Emails
 DataProtection__KeysPath

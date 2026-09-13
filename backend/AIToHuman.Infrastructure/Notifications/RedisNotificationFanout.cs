@@ -15,7 +15,7 @@ namespace AIToHuman.Infrastructure.Notifications;
 ///
 /// 未配置连接串、运营未打开开关、或 Redis 不可用时，<see cref="Enabled"/> 为 false，派发方退化为单实例直接推送。
 /// </summary>
-public sealed class RedisNotificationFanout : INotificationFanout, IAsyncDisposable
+public sealed class RedisNotificationFanout : INotificationFanout, INotificationFanoutProbe, IAsyncDisposable
 {
     /// <summary>扇出频道名；所有实例必须一致，因此不做成运营可改的配置项。</summary>
     public const string Channel = "aitohuman:notifications:fanout";
@@ -92,6 +92,15 @@ public sealed class RedisNotificationFanout : INotificationFanout, IAsyncDisposa
         {
             await UnsubscribeAsync(queue);
         }
+    }
+
+    /// <summary>就绪检查用的探测：真发一次 PING，顺带把往返延迟返回给运维看。</summary>
+    public async Task<string> ProbeAsync(CancellationToken cancellationToken = default)
+    {
+        if (!Enabled) throw new InvalidOperationException("通知扇出未启用：请确认已打开 notifications.fanout.enabled 并配置 ConnectionStrings__Redis。");
+
+        var latency = await (await GetConnectionAsync(cancellationToken)).GetDatabase().PingAsync().ConfigureAwait(false);
+        return $"Ping 往返 {latency.TotalMilliseconds:F0} 毫秒。";
     }
 
     public async ValueTask DisposeAsync()

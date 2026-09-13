@@ -28,14 +28,15 @@ AIToHuman 是一个“AI 任务管家 + 真人服务任务大厅”平台。用�
 - 实时通信：SignalR（订单创建、状态变化、订单取消、任务过期、报名撤回、争议与争议处置、新消息通知；持久化 Outbox + 后台派发 + 未读数收件箱，推送只是刷新提示；多实例通过 Redis 扇出投递，运营可开关，见 [ADR-0004](docs/architecture/decisions/0004-notification-fanout.md)）
 - AI：火山引擎 Ark OpenAI 兼容接口，SSE 流式多轮澄清
 - 凭证存储：本机私有目录或 S3 兼容对象存储（MinIO / 阿里云 OSS / AWS S3）可切换，签名是自研的 AWS SigV4（不依赖厂商 SDK），下载支持短时直连签名地址，已用本机 MinIO 端到端验证
-- 运营配置：设置目录（白名单）+ 加密机密 + 变更审计 + 写入即生效；管理员在**独立页面 `/ops.html`（运营后台）**里即可调整模型、对象存储、内容扫描参数与凭证上传上限，同一页还承载任务/用户检索、争议处置、风险复核、误拦申诉、风险规则目录与规则命中统计（见 [ADR-0003](docs/architecture/decisions/0003-operator-configurable-settings.md)）
+- 运营配置：设置目录（白名单）+ 加密机密 + 变更审计 + 写入即生效；管理员在**独立页面 `/ops.html`（运营后台）**里即可调整模型、对象存储、内容扫描参数与凭证上传上限，同一页还承载任务/用户检索、争议处置、风险复核、误拦申诉、风险规则目录与规则命中统计（见 [ADR-0003](docs/architecture/decisions/0003-operator-configurable-settings.md)）；设置目录当前 **7 个分组 / 30 个键**，其中「运维与限流」分组管写接口限流开关与每分钟上限、以及就绪检查的单项超时
 - 测试：PostgreSQL、Redis 与 S3 兼容存储三类外部依赖都有真实环境的自动化回归用例（`backend/tests/AIToHuman.IntegrationTests/Postgres/` 与 `External/`），依赖不可用时整批自动跳过而不是让构建变红；CI 里三个依赖都由服务容器提供
+- 运维：存活探针 `GET /health`（只看进程）与依赖感知的就绪探针 `GET /health/ready`（逐项探测 PostgreSQL / Redis / 文件存储，任一不健康返回 `503` 供编排系统摘流量）；写接口按用户（未登录按来源 IP）做固定分钟窗口限流，超限返回 `429` 与 `Retry-After`（默认 240 次/分钟，运营可在后台调或一键关闭，配置写入通道永不限流）；备份对象清单、RPO/RTO 与真实演练记录见 [备份、恢复与演练](docs/operations/backup-and-restore.md)
 - 本地依赖：`compose.yaml` 定义 PostgreSQL、Redis 和 MinIO
 
 规划中、代码尚未接入：
 
 - 前端 Pinia、Vue Router、Element Plus（当前没有路由和状态库：主应用与运营后台是两个入口 `index.html` / `ops.html`，各自挂载一个根组件）
-- Redis 缓存与分布式锁、Hangfire 后台作业
+- Redis 缓存、分布式锁与**分布式限流**（写接口限流目前是进程内计数，多实例各记一份，跨实例的全局配额要等 Redis 计数器）、Hangfire 后台作业
 - Nginx 与生产环境部署编排
 
 ## 仓库结构
@@ -51,20 +52,21 @@ AIToHuman/
 │       ├── App.vue                 # 对话工作台、草稿、大厅、订单、会话弹窗、凭证面板与评价
 │       └── styles.css
 ├── backend/
-│   ├── AIToHuman.Api/              # HTTP、JWT、AI SSE、SignalR Hub、通知后台派发、运营配置接口
+│   ├── AIToHuman.Api/              # HTTP、JWT、AI SSE、SignalR Hub、通知后台派发、运营配置接口、健康探针与写接口限流
 │   ├── AIToHuman.Application/      # 用例、仓储、通知接口与设置目录
 │   ├── AIToHuman.Domain/           # 实体、值对象与状态机
 │   ├── AIToHuman.Infrastructure/   # EF Core、PostgreSQL、内存仓储、本机文件存储与内容扫描适配
 │   ├── AIToHuman.Contracts/        # 请求与响应 DTO
 │   └── tests/
 │       ├── AIToHuman.Domain.Tests/          # 领域单元测试
-│       └── AIToHuman.IntegrationTests/      # 用例与 AI 多轮协议/SSE 集成测试
+│       └── AIToHuman.IntegrationTests/      # 用例、真库/外部依赖/主机级 E2E 与 AI 多轮协议/SSE 集成测试
 ├── docs/
 │   ├── product/                    # 产品定位、MVP 与用户故事
 │   ├── architecture/               # 系统设计、领域模型与 ADR
 │   ├── api/                        # API 约定
 │   ├── security/                   # 安全、隐私、风控与合规边界
 │   ├── development/                # 开发规范、路线图与交接文档
+│   ├── operations/                 # 备份、恢复与演练手册
 │   └── ai-planning.md              # AI 多轮澄清与火山引擎配置
 ├── .github/workflows/ci.yml        # 后端构建测试与前端构建
 ├── compose.yaml                    # 本地 PostgreSQL、Redis、MinIO
@@ -87,6 +89,7 @@ AIToHuman/
 - [API 设计约定](docs/api/api-guidelines.md)
 - [安全、隐私与风控](docs/security/security-and-risk.md)
 - [开发指南](docs/development/development-guide.md)
+- [备份、恢复与演练](docs/operations/backup-and-restore.md)
 - [项目交接文档](docs/development/handoff.md)
 - [AI 多轮需求澄清配置](docs/ai-planning.md)
 - [路线图](docs/development/roadmap.md)
@@ -94,7 +97,7 @@ AIToHuman/
 
 ## MVP 成功标准
 
-以下为 MVP 目标，不代表当前已具备的能力。截至 2026-09-13，AI 建单、固定悬赏报名、报名撤回与报名截止时间、双向选择、订单状态流转、订单取消与任务到期自动过期（含原因留痕、任务回到大厅或直接过期、报名作废与通知）、争议处理与运营处置（争议期间订单冻结，运营可强制完成/退回返工/终止订单，含审计与双方通知）、订单内沟通（消息与未读）、执行凭证上传与双向评价已可端到端演示；风险规则拦截与人工复核已可端到端演示（确定性规则：禁止类别一律不能发布，转人工的由运营放行或驳回并写运营审计；发布后的任务仍会被复检，每次判定都会追加留痕，运营可按规则查看命中统计）；通用业务审计记录尚未实现（现有审计覆盖运营下架、运营配置变更、争议处置与风险复核/申诉处置）；凭证侧已接入 ClamAV 的 INSTREAM 协议与外部扫描服务两种方式，缺的是部署真实病毒库（扫描不可用时凭证不会被放行，而是保持不可下载并自动重试）。
+以下为 MVP 目标，不代表当前已具备的能力。截至 2026-09-13，AI 建单、固定悬赏报名、报名撤回与报名截止时间、双向选择、订单状态流转、订单取消与任务到期自动过期（含原因留痕、任务回到大厅或直接过期、报名作废与通知）、争议处理与运营处置（争议期间订单冻结，运营可强制完成/退回返工/终止订单，含审计与双方通知）、订单内沟通（消息与未读）、执行凭证上传与双向评价已可端到端演示；风险规则拦截与人工复核已可端到端演示（确定性规则：禁止类别一律不能发布，转人工的由运营放行或驳回并写运营审计；发布后的任务仍会被复检，每次判定都会追加留痕，运营可按规则查看命中统计）；通用业务审计记录尚未实现（现有审计覆盖运营下架、运营配置变更、争议处置与风险复核/申诉处置）；凭证侧已接入 ClamAV 的 INSTREAM 协议与外部扫描服务两种方式，缺的是部署真实病毒库（扫描不可用时凭证不会被放行，而是保持不可下载并自动重试）。运维侧本轮补上了存活/就绪两个探针与写接口限流，备份对象清单、RPO/RTO 口径与一次真实的本机恢复演练记录见 [备份、恢复与演练](docs/operations/backup-and-restore.md)。
 
 - ✅ 用户能在 AI 引导下生成一份字段完整、可编辑的任务草稿（“我的任务”里可编辑标题、描述、区域、截止时间、悬赏、验收标准、执行地址与报名截止时间；保存后会重新跑一遍风险规则，之前的人工复核结论随之作废；每次编辑都会追加一版可追溯的修改记录，含变更摘要与该版的风险结论，`GET /api/v1/tasks/{id}/revisions` 仅本人可读）。
 - ✅ 用户能明确确认后发布任务，AI 不能绕过确认直接发布。
@@ -132,9 +135,9 @@ npm install
 npm run dev
 ```
 
-必须先启动后端，再启动 Vite；否则浏览器会看到 `vite http proxy error: ECONNREFUSED 127.0.0.1:5188`。可以先访问 `http://127.0.0.1:5188/health`，确认返回 `healthy` 后再打开前端。
+必须先启动后端，再启动 Vite；否则浏览器会看到 `vite http proxy error: ECONNREFUSED 127.0.0.1:5188`。可以先访问 `http://127.0.0.1:5188/health`，确认返回 `healthy` 后再打开前端；想看依赖是否真的连得上，访问 `http://127.0.0.1:5188/health/ready`（逐项列出 PostgreSQL、Redis 与文件存储的探测结论，任一不健康返回 `503`）。
 
-前端地址为 `http://localhost:5173`（**运营后台是独立页面**，本地直接用 `http://localhost:5173/ops/`，`/ops.html` 也有效），API 健康检查为 `http://localhost:5188/health`。本地是同源（Vite 代理 `/api` 与 `/hubs`），**不需要配任何前端变量、也不需要开 CORS**。任务与报名使用 PostgreSQL 持久化；Redis 已用于通知的多实例扇出（由运营开关 `notifications.fanout.enabled` 控制，未启用时按单实例推送），MinIO 作为本地依赖供 S3 兼容对象存储使用（凭证默认仍写本机私有目录）。
+前端地址为 `http://localhost:5173`（**运营后台是独立页面**，本地直接用 `http://localhost:5173/ops/`，`/ops.html` 也有效），API 健康检查为 `http://localhost:5188/health`（依赖感知的就绪检查是 `http://localhost:5188/health/ready`）。本地是同源（Vite 代理 `/api` 与 `/hubs`），**不需要配任何前端变量、也不需要开 CORS**。任务与报名使用 PostgreSQL 持久化；Redis 已用于通知的多实例扇出（由运营开关 `notifications.fanout.enabled` 控制，未启用时按单实例推送），MinIO 作为本地依赖供 S3 兼容对象存储使用（凭证默认仍写本机私有目录）。
 
 ### 部署：同源、自己的域名或子路径
 
@@ -143,6 +146,8 @@ npm run dev
 - 构建期变量写在 `frontend/.env.example`（复制成 `.env.local` 再改；默认全空 = 同源）：`VITE_API_BASE_URL`（API 基地址，如 `https://api.example.com`）、`VITE_HUB_BASE_URL`（SignalR，默认跟随 API）、`VITE_APP_HOME_URL`（运营后台里“返回任务工作台”的目标）、`VITE_OPS_HOME_URL`（主应用顶栏“运营后台”的目标）。也可以直接给环境变量：`$env:VITE_API_BASE_URL='https://api.example.com'; npm run build`。
 - 跨源时后端要放行来源：`Cors__AllowedOrigins=https://ops.example.com,https://app.example.com`（逗号/分号/空格分隔，或 `Cors__AllowedOrigins__0=` 数组写法）。没配置时开发环境只放行本机 5173 / 4173，其它环境一个都不放行；生效清单会打进启动日志。
 - 推荐的放法是**子域名**（`ops.example.com` + `app.example.com` + `api.example.com`）；只想要子路径则连变量都不用配。完整对照表、nginx 例，以及“没有域名时用两个本机端口彩排跨域”的做法见 [交接文档第 7 节](docs/development/handoff.md)。
+- **编排系统的探针怎么配**：liveness 用 `GET /health`（恒 `200`，只看进程），readiness 用 `GET /health/ready`——它会逐项探测数据库（含**待应用迁移**）、Redis（仅开了扇出时）与文件存储，任一不健康返回 `503`，因此“新版本起来了但迁移没跑完”不会放流量进来；单项超时可用运营配置 `readiness.timeoutSeconds` 调（默认 3 秒）。
+- **上线前记得准备恢复**：备份要覆盖数据库（29 个迁移建出的全部表）、凭证文件、**Data Protection 密钥环**与部署配置，四样缺一不可——密钥环丢了配置页会直接报错。步骤、RPO/RTO 与演练清单见 [备份、恢复与演练](docs/operations/backup-and-restore.md)。
 
 打开前端后，点击右上角“开发会话”可登录或注册真实账户。一个账户同时支持需求方和服务者身份，登录后点击右上角身份菜单即可切换，不需要重复注册。切换只改变当前 JWT 的操作角色，不会改变账户 ID、历史任务或订单归属。任务创建、报名、查看报名和选择服务者会使用 JWT 身份；未登录时仅保留 Development 环境的合成会话用于联调。
 

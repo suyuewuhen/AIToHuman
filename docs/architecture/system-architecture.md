@@ -109,7 +109,9 @@ Domain 不引用 EF Core、HTTP、AI SDK 或对象存储 SDK。
 
 用于通知的多实例扇出：派发方先用条件 UPDATE 原子认领待派发记录，再发布到固定频道 `aitohuman:notifications:fanout`，订阅方把消息推给自己进程内的在线客户端；没配 `ConnectionStrings__Redis` 或运营开关 `notifications.fanout.enabled` 关闭时降级为本实例推送。开关每 5 秒复查一次，改完不需要重启实例。Redis 不能作为订单状态的唯一来源。
 
-尚未接入：短期缓存、分布式锁与频率限制。
+尚未接入：短期缓存与分布式锁。
+
+**写接口限流当前不走 Redis**，而是由 API 进程内的固定窗口计数器实现（`WriteRateLimiter` 单例 + `WriteRateLimitMiddleware`）：只在 `/api/v1` 下的 `POST`/`PUT`/`PATCH`/`DELETE` 上计数，按「已认证用户 ID」分桶，未认证请求退化到「来源 IP」分桶，窗口是自然分钟（UTC 对齐）固定窗口，超限返回 `429`、`Retry-After` 与 `X-RateLimit-Limit`/`Remaining`/`Partition`；开关与上限（`ratelimit.enabled`、`ratelimit.writesPerMinute`，默认 240/分钟、可配 1–100000）每次请求现读设置，改完立即生效；`/api/v1/admin/settings` 的写入**永不限流**，作为「抢到限流后运维自救」的通道；`/health` 与 `health/ready` 及所有读接口不受影响。因为计数在进程内，**多实例部署时每个实例各记一份配额，跨实例的全局配额还没有实现**——要真正的分布式限流得把计数器换成 Redis（见 [安全、隐私与风控](../security/security-and-risk.md) 第 5 节）。
 
 ### Hangfire
 
@@ -153,9 +155,9 @@ Conversation Orchestrator
 - 写操作接受 `Idempotency-Key`，服务端缓存或持久化处理结果。
 - 支付接入后，以支付方回调和内部账本为准，不相信前端结果。
 
-> 实现现状：`tasks`/`orders` 的 `Version` 乐观并发令牌、`IUnitOfWork` 显式事务（选人建单、验收关单）与 Outbox 通知都已落地，冲突返回 `409`；写接口的 `Idempotency-Key` 也已实现——已认证的 `/api/v1` 写请求可带该请求头，命中时回放上一次的响应（带 `Idempotency-Replayed: true`），同键不同请求体或并发占位返回 `409`，`5xx` 与业务异常不缓存；**仍未实现**的是 ETag/版本字段返回（旧幂等记录的清理已有后台任务：每小时删除已完成超过 24 小时的记录与超时占位，见 [API 设计约定](../api/api-guidelines.md) 第 7 节）。本轮补上的一条是**资金与状态同事务**：冻结、放款、退款与争议分账都先让网关确认（`IPaymentGateway`）再改订单的托管字段并写一条只追加的流水（`ledger_entries`），网关失败即整笔回滚（订单状态、任务分配与流水都不落库），托管可整体关闭；真实支付回调、失败重试队列与对账仍未接入。
+> 实现现状：`tasks`/`orders` 的 `Version` 乐观并发令牌、`IUnitOfWork` 显式事务（选人建单、验收关单）与 Outbox 通知都已落地，冲突返回 `409`；写接口的 `Idempotency-Key` 也已实现——已认证的 `/api/v1` 写请求可带该请求头，命中时回放上一次的响应（带 `Idempotency-Replayed: true`），同键不同请求体或并发占位返回 `409`，`5xx` 与业务异常不缓存；**仍未实现**的是 ETag/版本字段返回（旧幂等记录的清理已有后台任务：每小时删除已完成超过 24 小时的记录与超时占位，见 [API 设计约定](../api/api-guidelines.md) 第 7 节）。本轮补上的一条是**资金与状态同事务**：冻结、放款、退款与争议分账都先让网关确认（`IPaymentGateway`）再改订单的托管字段并写一条只追加的流水（`ledger_entries`），网关失败即整笔回滚（订单状态、任务分配与流水都不落库），托管可整体关闭；真实支付回调、失败重试队列与对账仍未接入。中间件顺序上有一条硬约束：**限流中间件必须排在幂等中间件之前**（`Program.cs` 里 `UseMiddleware<WriteRateLimitMiddleware>()` 在 `UseMiddleware<IdempotencyMiddleware>()` 上方）——被限流拒绝的 `429` 不是「这个幂等键的处理结果」，如果顺序反了，幂等中间件会把它连同响应一起缓存下来，客户端换掉限流后重试同一个键仍会一直拿到 `429`。限流只读进程内计数、不落库也不调用外部依赖，因此进程重启即清零（它的定位是防脚本刷写，不是计费配额）。
 >
-> 测试形态（本轮新增）：**主机级端到端用例**（`backend/tests/AIToHuman.IntegrationTests/Host/`，集合 `host-e2e`）把已构建的 `AIToHuman.Api.dll` 当**子进程**起起来，配一个**随机命名的临时真库**（不提前建库，交给应用启动时的 `Migrate()` 自己建库并按顺序应用全部 29 个迁移，因此“空库能不能起来”也被真实覆盖）、随机空闲端口、临时 Data Protection 密钥环与对象存储目录，然后用**真实 HTTP** 打这个进程。它刻意不用 `WebApplicationFactory`：那需要 `Microsoft.AspNetCore.Mvc.Testing` 包，当前环境离线取不到，而子进程 + 真 HTTP 不依赖任何新包，且更接近部署形态（进程边界、真实端口）。这条路径专门覆盖**路由注册、DI 装配、中间件顺序（幂等键、异常映射、鉴权策略）、JSON 契约与启动期迁移**——单元测试与真库用例都碰不到、出问题时“单测全绿而接口不可用”的那一层。跳过语义与真库用例一致：缺 PostgreSQL、找不到已构建的程序集，或环境变量 `AITOHUMAN_TEST_HOST=0`（含 `false`）时，这 7 条用例**整组跳过而不是失败**。
+> 测试形态（本轮新增）：**主机级端到端用例**（`backend/tests/AIToHuman.IntegrationTests/Host/`，集合 `host-e2e`）把已构建的 `AIToHuman.Api.dll` 当**子进程**起起来，配一个**随机命名的临时真库**（不提前建库，交给应用启动时的 `Migrate()` 自己建库并按顺序应用全部 29 个迁移，因此“空库能不能起来”也被真实覆盖）、随机空闲端口、临时 Data Protection 密钥环与对象存储目录，然后用**真实 HTTP** 打这个进程。它刻意不用 `WebApplicationFactory`：那需要 `Microsoft.AspNetCore.Mvc.Testing` 包，当前环境离线取不到，而子进程 + 真 HTTP 不依赖任何新包，且更接近部署形态（进程边界、真实端口）。这条路径专门覆盖**路由注册、DI 装配、中间件顺序（幂等键、异常映射、鉴权策略）、JSON 契约与启动期迁移**——单元测试与真库用例都碰不到、出问题时“单测全绿而接口不可用”的那一层。跳过语义与真库用例一致：缺 PostgreSQL、找不到已构建的程序集，或环境变量 `AITOHUMAN_TEST_HOST=0`（含 `false`）时，这 **9** 条用例**整组跳过而不是失败**。本轮新增的两条把运维面也拉进了真管线：一条在真进程上探 `/health` 与 `/health/ready`（postgres 项 `ok` 且报告“没有待应用的迁移”、storage 项 `ok`、未开扇出时 redis 项 `skipped`），另一条把 `ratelimit.writesPerMinute` 配成 2 后用真 HTTP 打第三个写请求，断言 `429`、`Retry-After`、`X-RateLimit-*`、读接口不受影响以及配置写入不被限流（跑完把上限改回 240）。
 
 ## 9. 可观测性
 
@@ -163,6 +165,16 @@ Conversation Orchestrator
 - 指标：API 延迟、错误率、AI 延迟与成本、队列积压、发布/报名/完成漏斗。
 - 链路：使用 OpenTelemetry，外部调用传播关联标识。
 - 告警：认证异常、失败作业、对象扫描失败、风险规则异常和状态机冲突。
+
+> 实现现状（⚠️）：上面四项里**只有探针这一层落地了**，日志、指标、链路与告警仍是目标。
+>
+> - `GET /health`（存活）：只回答“进程还在不在”，恒 `200` + `{status, service, utc}`，**刻意不探测任何依赖**——数据库挂了重启进程没有意义，存活探针被依赖拖死只会让问题更糟（本来能服务的实例被编排系统反复重启）。
+> - `GET /health/ready`（就绪）：逐项探测依赖，只有**全部健康**才 `200`，任一不健康返回 `503` 并从负载均衡摘流量。响应带 `status`/`service`/`utc`/`durationMs` 与 `checks[]`，每项含 `name`/`status`（`ok`/`failed`/`skipped`）/`detail`/`durationMs`。
+>   - `postgres`：能否连上，并且**有没有待应用的迁移**（`Migrate()` 失败或漏跑迁移都会被这一项抓到）。
+>   - `redis`：只在 `notifications.fanout.enabled=true`（且配了连接串）时才参与，否则记 `skipped`——单实例部署没接 Redis 时不该因此被判不健康。
+>   - `storage`：本机目录实现会**写入再删除**一个探针对象（`readiness/probe.txt`），确认目录可读写（只查存在性抓不到“没权限/磁盘满”）；S3 实现改为对该探测键做一次**存在性检查**，不发写请求、不碰业务对象——签名或凭据被拒、桶不存在都会在这里暴露。
+> - 三项探测**并行执行**，单项超时由 `readiness.timeoutSeconds` 控制（默认 3 秒、可配 1–30）；超时按该项不健康处理，且**任何异常都被吞成 `failed` 而不是冒泡成 `500`**，因此就绪探针本身不会再变成一个新的故障点。
+> - 还没做的是带请求 ID 的结构化日志、指标导出、OpenTelemetry 链路与告警规则；备份与恢复演练见 [备份、恢复与演练](../operations/backup-and-restore.md)。
 
 ## 10. 演进路径
 

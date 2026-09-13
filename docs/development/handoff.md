@@ -33,7 +33,7 @@ AI 多轮澄清（每轮一个问题）
 
 ## 2. 当前工作区状态
 
-工作区状态：`main` 与 `origin/main` 同步；本轮的「规则命中统计与追加式风险决策历史」随本轮提交一起进入 `main` 并推送（`git log -1` 可见）。上一版交接文档描述的“多轮 AI 未提交实现”已经全部提交，本文不再区分“基线 / 未提交”两种状态。
+工作区状态：`main` 与 `origin/main` 同步；本轮的「依赖感知就绪检查、写接口限流与备份恢复演练」随本轮提交一起进入 `main` 并推送（`git log -1` 可见）。上一版交接文档描述的“多轮 AI 未提交实现”已经全部提交，本文不再区分“基线 / 未提交”两种状态。
 
 从基线 `f196850` 到 `e45da76`（多轮 AI 与会话持久化那一轮）的主要变化：
 
@@ -208,7 +208,7 @@ docs/                             ai-planning、api/api-guidelines、architectur
 
 ### 运营可配置的三方集成参数
 
-- 设置目录（白名单）在 `backend/AIToHuman.Application/Settings/SettingCatalog.cs`：目前 27 个键，分 AI 服务商、对象存储、凭证上传、内容扫描、通知推送、资金托管六组。只有登记在册的键才能被后台读写，`ConnectionStrings__Postgres`、`ConnectionStrings__Redis`、日志、密钥环路径这类部署级配置永远不会出现在配置表里。
+- 设置目录（白名单）在 `backend/AIToHuman.Application/Settings/SettingCatalog.cs`：目前 30 个键，分 AI 服务商、对象存储、凭证上传、内容扫描、通知推送、资金托管、运维与限流七组。只有登记在册的键才能被后台读写，`ConnectionStrings__Postgres`、`ConnectionStrings__Redis`、日志、密钥环路径这类部署级配置永远不会出现在配置表里。
 - 生效值的解析顺序固定为「数据库覆盖 → 环境变量/配置文件 → 代码默认值」。删除覆盖记录就等于恢复默认，不需要额外的启用/停用开关。
 - 运营接口（需管理员身份）：`GET /api/v1/admin/settings`、`GET /api/v1/admin/settings/{key}`、`PUT /api/v1/admin/settings/{key}`、`DELETE /api/v1/admin/settings/{key}`（恢复默认）、`POST /api/v1/admin/settings/{key}/test`（只读自检）、`GET /api/v1/admin/settings/audits`。
 - 机密（`ai.apiKey`、`storage.s3.secretAccessKey`、`evidence.scanner.apiKey`）用 Data Protection 加密后落库，密文带 `dp1:` 前缀；接口只返回 `****末四位` 与指纹，审计记录同样只留掩码与指纹，明文只在服务端内存里出现。
@@ -221,6 +221,24 @@ docs/                             ai-planning、api/api-guidelines、architectur
 - 配置面板按分组列出配置项，标注来源（后台已改 / 部署配置 / 默认值）与是否机密，支持保存（带 `expectedVersion`，冲突时提示刷新后重试）、恢复默认、测试连接，以及“变更记录”页签。
 - 机密项在页面上只显示掩码，输入框留空表示“不修改”；要清空必须点专门的“清空”按钮，避免把 `****1234` 当成新值写回去。
 - 前端文件：`frontend/ops.html`（独立入口）、`frontend/src/ops/main.ts` 与 `frontend/src/ops/OpsConsole.vue`（运营后台页面本身）、`frontend/src/api/settings.ts` 与 `frontend/src/api/admin.ts`（接口客户端）；样式复用 `frontend/src/styles.css` 的 `.setting-*` / `.admin-*` / `.ops-*` 几节。两个入口在 `frontend/vite.config.ts` 里分别声明（`rollupOptions.input`），互不打包进对方。
+
+### 可观测性与限流
+
+- **存活探针 `/health`**：恒返回 `200` 与 `{status:"healthy"}`，**不探测任何依赖**。这一条是刻意的：依赖挂了让编排系统重启进程解决不了问题，只会让所有实例一起抖动。子进程与冒烟脚本用的都是它。
+- **就绪探针 `/health/ready`**：逐项探测依赖，任一不健康返回 `503`，编排系统据此摘流量。三项检查并行执行、各自有超时上限（`readiness.timeoutSeconds`，默认 3 秒，1–30 可调）：
+  - `postgres`：能连上**且没有待应用的迁移**。只查"连得上"不够——库连得上但少一个迁移时接口照样会在运行时炸，所以顺便读一次迁移历史。
+  - `redis`：只在开了 `notifications.fanout.enabled` 时才参与判定（没开扇出时 Redis 用不上，报 `skipped` 而不是 `failed`，否则单实例部署会因为没配 Redis 而永远"未就绪"）；真发一次协议 PING，走扇出组件自己的连接。
+  - `storage`：本机目录模式**写一条探针对象再删掉**（能抓到"目录不存在/没权限/磁盘满"，只查存在性做不到），S3 模式做一次存在性探测（返回"不存在"也是成功，关键是请求发得出去、服务端认这份签名与凭据）。
+  - 超时是**真的封顶**：`StackExchange.Redis` 的 `ConnectAsync` 没有带取消令牌的重载，只靠 `CancellationToken` 会拖到十几秒，因此单项探测包在 `Task.WhenAny` 里硬截断（实测黑洞地址下端点 3.0 秒返回 503，而不是等着建连超时）。
+  - 探测抛异常一律翻译成"这一项不健康"并带上异常类型与消息，**绝不让就绪端点自己 500**——就绪端点挂掉是最没用的监控信号。
+- **写接口限流**：按用户（未登录按来源 IP）限制固定一分钟窗口内的写请求数，超限返回 `429` + `Retry-After` + `X-RateLimit-Limit/Remaining/Partition`，消息是中文可读的（"一分钟内的写请求次数已达上限（N 次），请在 M 秒后重试。"）。口径与理由：
+  - 只压 `/api/v1` 的 `POST/PUT/PATCH/DELETE`：读接口、`/health`、SignalR 协商都不受限——限流是为了挡脚本刷写，不是为了让人打不开页面。
+  - **`/api/v1/admin/settings` 永不限流**：上限本身是配置项，如果配小了连改回来的请求都被挡，运营就会把自己锁在门外整整一个窗口（真机联调时确实撞到过这件事，因此专门留了这条"自救通道"）；其余运营写接口照常计数。
+  - **必须排在幂等中间件之前**：幂等中间件会缓存非 5xx 的 JSON 响应并回放，如果限流在它之后，一个 `429` 会被当成"这个键的正常结果"缓存下来，客户端之后的重试会一直拿到 429。
+  - 未登录的注册/登录也计数（按来源 IP），否则撞库没有成本；代价是同一出口 IP 后面的所有人共用一份额度，因此默认上限给得很宽（240 次/分钟，`ratelimit.writesPerMinute` 可调 1–100000）。AI 流式端点（`POST /api/v1/ai/plan/stream`）同样按写请求计数——一轮对话算一次，正常使用远达不到 240/分钟。
+  - 计数是**进程内**的：多实例部署时每个实例各记一份，实际配额是"每实例 × 上限"。真正的跨实例配额需要 Redis 计数器，属于后续工作；`ratelimit.enabled=false` 是一键降级（连计数都不做）。
+  - 响应头里带 `X-RateLimit-Partition`（`user:<id>` 或 `ip:<addr>`）：排查限流时最常见的问题是"我跟别人共用一个 IP"，只给剩余次数是看不出来的。
+- **恢复演练**：备份对象清单（库 + 凭证文件 + **Data Protection 密钥环** + 部署配置）、RPO/RTO、可执行步骤与定期清单都写在 [备份、恢复与演练](../operations/backup-and-restore.md)，并在本机真实跑过一遍（库逐表核对一致、用恢复库把应用起起来、对象存储镜像回灌比对哈希），结果记在该文档第 4 节。
 
 ## 4. 已确定产品规则
 
@@ -500,12 +518,13 @@ netstat -ano | Select-String ':5188|:5173'
 
 | 方法 | 路径 | 认证/说明 |
 | --- | --- | --- |
-| GET | `/health` | 健康检查 |
+| GET | `/health` | 存活探针（恒 `200`，不探测依赖） |
 | GET | `/api/v1/session/dev` | 仅 Development 合成会话 |
 | POST | `/api/v1/auth/register` | 匿名注册 |
 | POST | `/api/v1/auth/login` | 匿名登录 |
 | POST | `/api/v1/auth/switch-role` | JWT，切换 owner/worker |
 | GET | `/api/v1/auth/me` | JWT，当前用户；带 `isAdmin` 供前端决定是否展示运营配置入口 |
+| GET | `/health/ready` | 就绪探针（依赖感知）：探测数据库（含"有没有待应用的迁移"）、Redis（仅在开扇出时）与文件存储，任一失败返回 `503`，响应含每项的 `name`/`status`(`ok`/`failed`/`skipped`)/`detail`/`durationMs`；单项超时由 `readiness.timeoutSeconds` 控制 |
 | POST | `/api/v1/conversations` | 创建对话会话，写入开场白 |
 | GET | `/api/v1/conversations/{id}?userId=...` | 读取历史与当前草稿，用于刷新恢复；仅所有者可读 |
 | GET | `/api/v1/conversations?userId=...&limit=...` | 该用户的会话列表（含预览与是否有草稿） |
@@ -579,6 +598,8 @@ netstat -ano | Select-String ':5188|:5173'
 | GET/WS | `/hubs/notifications` | SignalR 主动通知；推送 `notification.created` 信封 |
 
 普通 API 错误使用 Problem Details，主要映射为 `400`、`401`、`403`、`404`、`409`、`422`、`502` 和 `504`。`409` 既用于资源冲突（例如邮箱已注册，`ConflictException`），也用于乐观并发冲突。**用户能看懂的错误要给出原因**：`ValidationException`（请求本身写错，如缺 `role`、密码过短）→ `422` + 原样消息，`ConflictException` → `409` + 原样消息，`DomainException` → `422` + 原样消息，AI 侧未配置 → `502` + 可行动的排查线索；**未预期的 `InvalidOperationException` 仍然只返回通用文案**（它的消息可能带内部细节，不外泄）。AI SSE 在响应开始后的错误使用流内 `error` 事件。
+
+写请求还有一个额外的失败码：`429`。按用户（未登录按来源 IP）限制固定一分钟窗口内的写请求数，超限返回 Problem Details + `Retry-After` + `X-RateLimit-Limit/Remaining/Partition`；读接口与 `/health` 不受限流影响，`/api/v1/admin/settings` 作为"自救通道"永不限流（否则把上限配小之后就改不回来了）。口径与理由见第 3 节「可观测性与限流」。
 
 ## 10. 数据库、权限与状态
 
@@ -690,7 +711,7 @@ Order: Accepted → InProgress → Submitted → Approved
 
 - 扫描闭环端到端（真实 PostgreSQL + 真实 HTTP + 本地 TCP 扫描替身）：上传 67 字节 PNG 时替身返回 `pending` → 接口 `200`、`scanStatus=Pending`、`scanAttempts=1`、`isDownloadable=false`、下载 `403`；把替身改成 `clean` 后，后台重扫在 60 秒那一轮把它变为 `Clean`（`scanAttempts=2`、说明“重新扫描通过。”），需求方再下载拿到完全一致的 67 字节。替身日志显示两次调用依次是 `pending`、`clean`。
 - 可配置上传上限生效：把 `evidence.maxSizeBytes` 改成 1024 后上传 2048 字节返回 `413 凭证大小不能超过 1 KB。`，且磁盘上不留文件；`DELETE` 该配置后回到默认 5242880（`source=default`）。
-- 运营配置目录当时共 20 个键、四个分组：AI 服务商 / 对象存储 / 凭证上传 / 内容扫描（现在是 27 个、六个分组：凭证上传组多了直连下载有效期、元数据开关、按人配额，内容扫描组多了 ClamAV 的地址与端口，通知推送与资金托管两组是后来加的）lamAV 的地址与端口，通知推送组是后加的多实例扇出开关）。
+- 运营配置目录当时共 20 个键、四个分组：AI 服务商 / 对象存储 / 凭证上传 / 内容扫描（现在是 30 个、七个分组：凭证上传组多了直连下载有效期、元数据开关、按人配额，内容扫描组多了 ClamAV 的地址与端口，通知推送、资金托管与运维及限流三组是后来加的）lamAV 的地址与端口，通知推送组是后加的多实例扇出开关）。
 - 全新数据库：同一轮启动时 `Migrate()` 从零建库并应用全部 14 个迁移，随后在该库上完成上面的用例。
 
 本轮（S3 兼容对象存储）新增验证：
@@ -896,6 +917,25 @@ npm run build
   - 主应用：顶栏出现「运营后台 ↗ → /ops.html」链接（管理员才有），页面里已经**没有**运营弹窗（`.auth-backdrop .settings-dialog` 计数为 0）。
   - 非管理员路径：退出登录 → 换一个不在管理员名单里的账号登录 → 看到“这个账号没有运营权限”（说明文字指出名单来自 `Admin__UserIds` / `Admin__Emails`），且页面上没有任何后台内容。
 - 说明：截图存在 `.scratch/ops-1-login.png` … `.scratch/ops-7-not-admin.png`（本机临时目录，不入库）；我这次的模型不具备图片输入能力，所以上述结论来自 DOM 断言与尺寸测量，截图请人工过一眼。
+
+本轮（依赖感知就绪检查、写接口限流与备份恢复演练）新增验证：
+
+- 编译与测试：`dotnet build AIToHuman.sln --no-restore` 0 警告 0 错误；领域 **330** + 集成 **389** = **719** 个用例全通过、**0 跳过**（本轮新增 15 条：限流口径 6 条、就绪检查 7 条、主机级 2 条）；迁移仍是 **29** 个（本轮没有迁移）；前端本轮未改动。
+- 就绪探针真机 HTTP（真实 PostgreSQL + 本机 Redis 6379 + 本机目录存储）：
+  - 扇出关闭时 `GET /health/ready` → `200`，三项分别是 `postgres` ok（"已应用的迁移 29 个，没有待应用的迁移"）、`redis` **skipped**（"没有开启多实例通知扇出，本次不探测 Redis"）、`storage` ok（"本机目录可读写（写探测对象 readiness/probe.txt 后已删除）"），整轮 30 毫秒。
+  - 打开 `notifications.fanout.enabled` 后同一个端点变成 `redis` ok（"连接正常，Ping 往返 0–1 毫秒"）——探测真的去 PING 了一次，不是"配置看起来对"。
+  - `/health` 始终 `200`：依赖探测不影响存活探针（实测 Redis 黑洞时它照样 `200`）。
+- 就绪探针的负向验证（把 `ConnectionStrings__Redis` 指向黑洞地址 `10.255.255.1:6379`）：`GET /health/ready` 返回 `503`、`status=unhealthy`，`postgres` 与 `storage` 仍 ok、`redis` failed 且说明是"探测超过 3 秒没有返回，按不健康处理"；服务端自报耗时 **3024 毫秒**、客户端观测 **3052 毫秒**——这正是本轮修掉的问题：`StackExchange.Redis` 的 `ConnectAsync` 不接受取消令牌，只靠 `CancellationToken` 时第一次建连会拖到 5 秒以上（上一版实测 5087 毫秒且最终报"健康"），现在用 `Task.WhenAny` 硬截断，就绪端点不会骗人。
+- 无需重启即可恢复：把 `notifications.fanout.enabled` 关掉后，下一秒的 `/health/ready` 就回到 `200`（`redis` 回到 skipped）。
+- 写接口限流真机 HTTP（真实 PostgreSQL，上限临时改成 2）：同一个用户的三个写请求得到 `[201, 201, 429]`，三个响应的 `X-RateLimit-Partition` 都是 `user:<该用户 id>`；被拒的那条带 `Retry-After: 24`、`X-RateLimit-Limit: 2`、`X-RateLimit-Remaining: 0`，响应体是「请求过于频繁 / 一分钟内的写请求次数已达上限（2 次），请在 24 秒后重试。」；同一时刻的读接口（大厅列表）照常 `200`。另一个刚注册的用户的第一个写请求 `201`（`X-RateLimit-Partition` 是自己的 id，剩余 2）——**额度是按用户分区的，不会被别人的用量牵连**。
+- 匿名写请求按来源 IP 计数（实测）：登录与注册的 `X-RateLimit-Partition` 都是 `ip:127.0.0.1`；这也解释了联调时的一个现象——把上限压到 2 之后，同一台机器上的注册请求会先被挡住（同一出口 IP 共用一份额度），因此默认 240 次/分钟是刻意给宽的。
+- 自救通道真机验证：把上限改成 `1` 之后连续两次写 `ratelimit.writesPerMinute` 都是 `200`（`/api/v1/admin/settings` 豁免成功），而同一时刻的其它运营写接口（跑一轮 `POST /api/v1/admin/risk/recheck`）照常计数、`X-RateLimit-Limit` 显示当时的生效值。
+- **本轮踩到的坑（如实记录）**：最初没有豁免配置写入，联调脚本把上限配成 2 之后，管理员自己的第 3 个写请求（想改回 240）也被 `429` 挡住，只能等窗口过去——这就是"自救通道"的由来；真机上确实复现过一次（脚本里连续三次恢复配置：`429`、`429`、`200`）。
+- 备份与恢复演练（本机真实执行，完整步骤与结论见 [备份、恢复与演练](../operations/backup-and-restore.md) 第 4 节）：
+  - `pg_dump -Fc` 产出 86,138 字节 → `pg_restore` 到新库 `aitohuman_restore_check`（退出码 0）→ 逐表核对**行数全部一致**（`users` 45、`tasks` 87、`orders` 16、`task_applications` 22、`risk_decision_entries` 13、`task_risk_appeals` 6、`ledger_entries` 16、`address_access_entries` 4、`system_settings` 3；不一致 0 张；`__EFMigrationsHistory` 两边都是 29 行）。
+  - 用**恢复库**启动 API：`/health/ready` 报 `healthy`（"已应用的迁移 29 个，没有待应用的迁移"）、真实账号登录 `200`、`GET /api/v1/admin/settings` 返回 30 个键 / 7 个分组（**证明 Data Protection 密钥环也是可用的**，否则机密解不开）、`GET /api/v1/admin/risk/stats?days=30` 返回判定总数 13（拦 6、放行 7、2 条规则命中）、大厅列表返回 5 条且 `hasMore=true`。
+  - 对象存储：开发环境的 `aitohuman-evidence` 桶当时是空的，`mc mirror` 两边都是 0 个对象会"假通过"，因此先放 2 个探针对象再演练——镜像到本机目录 2 个文件、回灌到临时桶 2 个对象、抽查对象的 SHA-256 与镜像一致；收尾删掉探针对象与临时桶（桶回到 0 个对象）。演练库已 `DROP`，开发库未受影响。
+  - 顺带确认两个坑：**密钥环不备份等于配置页打不开**（`system_settings` 里是 `dp1:` 密文，必须与库成对恢复）；`__EFMigrationsHistory` 是大小写混合表名，`select count(*) from __EFMigrationsHistory` 会被 Postgres 折成小写并报"关系不存在"（演练时踩到，改成用 `psql -f` 喂带双引号的语句）。
 
 本轮（规则命中统计与追加式风险决策历史）新增验证：
 
@@ -1115,6 +1155,15 @@ npm run build
 - 主应用：顶栏只保留一个“运营后台 ↗”链接（`target="_blank"`，仅管理员可见），运营相关状态与引用（`settingsOpen`、配置项/审计草稿、各队列数据）全部移出，退出登录时不再需要清理这些状态。
 - 顺带抽取：时间格式化搬到 `frontend/src/utils/format.ts`，两个入口共用一份，避免口径漂移。
 
+本轮追加（依赖感知的就绪检查、写接口限流与备份恢复演练）：
+
+- 运维配置：设置目录新增「运维与限流」一组三个键（`ratelimit.enabled`、`ratelimit.writesPerMinute` 默认 240、`readiness.timeoutSeconds` 默认 3），目录变成 **30 个键、7 个分组**；三个键都走既有的热点刷新，改完立即生效。
+- 就绪探针：新增 `ReadinessService`（`IReadinessCheck` / `ReadinessCheckStatus` / `ReadinessReport`）与三项基础设施探测（`PostgresReadinessCheck` 连得上**且没有待应用迁移**才算健康、`RedisReadinessCheck` 仅在开扇出时参与、`StorageReadinessCheck` 本机目录写探针再删 / S3 做存在性探测），端点 `GET /health/ready`（任一失败 `503`）；`/health` 保持"只看进程"的存活语义。
+- 单项超时是**真的封顶**：探测并行走 `Task.WhenAny`，因为第三方客户端里有的调用根本不接受取消令牌（`StackExchange.Redis` 的 `ConnectAsync` 就是），只靠 `CancellationToken` 会让就绪端点陪着一起等。
+- 写接口限流：`WriteRateLimiter`（固定一分钟窗口、按分区计数、设置现读、关掉开关就连计数都不做）+ `WriteRateLimitMiddleware`（按用户/来源 IP 分区，`429` + `Retry-After` + `X-RateLimit-*`，`/api/v1/admin/settings` 作为自救通道永不限流，且必须排在幂等中间件之前——否则被限流的 `429` 会被幂等回放缓存下来）。
+- 恢复演练：新增 [备份、恢复与演练](../operations/backup-and-restore.md)（四样资产清单、RPO/RTO、可直接执行的 `pg_dump`/`pg_restore`/`mc mirror` 步骤、恢复顺序、三个容易踩的坑、定期清单），并在本机把整套流程真跑了一遍。
+- 已知缺口（有意保留，写进文档）：限流计数是**进程内**的，多实例部署下实际配额是"每实例 × 上限"，跨实例配额要等 Redis 计数器；没有自动备份任务（生产需要由部署流程补 WAL 归档或定时 dump）；没有指标（Prometheus）与链路追踪，也没有告警规则，当前的可观测手段是就绪探针 + 结构化日志。
+
 本轮追加（规则命中统计与追加式风险决策历史）：
 
 - 领域：新增只追加的 `RiskDecisionEntry`（一次判定一行：`RiskDecisionReason` 说明是哪个动作触发的——创建 / 编辑 / 回滚 / 发布 / 加价 / 发布后复检，另有结论、原因代码、类别、当时的规则版本、当时的悬赏金额与判定时刻）。任务行上的那些风险字段仍然只保留"最新一条判定"，历史一律看这张新表：前者回答"这条任务现在能不能发"，后者回答"这条规则到底拦了多少次、误伤多少"。
@@ -1190,7 +1239,8 @@ npm run build
 - [ ] 执行 `git status` / `git log --oneline -3`，确认工作区干净，并核对最新几条提交与本文第 2 节记录的状态一致（若已有更新提交，先核对第 3 节的实现描述是否仍然成立）。
 - [ ] 确认 `VolcengineAI:Model` 是火山控制台真实启用的模型或接入点 ID。
 - [ ] API Key 仅存在于 User Secrets 或环境变量，没有进入 Git。
-- [ ] PostgreSQL 已启动，`/health` 返回 `healthy`。
+- [ ] PostgreSQL 已启动，`/health` 返回 `healthy`；`/health/ready` 返回 `200`，其中 `postgres` 项的说明应包含"没有待应用的迁移"（有待应用的迁移时它会直接报不健康——别忽略这条）。
+- [ ] 把 `ratelimit.writesPerMinute` 临时改成 2，用一个新账号连发三个写请求：前两个成功、第三个 `429` 且带 `Retry-After` 与「一分钟内的写请求次数已达上限（2 次）」；同一时刻读接口照常 200；改回 240 时**不会**被限流挡住（配置写入是自救通道）。
 - [ ] 后端先于前端启动，`5173` 能代理到 `5188`。
 - [ ] 连续完成至少两轮 AI 对话，未完成前看不到草稿，完成后可预览但不会自动发布。
 - [ ] 对话进行到一半刷新页面，历史与草稿都能恢复；点击“新建对话”后回到只有开场白的空会话。
@@ -1208,7 +1258,7 @@ npm run build
 - [ ] 通过运营接口把 `ai.apiKey` 换成新密钥：响应只显示 `****末四位`；接着发起一轮 AI 对话应立刻用新密钥，不需要重启进程。
 - [ ] 把 `evidence.scanner.provider` 改成 `http` 但不填扫描地址，服务者上传凭证应返回“待扫描、不可下载”，文件不被删除也不放行。
 - [ ] 重启进程后重新读取运营配置：机密仍能解密（说明 `DataProtection__KeysPath` 指向了持久目录，而不是临时目录）。
-- [ ] 用管理员账户打开 <http://localhost:5173/ops.html>（或点主应用顶栏的“运营后台 ↗”）：能看到 27 个配置项、六个分组与来源徽标；非管理员账户打开同一个地址应看到“这个账号没有运营权限”，且一个运营接口都不会被调用。
+- [ ] 用管理员账户打开 <http://localhost:5173/ops.html>（或点主应用顶栏的“运营后台 ↗”）：能看到 30 个配置项、七个分组与来源徽标；非管理员账户打开同一个地址应看到“这个账号没有运营权限”，且一个运营接口都不会被调用。
 - [ ] 切到“任务检索”页签：按标题关键字能搜到任务并看到需求方邮箱与报名数；对一条大厅中的任务点“下架”并填写原因后，任务从大厅消失、审计里出现对应记录；对一条已分配的尝试下架应看到可读的拒绝提示。
 - [ ] 在页面上改一个机密项并保存：列表立刻显示新的掩码与“后台已改”，点“测试连接”能看到自检结果，切到“变更记录”能看到这次修改；把某条改坏（例如把超时填成 1）保存应看到可读的校验提示。
 - [ ] 把 `evidence.maxSizeBytes` 调成 1024 后上传一张 2 KB 的图片：应返回“凭证大小不能超过 1 KB”，恢复默认后能正常上传。
@@ -1251,7 +1301,7 @@ npm run build
 - [ ] 取消退款：另发一条任务并选中服务者，然后取消订单——托管状态应变成"已全额退回需求方"，流水里应有一条 `平台托管 → 需求方资金`；用别的账号读这笔订单的流水应返回 `403`。
 - [ ] 争议分账：让一条订单进入争议，在运营后台"争议处置"里选"强制完成"并把金额填成托管额的一半——处置后订单托管状态应是"已分账"，流水里应同时出现"部分放款"与"部分退款"两条，审计里应看到带「（资金处置金额 X CNY）」的原因；金额填成超过托管额应返回 `422`。
 - [ ] 托管开关：在运营配置里把 `payment.provider` 改成 `disabled`，再发一条任务并选人——订单不应带托管信息、也不产生任何流水；改回 `simulated` 后恢复正常。
-- [ ] 主机级用例：先 `dotnet build AIToHuman.sln`，再跑 `dotnet test backend/tests/AIToHuman.IntegrationTests --no-build --no-restore --filter "FullyQualifiedName~HostE2ETests"`：6 条应**全部通过**（它们会真的把 API 起成子进程、连临时库、用真 HTTP 打接口）；把 `AITOHUMAN_TEST_HOST` 设为 `0` 再跑一次，应变成**跳过**而不是失败。
+- [ ] 主机级用例：先 `dotnet build AIToHuman.sln`，再跑 `dotnet test backend/tests/AIToHuman.IntegrationTests --no-build --no-restore --filter "FullyQualifiedName~HostE2ETests"`：9 条应**全部通过**（它们会真的把 API 起成子进程、连临时库、用真 HTTP 打接口）；把 `AITOHUMAN_TEST_HOST` 设为 `0` 再跑一次，应变成**跳过**而不是失败。
 - [ ] 跑一次 `dotnet test AIToHuman.sln --no-build --no-restore`：确认 `PostgresRegressionTests` 是**通过**而不是**跳过**（跳过说明本机没连上测试库，见第 7 节“真实数据库回归测试”）；再把 `AITOHUMAN_TEST_POSTGRES` 指向不可达端口确认它们变成跳过而不是失败。
 - [ ] 用两个账号跑一遍双向信用：服务者完成一单且双方互评后，需求方在自己的任务“查看报名”里应看到该服务者的公开评分与条数，且与 `GET /api/v1/users/{id}/review-summary` 一致；只有单方评价（盲期内）时列表里应为 0 分 / 0 条。
 - [ ] 幂等键：对同一个写接口用同一个 `Idempotency-Key` 连发两次，第二次应返回与第一次相同的状态码和响应体，并带 `Idempotency-Replayed: true`；把请求体改掉再用同一个键，应返回 `409`；不带这个头时行为应和以前完全一样。
@@ -1274,6 +1324,7 @@ npm run build
 - [领域模型与状态机](../architecture/domain-model.md)
 - [API 设计约定](../api/api-guidelines.md)
 - [安全、隐私与风控](../security/security-and-risk.md)
+- [备份、恢复与演练](../operations/backup-and-restore.md)
 - [模块化单体决策](../architecture/decisions/0001-modular-monolith.md)
 - [固定悬赏与双向选择决策](../architecture/decisions/0002-fixed-reward-and-mutual-selection.md)
 - [三方集成参数可配置决策](../architecture/decisions/0003-operator-configurable-settings.md)

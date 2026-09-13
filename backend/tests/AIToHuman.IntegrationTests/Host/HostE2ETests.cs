@@ -216,6 +216,94 @@ public sealed class HostE2ETests(HostE2EFixture host)
         Assert.Equal(JsonValueKind.Array, stats.GetProperty("rules").ValueKind);
     }
 
+    [HostFact]
+    public async Task The_readiness_endpoint_probes_real_dependencies()
+    {
+        using var client = NewClient();
+
+        var ready = await client.GetAsync("/health/ready");
+        Assert.Equal(HttpStatusCode.OK, ready.StatusCode);
+        var payload = await ready.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("healthy", payload.GetProperty("status").GetString());
+
+        var checks = payload.GetProperty("checks").EnumerateArray().ToArray();
+        // 真库这一项必须真的跑过（临时库是应用自己 Migrate() 建出来的，所以迁移也应该是全的）。
+        var postgres = Assert.Single(checks, check => check.GetProperty("name").GetString() == "postgres");
+        Assert.Equal("ok", postgres.GetProperty("status").GetString());
+        Assert.Contains("没有待应用的迁移", postgres.GetProperty("detail").GetString());
+
+        // 文件存储这一项也真的探测了：本机目录模式下会写一条探针对象再删掉，因此事后不该留下它。
+        var storage = Assert.Single(checks, check => check.GetProperty("name").GetString() == "storage");
+        Assert.Equal("ok", storage.GetProperty("status").GetString());
+
+        // 这一批用例没有开多实例扇出，所以 Redis 是"跳过"而不是"失败"——
+        // 否则单实例部署会因为没配 Redis 而永远未就绪。
+        var redis = Assert.Single(checks, check => check.GetProperty("name").GetString() == "redis");
+        Assert.Equal("skipped", redis.GetProperty("status").GetString());
+
+        // 存活探针保持"只看进程"，不因为依赖探测而变慢或变红。
+        var liveness = await client.GetAsync("/health");
+        Assert.Equal(HttpStatusCode.OK, liveness.StatusCode);
+    }
+
+    [HostFact]
+    public async Task Write_rate_limiting_returns_429_with_a_readable_reason_after_the_configured_limit()
+    {
+        using var client = NewClient();
+        var admin = await Register(client, "host-e2e-admin", "owner", uniqueEmail: false);
+        var owner = await Register(client, "host-limit-owner", "owner");
+
+        // 运营在后台把上限降到 2：限流口径每次请求现读设置，因此下一个请求就该按新值判定。
+        // 上限是按用户分区的，所以管理员自己改配置用的是管理员那一份额度。
+        await Put(client, "/api/v1/admin/settings/ratelimit.writesPerMinute", new { value = "2" }, admin.Token);
+
+        try
+        {
+            // 这位需求方的第 1、2 个写请求放行，第 3 个被挡。
+            await Post(client, "/api/v1/tasks", NewTaskBody(owner.UserId, "限流用例一"), owner.Token);
+            await Post(client, "/api/v1/tasks", NewTaskBody(owner.UserId, "限流用例二"), owner.Token);
+
+            var limited = await Send(client, HttpMethod.Post, "/api/v1/tasks", NewTaskBody(owner.UserId, "限流用例三"), owner.Token);
+            Assert.Equal(HttpStatusCode.TooManyRequests, limited.StatusCode);
+            Assert.True(limited.Headers.TryGetValues("Retry-After", out var retryAfter));
+            Assert.True(int.Parse(retryAfter.Single()) >= 1, "Retry-After 应该是还要等多少秒");
+
+            var body = await limited.Content.ReadAsStringAsync();
+            Assert.Contains("请求过于频繁", body);
+            Assert.Contains("一分钟内的写请求次数已达上限（2 次）", body);
+
+            // 读接口不受影响：限流的目标是挡脚本刷写，不是让人打不开大厅。
+            var hall = await Get(client, "/api/v1/tasks?limit=5", owner.Token);
+            Assert.Equal(JsonValueKind.Array, hall.GetProperty("items").ValueKind);
+
+            // 配额算在谁头上要能看出来（同一出口 IP 后面的人共用匿名额度，这是最常见的困惑）。
+            var limitedPartition = limited.Headers.GetValues("X-RateLimit-Partition").Single();
+            Assert.Equal($"user:{owner.UserId}", limitedPartition);
+
+            // 配置写入是"自救通道"：上限配小了也必须能改回来，否则运营会被锁在门外整整一个窗口。
+            // 把上限压到 1 之后连做两次配置写入，两次都必须成功（不豁免的话第二次就是 429）。
+            await Put(client, "/api/v1/admin/settings/ratelimit.writesPerMinute", new { value = "1" }, admin.Token);
+            var stillAllowed = await Send(client, HttpMethod.Put, "/api/v1/admin/settings/ratelimit.writesPerMinute", new { value = "240" }, admin.Token);
+            Assert.Equal(HttpStatusCode.OK, stillAllowed.StatusCode);
+        }
+        finally
+        {
+            // 兜底恢复：这一批用例共用一个进程，配置留在 2 会把后面的用例连带限流。
+            await Send(client, HttpMethod.Put, "/api/v1/admin/settings/ratelimit.writesPerMinute", new { value = "240" }, admin.Token);
+        }
+    }
+
+    private static object NewTaskBody(Guid ownerId, string title) => new
+    {
+        ownerId,
+        title,
+        description = "到前台交给行政即可",
+        district = "朝阳区",
+        deadline = DateTimeOffset.UtcNow.AddHours(14),
+        reward = 30,
+        acceptanceCriteria = new[] { "当面交付" }
+    };
+
     private HttpClient NewClient() => new() { BaseAddress = new Uri(host.BaseUrl), Timeout = TimeSpan.FromSeconds(30) };
 
     private sealed record TestUser(string EmailPrefix, Guid UserId, string Token);
@@ -243,6 +331,9 @@ public sealed class HostE2ETests(HostE2EFixture host)
 
     private static Task<JsonElement> Post(HttpClient client, string path, object body, string token) =>
         SendJson(client, HttpMethod.Post, path, body, token);
+
+    private static Task<JsonElement> Put(HttpClient client, string path, object body, string token) =>
+        SendJson(client, HttpMethod.Put, path, body, token);
 
     private static Task<JsonElement> Get(HttpClient client, string path, string token) =>
         SendJson(client, HttpMethod.Get, path, null, token);

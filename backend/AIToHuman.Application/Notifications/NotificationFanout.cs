@@ -48,3 +48,14 @@ public interface INotificationFanout
     /// </summary>
     Task SubscribeAsync(Func<NotificationFanoutMessage, CancellationToken, Task> handler, CancellationToken cancellationToken);
 }
+
+/// <summary>
+/// 可选能力：给就绪检查用的连通性探测。扇出是"能用就用"的组件，因此探测不放进
+/// <see cref="INotificationFanout"/> 的必需成员里——不支持探测的实现（测试替身、未来的其它通道）
+/// 让就绪检查报"跳过"即可，而不是被迫实现一个假的探测。
+/// </summary>
+public interface INotificationFanoutProbe
+{
+    /// <summary>探测一次连通性；返回一句话说明（例如往返延迟）。连不上时抛异常。</summary>
+    Task<string> ProbeAsync(CancellationToken cancellationToken = default);
+}
