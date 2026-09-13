@@ -356,6 +356,21 @@ h1 em { color: var(--acid); font-style: normal; }
 .rule-draft > div:first-child { flex: 1 1 420px; min-width: 260px; }
 .rule-draft textarea { width: 100%; margin-top: 6px; padding: 8px 10px; border: 1px solid var(--line); background: #fffdf7; color: var(--ink); font-size: 11px; font-family: inherit; resize: vertical; }
 .rule-draft input { width: 100%; margin-top: 6px; }
+
+/* 运营后台独立页面（/ops.html）：与主应用共用一套视觉，但整页铺开，不再是对话框。 */
+.ops-page { width: min(1240px, 100%); min-height: 100vh; margin: 0 auto; padding: 28px 20px 60px; }
+.ops-header { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 20px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+.ops-header h1 { margin: 4px 0 0; font: 700 26px 'Noto Serif SC',serif; }
+.ops-header-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ops-operator { color: #747b77; font-size: 11px; }
+.ops-page .auth-dialog { width: min(1180px, 100%); max-height: none; overflow: visible; }
+.ops-page .ops-login { width: min(430px, 100%); margin: 48px auto; }
+.ops-page .ops-login label { display: block; margin-top: 14px; color: #626b66; font-size: 11px; }
+.ops-page .ops-login input { width: 100%; margin-top: 6px; padding: 11px 12px; border: 1px solid var(--line); background: #fffdf7; color: var(--ink); }
+.ops-page .ops-login .settings-primary { margin-top: 18px; }
+.ops-page .ops-console .auth-dialog-head { margin-bottom: 16px; }
+.ops-page code { padding: 1px 4px; background: #efe9dc; font-size: 10px; }
+@media (max-width: 720px) { .ops-page { padding: 18px 12px 40px; } }
 .draft-edit .cancel-error { color: #9a321f; font-size: 11px; }
 .draft-edit-notice { color: #4b6b4b; font-size: 11px; }
 

@@ -6,7 +6,7 @@
 
 当前分支：`main`
 
-最新已提交基线：本轮之前 `main` 与 `origin/main` 同步在 `d20b535`（草稿字段级差异与回滚）；本轮「风险规则目录后台编辑」是紧随其后的一个提交，并已推送保持两边一致（见第 2 节）。
+最新已提交基线：本轮之前 `main` 与 `origin/main` 同步在 `3e43d7b`（运营后台可编辑风险规则目录）；本轮「运营后台独立成页」是紧随其后的一个提交，并已推送保持两边一致（见第 2 节）。
 
 本文面向接手开发、代码评审和本地联调人员。内容以已提交代码为准；上一版文档里“已提交基线 / 当前未提交实现”的双轨描述已经过时——所有多轮 AI、通知、会话与凭证实现都已提交。文中每条“已实现 / 未实现”的结论都对应第 11 节可复现的验证步骤。
 
@@ -33,7 +33,7 @@ AI 多轮澄清（每轮一个问题）
 
 ## 2. 当前工作区状态
 
-工作区状态：`main` 与 `origin/main` 同步；本轮的「风险规则目录后台编辑」随本轮提交一起进入 `main` 并推送（`git log -1` 可见）。上一版交接文档描述的“多轮 AI 未提交实现”已经全部提交，本文不再区分“基线 / 未提交”两种状态。
+工作区状态：`main` 与 `origin/main` 同步；本轮的「运营后台独立成页」随本轮提交一起进入 `main` 并推送（`git log -1` 可见）。上一版交接文档描述的“多轮 AI 未提交实现”已经全部提交，本文不再区分“基线 / 未提交”两种状态。
 
 从基线 `f196850` 到 `e45da76`（多轮 AI 与会话持久化那一轮）的主要变化：
 
@@ -129,7 +129,7 @@ docs/                             ai-planning、api/api-guidelines、architectur
 - 编辑规则的三道闸门：**依据必填**（≤200 字，与版本快照一起落库，并同步写一条运营审计 `task.risk.rules.update` / `task.risk.rules.reset`）；**乐观并发**（提交带 `ExpectedVersion`，与当前版本不一致返回 `409`「风险规则已被其他人修改（当前版本 vX，你读到的是 vY），请刷新后重试。」，避免把别人刚收紧的规则覆盖回旧样子）；**领域校验**（至少保留一条禁止类规则、原因代码唯一、结论只能是禁止/转人工、匹配词每词 2–20 字、`review.high_reward`/`review.night_window` 是保留代码、阈值与深夜时段的合法区间；内容没变或依据为空也一律 `422`，不占版本号）。
 - 快照的可解释性是有意设计的：`RiskRuleCatalog.ToJson()`/`FromJson()` 能把任意一版完整还原，复盘一条历史拦截时直接拿那一版重放判定即可；**快照读不出来时抛错、绝不静默降级**——宁可让写入失败，也不能换一套规则去判定（那等于悄悄改了门禁的松紧）。
 - 复核结论通知所有者：`task.riskReviewed`，载荷 `{ taskId, title, reviewStatus, verdict, ruleCode, canPublish }`，走既有 Outbox + SignalR 链路。
-- 前端：草稿预览弹窗与“我的任务”会显示被拦/待复核的原因并禁用发布按钮；顶栏“运营配置”新增“风险复核”页签与**“规则目录”页签**（看当前版本/阈值/时段/规则明细与版本历史，整份编辑后“保存为新版本”，或填依据后“恢复内置目录”）。
+- 前端：草稿预览弹窗与“我的任务”会显示被拦/待复核的原因并禁用发布按钮；运营后台（独立页面 `/ops.html`）有“风险复核”页签与**“规则目录”页签**（看当前版本/阈值/时段/规则明细与版本历史，整份编辑后“保存为新版本”，或填依据后“恢复内置目录”）。
 - 误拦申诉：被拦下的任务，所有者可以申诉（`POST /api/v1/tasks/{id}/risk-appeals`，理由必填 ≤500 字），运营在 `GET /api/v1/admin/risk/appeals?limit=`（按提交时间升序）里看到队列，用 `POST /api/v1/admin/risk/appeals/{taskId}/decide`（`decision` 取 `Accept`/`Deny`，依据必填 ≤200 字，写进运营审计 `task.risk.appeal.accept|deny`）处置，所有者收到 `task.riskAppealDecided`。
 - **申诉的处置能力分两档，这是本功能的安全边界**：转人工后被驳回的任务，申诉成立即放行（运营本来就有这个权限，申诉只是多一双眼睛）；被禁止类别命中的任务，申诉成立也**不会**获得发布许可，只记录"规则误伤"的结论并提示改文案后重新判定。运营接口返回 `canBeReleasedByAppeal` 明确告诉运营结论能不能真的放行，通知载荷里的 `canPublish` 同样区分这两种情况。
 - 谁能申诉：只有所有者；只有"被禁止类别命中"或"转人工后被驳回"可以申诉——还在等复核（提示"不需要申诉，请等复核结果"）或已放行的都不行。
@@ -177,7 +177,7 @@ docs/                             ai-planning、api/api-guidelines、architectur
 - ClamAV 走的是官方 INSTREAM 协议：连接后发 `zINSTREAM\0`，随后是「4 字节大端长度 + 数据」分块（64 KB 一块），最后发零长度块结束；clamd 回 `stream: OK` / `stream: <签名> FOUND` / `... ERROR`。**内容不落临时文件**，也不依赖任何厂商 SDK。
 - S3 兼容存储（`S3FileStorage`）：不依赖厂商 SDK，只用 `HttpClient` 加自己实现的 AWS Signature V4；路径风格请求 `{endpoint}/{bucket}/{prefix}{key}`，只签 `host`、`x-amz-content-sha256`、`x-amz-date`。上传、下载、存在性判断与删除四个操作齐全；密钥不全时按缺哪项报哪项，Bucket 不存在或密钥无权限时把 S3 的错误码翻译成可行动的说明。MinIO、阿里云 OSS、AWS S3 都能用，换服务商只改运营配置。
 - 切换 `storage.provider` **不会迁移已有文件**：从 s3 切回 local 之后，之前写进 Bucket 的凭证在本机目录里找不到，下载会 `404`。生产切换要么保持同一 provider，要么先把对象搬过去。
-- 尚未实现：图片像素级重新编码；真实的病毒库由部署方自己维护（协议已实现并验证，缺的是部署一个真实的 clamd 或用真实服务商替换 `http` 实现）；运营后台的风险规则引擎与运营页面里的任务/用户检索入口。
+- 尚未实现：图片像素级重新编码；真实的病毒库由部署方自己维护（协议已实现并验证，缺的是部署一个真实的 clamd 或用真实服务商替换 `http` 实现）；扫描结果的追加式历史（现在只保留最新一次结论）与按人/按订单的扫描统计。
 
 ### 订单会话（聊天）
 
@@ -196,9 +196,11 @@ docs/                             ai-planning、api/api-guidelines、architectur
 - 每次写入在同一事务里追加一条审计记录（键、动作、脱敏前后值、操作人、时间），覆盖行带 `Version` 并发令牌，`PUT` 可带 `expectedVersion`，冲突返回 `409`。
 - 管理员名单来自部署配置 `Admin__UserIds` / `Admin__Emails`（也接受 `admin` 角色声明），刻意不放进可后台修改的配置表，避免任何能改配置的人把自己提权；没有配置管理员时运营接口对所有人返回 `403`。
 - “测试连接”只做只读自检：本机存储目录是否可写、AI 服务与扫描服务是否可达且接受当前密钥。
-- 前端入口：`GET /api/v1/auth/me` 会返回 `isAdmin`，只有管理员在顶栏看到“运营配置”。面板按分组列出配置项，标注来源（后台已改 / 部署配置 / 默认值）与是否机密，支持保存（带 `expectedVersion`，冲突时提示刷新后重试）、恢复默认、测试连接，以及“变更记录”页签。
+- 前端入口：`GET /api/v1/auth/me` 会返回 `isAdmin`。运营相关的一切（配置项、变更记录、任务/用户检索、争议处置、风险复核、误拦申诉、规则目录）现在都在**独立页面 `/ops.html`** 上；主应用顶栏只对管理员显示一个“运营后台 ↗”链接（`target="_blank"`），点了跳到那个页面。隐藏入口只是提示，服务端仍会独立校验。
+- 运营页面自己处理会话：没有本地令牌时显示登录卡片，登录后向 `/auth/me` 确认是不是管理员；不是管理员（不在 `Admin__UserIds` / `Admin__Emails` 名单里）就显示“这个账号没有运营权限”，不会去请求任何运营接口。页面顶部有“← 返回任务工作台”和“退出登录”。
+- 配置面板按分组列出配置项，标注来源（后台已改 / 部署配置 / 默认值）与是否机密，支持保存（带 `expectedVersion`，冲突时提示刷新后重试）、恢复默认、测试连接，以及“变更记录”页签。
 - 机密项在页面上只显示掩码，输入框留空表示“不修改”；要清空必须点专门的“清空”按钮，避免把 `****1234` 当成新值写回去。
-- 前端文件：`frontend/src/api/settings.ts`（接口客户端）与 `frontend/src/App.vue`（“运营配置”弹窗），样式在 `frontend/src/styles.css` 的 `.setting-*` 一节。
+- 前端文件：`frontend/ops.html`（独立入口）、`frontend/src/ops/main.ts` 与 `frontend/src/ops/OpsConsole.vue`（运营后台页面本身）、`frontend/src/api/settings.ts` 与 `frontend/src/api/admin.ts`（接口客户端）；样式复用 `frontend/src/styles.css` 的 `.setting-*` / `.admin-*` / `.ops-*` 几节。两个入口在 `frontend/vite.config.ts` 里分别声明（`rollupOptions.input`），互不打包进对方。
 
 ## 4. 已确定产品规则
 
@@ -239,14 +241,19 @@ PostgreSQL（当前开发事实来源）
 ```
 
 ```text
-backend/AIToHuman.Api/                  # 路由、认证、AI SSE、SignalR Hub、通知派发与扇出订阅、凭证重扫、运营配置接口
+backend/AIToHuman.Api/                  # 路由、认证、AI SSE、SignalR Hub、通知派发与扇出订阅、凭证重扫、运营配置与管理接口
 backend/AIToHuman.Application/         # TaskService、会话、订单会话、凭证、通知用例与扇出抽象、设置目录与配置用例
 backend/AIToHuman.Contracts/           # API record 与对话/通知/消息/凭证/设置 DTO
 backend/AIToHuman.Domain/              # TaskItem、Order、Review、Conversation、OrderMessage、Notification、SystemSetting
 backend/AIToHuman.Infrastructure/      # EF Core/PostgreSQL、内存仓储、本机文件存储、内容扫描适配、Redis 通知扇出
 backend/tests/AIToHuman.Domain.Tests/  # 领域单元测试
 backend/tests/AIToHuman.IntegrationTests/ # 用例与 AI 多轮协议/SSE 集成测试（上游替身 + 内存仓储）
-frontend/src/App.vue                   # 对话工作台、草稿、大厅、订单、会话弹窗、凭证面板、评价与运营配置
+frontend/index.html                     # 主应用入口（对话工作台、草稿、大厅、订单、会话、凭证、评价）
+frontend/ops.html                       # 运营后台入口（独立页面：配置、检索、争议、风险复核、申诉、规则目录）
+frontend/src/App.vue                    # 主应用（顶栏只留一个“运营后台 ↗”入口链接）
+frontend/src/ops/OpsConsole.vue         # 运营后台页面本身（从 App.vue 里拆出来的那一大块）
+frontend/src/ops/main.ts                # 运营后台入口的挂载脚本
+frontend/src/utils/format.ts            # 两个入口共用的时间格式化
 frontend/src/api/ai.ts                 # SSE 客户端与多轮对话协议
 frontend/src/api/conversations.ts       # 会话创建、读取与列表
 frontend/src/api/messages.ts           # 订单会话消息与未读数
@@ -395,7 +402,9 @@ npm install
 npm run dev
 ```
 
-访问 <http://localhost:5173>。Vite 将 `/api`、`/health` 和 `/hubs` 代理到 `http://127.0.0.1:5188`。必须先启动后端，否则会出现 `ECONNREFUSED 127.0.0.1:5188`，AI、登录、任务和 SignalR 都不可用。
+访问 <http://localhost:5173>（主应用：对话工作台、任务大厅、订单）。**运营后台是同一套前端里的独立页面**：<http://localhost:5173/ops.html>；也可以从主应用顶栏的“运营后台 ↗”进入（只对管理员显示）。Vite 将 `/api`、`/health` 和 `/hubs` 代理到 `http://127.0.0.1:5188`，两个页面共用这个代理。必须先启动后端，否则会出现 `ECONNREFUSED 127.0.0.1:5188`，AI、登录、任务和 SignalR 都不可用。
+
+`npm run build` 会同时产出两个入口：`dist/index.html` 与 `dist/ops.html`（外加共享的分包），所以静态托管时两个文件都要部署；运营后台不依赖主应用，单独打开也能用。
 
 如果端口已占用：
 
@@ -787,6 +796,17 @@ npm run build
 - 两条自己踩过的坑（如实记录，避免后来者重犯）：① 过期那条第一版用假时钟把"现在"推到有效期之后，结果服务端照样返回 `200`——**有效期是服务端按 `X-Amz-Date + X-Amz-Expires` 与它自己的时钟判定的，改客户端时钟没有意义**，现在改成真等 7 秒；② 路径替换那条一开始用 `Uri.EscapeDataString(key)` 去替换 URL，而 URL 里是未转义的路径片段，替换没生效、地址根本没变，于是"因为没改而通过"（`200`），现在加了 `Assert.NotEqual(presigned, swapped)` 防止这种假通过。
 - CI：backend job 现在同时起 `postgres:16`、`redis:7`、`minio/minio`（都带 healthcheck），并在测试前用 `minio/mc` 容器建出测试用的桶——MinIO 起来是空实例，不建桶对象存储用例会跳过。
 
+本轮（运营后台独立成页）新增验证：
+
+- 前端：`npm run typecheck` 与 `npm run build` 通过；构建产出**两个入口**——主应用 `dist/index.html`（JS 从 233.42 kB 降到 127.97 kB，运营后台整块搬走）+ 运营后台 `dist/ops.html`（`ops-*.js` 36.51 kB）+ 共享分包 `styles-*.js` 71.73 kB；后端未改动，`dotnet test` 仍是领域 283 + 集成 331 = 614 全通过。
+- 真机浏览器检查（Playwright + Chromium，连本机 Vite 开发服务器与真实后端、真实 PostgreSQL，共 19 项断言全部通过，页面无 console 错误、无失败请求）：
+  - `/ops.html` 未登录时显示登录卡片；用管理员账号登录后进入后台，顶栏显示操作人；页签为「配置项 26 / 变更记录 / 任务检索 / 用户检索 / 争议处置 / 风险复核 / 误拦申诉 / 规则目录 v5」，规则目录页签上的版本号与生效版本一致。
+  - 各页签真实取数：规则目录渲染出 10 条规则 + 4 版历史（14 行）、任务检索按关键字“文件”命中 6 条、变更记录 15 条（含 `task.risk.rules.update` / `task.risk.rules.reset`）。
+  - 版面：内容区 1180px、页面 1240px、`max-height: none`、横向溢出 0px——确认是整页铺开而不是原来那个 780×88vh 的对话框。
+  - 主应用：顶栏出现「运营后台 ↗ → /ops.html」链接（管理员才有），页面里已经**没有**运营弹窗（`.auth-backdrop .settings-dialog` 计数为 0）。
+  - 非管理员路径：退出登录 → 换一个不在管理员名单里的账号登录 → 看到“这个账号没有运营权限”（说明文字指出名单来自 `Admin__UserIds` / `Admin__Emails`），且页面上没有任何后台内容。
+- 说明：截图存在 `.scratch/ops-1-login.png` … `.scratch/ops-7-not-admin.png`（本机临时目录，不入库）；我这次的模型不具备图片输入能力，所以上述结论来自 DOM 断言与尺寸测量，截图请人工过一眼。
+
 本轮（风险规则目录后台编辑）新增验证：
 
 - 编译与测试：`dotnet build AIToHuman.sln --no-restore` 0 警告 0 错误；领域 283 + 集成 **331** = **614** 个用例全通过（本轮新增 20 条领域用例、12 条用例层用例、1 条真库用例）；前端 `npm run typecheck` 与 `npm run build` 通过（233.42 kB）。
@@ -846,7 +866,7 @@ npm run build
 - S3 兼容对象存储：新增 `S3FileStorage`（自研 AWS SigV4，不依赖厂商 SDK），按 `storage.s3.*` 做上传/下载/存在性/删除；`SettingsFileStorage` 按 `storage.provider` 分派 local 与 s3；配置不全、Bucket 不存在、密钥无权限都会翻译成可行动的说明；已用本机 MinIO 加独立客户端 `mc` 端到端验证（见第 11 节）。
 - 短时直连下载地址：`S3FileStorage` 实现可选的 `IPresignedFileStorage`（SigV4 查询串签名，含对象路径、有效期与附件名），新增 `GET /api/v1/evidence/{id}/download-url` 与 `evidence.downloadUrlLifetimeSeconds`（5 至 900 秒，默认 120），前端在支持时直接跳转签名地址、否则回退流式下载；篡改与过期都由对象存储自己拒绝（403），已用真实 MinIO 验证。
 - 元数据剥离与按人限速：`EvidenceContentSanitizer`（领域层，纯字节解析）处理 JPEG/PNG/WebP 的元数据段，`evidence.stripMetadata` 控制开关、剥离结果落库到 `evidence.MetadataRemoved`（迁移 `AddEvidenceMetadataRemoved`）并在接口与页面展示；`evidence.uploadsPerUserPerHour`（默认 60）按上传者限速，计数走数据库并配了 `(UploadedBy, CreatedAt)` 索引，多实例一致。
-- 运营后台（人工兜底，后端与页面都已完成）：跨所有者检索任务与用户、查看任务详情、把**尚未分配**的任务下架并强制填写原因（原因写进 `admin_audit_entries`，`GET /api/v1/admin/audits` 可查）；已产生订单的任务会被领域规则拦住（`422`，提示先处理订单）。顶栏“运营配置”弹窗现在有五个页签：配置项 / 变更记录（配置审计 + 运营审计）/ 任务检索（含下架）/ 用户检索 / 风险复核（见本轮追加）。
+- 运营后台（人工兜底，后端与页面都已完成）：跨所有者检索任务与用户、查看任务详情、把**尚未分配**的任务下架并强制填写原因（原因写进 `admin_audit_entries`，`GET /api/v1/admin/audits` 可查）；已产生订单的任务会被领域规则拦住（`422`，提示先处理订单）。运营入口当时是顶栏弹窗，后来（见下方“运营后台独立成页”）整块搬到独立页面 `/ops.html`；现在那里的页签是：配置项 / 变更记录（配置审计 + 运营审计）/ 任务检索（含下架）/ 用户检索 / 争议处置 / 风险复核 / 误拦申诉 / 规则目录。
 - 已知线索（下轮排查）：运营联调时“服务者报名 → 需求方选人”这一步返回 `422 报名不存在。`，而报名接口当时返回了 `200` 与报名 id。**2026-09-12 复核**：同样的“创建 → 发布 → 报名 → 选人”流程在真实 PostgreSQL 上跑通（`task.status=Assigned`、`order.status=Accepted`、报名列表 1 条），因此这条线索更可能是当轮联调里任务/报名的状态问题或脚本取错 ID，而不是持久化缺陷；若再次出现，按“写一个针对性的仓储测试定位 EF 导航集合是否刷新”的方向排查。
 
 本轮追加（多实例通知扇出）：
@@ -928,6 +948,13 @@ npm run build
 - 测试基建：`backend/tests/AIToHuman.IntegrationTests/External/ExternalTestEnvironment.cs`（探测 + `[RedisFact]`/`[MinioFact]` + 字典版设置提供者，对象存储的可用性靠"写一条探针对象再删掉"判定）；`RedisFanoutTests.cs`（5 条）；`S3StorageTests.cs`（5 条）。
 - CI：三个依赖服务 + 建桶步骤（见 `.github/workflows/ci.yml`）。
 
+本轮追加（运营后台独立成页）：
+
+- 前端结构：新增 `frontend/ops.html` + `frontend/src/ops/main.ts` + `frontend/src/ops/OpsConsole.vue`，把原先塞在 `App.vue` 里的运营弹窗整块搬过去（`App.vue` 从 2440 行降到 1641 行）；`frontend/vite.config.ts` 声明两个入口，构建产出 `dist/index.html` 与 `dist/ops.html`。
+- 页面能力：独立会话（未登录给登录卡片、登录后向 `/auth/me` 确认是不是管理员、不是管理员只给一句说明且不请求任何运营接口）、顶部“← 返回任务工作台”与“退出登录”、整页铺开的版面（不再限宽限高）。
+- 主应用：顶栏只保留一个“运营后台 ↗”链接（`target="_blank"`，仅管理员可见），运营相关状态与引用（`settingsOpen`、配置项/审计草稿、各队列数据）全部移出，退出登录时不再需要清理这些状态。
+- 顺带抽取：时间格式化搬到 `frontend/src/utils/format.ts`，两个入口共用一份，避免口径漂移。
+
 本轮追加（风险规则目录后台编辑）：
 
 - 领域：`RiskRuleCatalog` 从静态类变成**实例目录**（`BuiltIn` 是内置版本 1，构造时校验：至少一条禁止类规则、原因代码唯一、结论只能是禁止/转人工、匹配词 2–20 字、保留代码不能被顶替、阈值与深夜时段的合法区间），新增 `ToJson`/`FromJson` 快照往返与 `RiskRuleCatalogRevision`（只追加的版本快照 + 摘要 + 依据 + 操作人）。`TaskItem` 的创建、编辑、回滚与发布四处判定都接受"生效目录"参数（不传则退回内置目录）。
@@ -984,7 +1011,7 @@ npm run build
 - [ ] 通过运营接口把 `ai.apiKey` 换成新密钥：响应只显示 `****末四位`；接着发起一轮 AI 对话应立刻用新密钥，不需要重启进程。
 - [ ] 把 `evidence.scanner.provider` 改成 `http` 但不填扫描地址，服务者上传凭证应返回“待扫描、不可下载”，文件不被删除也不放行。
 - [ ] 重启进程后重新读取运营配置：机密仍能解密（说明 `DataProtection__KeysPath` 指向了持久目录，而不是临时目录）。
-- [ ] 用管理员账户登录后打开顶栏“运营配置”：能看到 26 个配置项、五个分组与来源徽标；普通服务者账户看不到这个入口。
+- [ ] 用管理员账户打开 <http://localhost:5173/ops.html>（或点主应用顶栏的“运营后台 ↗”）：能看到 26 个配置项、五个分组与来源徽标；非管理员账户打开同一个地址应看到“这个账号没有运营权限”，且一个运营接口都不会被调用。
 - [ ] 切到“任务检索”页签：按标题关键字能搜到任务并看到需求方邮箱与报名数；对一条大厅中的任务点“下架”并填写原因后，任务从大厅消失、审计里出现对应记录；对一条已分配的尝试下架应看到可读的拒绝提示。
 - [ ] 在页面上改一个机密项并保存：列表立刻显示新的掩码与“后台已改”，点“测试连接”能看到自检结果，切到“变更记录”能看到这次修改；把某条改坏（例如把超时填成 1）保存应看到可读的校验提示。
 - [ ] 把 `evidence.maxSizeBytes` 调成 1024 后上传一张 2 KB 的图片：应返回“凭证大小不能超过 1 KB”，恢复默认后能正常上传。
@@ -1003,6 +1030,8 @@ npm run build
 - [ ] 用一条禁止类任务（例如“帮我代考××考试”）走完创建与发布：草稿能建出来但 `riskVerdict=Blocked`，发布返回 `422` 且大厅里查不到；对同一条任务调用运营复核接口应返回 `422`（人工无权放行禁止类别）。
 - [ ] 用一条敏感任务（例如“帮我把身份证送到××”）走完复核：`riskReviewStatus=Pending`、发布 `422`；运营在“风险复核”页签写依据放行后可以发布；驳回后发布 `422` 并显示驳回依据；需求方收件箱出现 `task.riskReviewed`。
 - [ ] `GET /api/v1/admin/risk/rules` 返回规则版本与规则清单，但**只有匹配词数量、没有匹配词本身**；非管理员访问返回 `403`。
+- [ ] 运营后台是独立页面：用管理员账户打开主应用，顶栏应有“运营后台 ↗”链接（普通账户没有），点开新标签页落在 `/ops.html`；`npm run build` 之后 `dist/` 里应同时有 `index.html` 与 `ops.html`，把 `dist` 整体托管时两个地址都能打开。
+- [ ] 运营后台的会话处理：清掉浏览器本地存储后打开 `/ops.html` 应看到登录卡片（而不是空白或报错）；`GET /api/v1/tasks` 之类的前台接口在这个页面上不应该被调用；点“退出登录”回到登录卡片。
 - [ ] 编辑一条草稿（改标题、悬赏、验收标准与截止时间后保存）：`GET /api/v1/tasks/{id}` 返回的字段应与提交一致，随后能发布；编辑已发布的任务应返回 `422`。
 - [ ] 编辑一条草稿两三次，然后点“修改记录”：应看到 1/2/3… 逐版列出、每版有变更摘要、时间与**逐字段差异（旧值 → 新值）**；把草稿改成禁止内容后，最新那版应显示 `Blocked` 与原因代码；用别的账号读历史应返回 `403`。
 - [ ] 回滚：对较早的一版点“恢复这一版”，任务字段应回到那一版、历史里应多出一版（摘要“回滚自第 N 版：…”）而**中间版本仍在**；对已发布的任务回滚应返回 `422`。

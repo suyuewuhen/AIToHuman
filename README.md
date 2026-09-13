@@ -28,13 +28,13 @@ AIToHuman 是一个“AI 任务管家 + 真人服务任务大厅”平台。用�
 - 实时通信：SignalR（订单创建、状态变化、订单取消、任务过期、报名撤回、争议与争议处置、新消息通知；持久化 Outbox + 后台派发 + 未读数收件箱，推送只是刷新提示；多实例通过 Redis 扇出投递，运营可开关，见 [ADR-0004](docs/architecture/decisions/0004-notification-fanout.md)）
 - AI：火山引擎 Ark OpenAI 兼容接口，SSE 流式多轮澄清
 - 凭证存储：本机私有目录或 S3 兼容对象存储（MinIO / 阿里云 OSS / AWS S3）可切换，签名是自研的 AWS SigV4（不依赖厂商 SDK），下载支持短时直连签名地址，已用本机 MinIO 端到端验证
-- 运营配置：设置目录（白名单）+ 加密机密 + 变更审计 + 写入即生效；管理员在顶栏“运营配置”页面即可调整模型、对象存储、内容扫描参数与凭证上传上限（见 [ADR-0003](docs/architecture/decisions/0003-operator-configurable-settings.md)）
+- 运营配置：设置目录（白名单）+ 加密机密 + 变更审计 + 写入即生效；管理员在**独立页面 `/ops.html`（运营后台）**里即可调整模型、对象存储、内容扫描参数与凭证上传上限，同一页还承载任务/用户检索、争议处置、风险复核、误拦申诉与风险规则目录（见 [ADR-0003](docs/architecture/decisions/0003-operator-configurable-settings.md)）
 - 测试：PostgreSQL、Redis 与 S3 兼容存储三类外部依赖都有真实环境的自动化回归用例（`backend/tests/AIToHuman.IntegrationTests/Postgres/` 与 `External/`），依赖不可用时整批自动跳过而不是让构建变红；CI 里三个依赖都由服务容器提供
 - 本地依赖：`compose.yaml` 定义 PostgreSQL、Redis 和 MinIO
 
 规划中、代码尚未接入：
 
-- 前端 Pinia、Vue Router、Element Plus（当前是单页 `App.vue`，未引入路由和状态库）
+- 前端 Pinia、Vue Router、Element Plus（当前没有路由和状态库：主应用与运营后台是两个入口 `index.html` / `ops.html`，各自挂载一个根组件）
 - Redis 缓存与分布式锁、Hangfire 后台作业
 - Nginx 与生产环境部署编排
 
@@ -42,10 +42,13 @@ AIToHuman 是一个“AI 任务管家 + 真人服务任务大厅”平台。用�
 
 ```text
 AIToHuman/
-├── frontend/                       # Vue 用户端与服务者端（单页工作台）
+├── frontend/                       # Vue 用户端与服务者端（主应用 + 独立运营后台）
+│   ├── index.html                  # 主应用入口
+│   ├── ops.html                    # 运营后台入口（独立页面）
 │   └── src/
 │       ├── api/                    # AI SSE、认证、会话、任务、订单消息、凭证、评价、运营配置，SignalR 客户端
-│       ├── App.vue                 # 对话工作台、草稿、大厅、订单、会话弹窗、凭证面板与运营配置
+│       ├── ops/OpsConsole.vue      # 运营后台：配置、检索、争议、风险复核、申诉与规则目录
+│       ├── App.vue                 # 对话工作台、草稿、大厅、订单、会话弹窗、凭证面板与评价
 │       └── styles.css
 ├── backend/
 │   ├── AIToHuman.Api/              # HTTP、JWT、AI SSE、SignalR Hub、通知后台派发、运营配置接口

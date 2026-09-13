@@ -293,4 +293,4 @@ GET    /api/v1/admin/settings/audits?limit=50  变更审计，按时间倒序
 }
 ```
 
-前端：顶栏的“运营配置”入口只对 `GET /api/v1/auth/me` 返回 `isAdmin=true` 的账户展示（服务端仍会独立校验，前端隐藏不构成安全边界）。客户端封装在 `frontend/src/api/settings.ts`；机密项在界面上只显示掩码，必须输入新值才能保存，清空需要显式操作。
+前端：运营相关的接口都由**独立页面 `/ops.html`**（`frontend/src/ops/OpsConsole.vue`）调用；主应用顶栏只对 `GET /api/v1/auth/me` 返回 `isAdmin=true` 的账户展示一个跳转链接（服务端仍会独立校验，前端隐藏不构成安全边界）。运营页面自己要求登录并向 `/auth/me` 确认管理员身份，非管理员只显示一句说明、不会去请求运营接口。客户端封装在 `frontend/src/api/settings.ts` 与 `frontend/src/api/admin.ts`；机密项在界面上只显示掩码，必须输入新值才能保存，清空需要显式操作。
