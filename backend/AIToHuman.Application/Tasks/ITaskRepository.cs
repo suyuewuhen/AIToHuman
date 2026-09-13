@@ -31,6 +31,13 @@ public interface ITaskRepository
     /// </summary>
     IReadOnlyCollection<TaskItem> ListPendingRiskAppeal(int limit);
 
+    /// <summary>
+    /// 发布后复检的候选：仍然在线（<c>Published</c> 或 <c>Assigned</c>）但判定用的规则版本不是
+    /// <paramref name="assessedRuleVersion"/> 的任务，按判定时刻升序取前 <paramref name="limit"/> 条
+    /// （最久没复检的先来）。实现要返回被跟踪的实体，复检结果才能用读到的版本号做并发校验。
+    /// </summary>
+    IReadOnlyCollection<TaskItem> ListRiskRecheckCandidates(int assessedRuleVersion, int limit);
+
     TaskItem? Get(Guid id);
     void Add(TaskItem task);
     void Save(TaskItem task);

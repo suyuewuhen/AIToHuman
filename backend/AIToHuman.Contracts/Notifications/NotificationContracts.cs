@@ -32,6 +32,12 @@ public static class NotificationTypes
 
     /// <summary>误拦申诉有了结论：通知任务所有者；禁止类别即使申诉成立也不会因此可发布。</summary>
     public const string TaskRiskAppealDecided = "task.riskAppealDecided";
+
+    /// <summary>
+    /// 发布后风险复检有处置结果：任务被自动下架（<c>Suspended</c>）、订单被冻结（<c>Suspended</c>）
+    /// 或要求人工复检（<c>RecheckRequired</c>）。载荷里带处置状态与原因，客户端据此提示。
+    /// </summary>
+    public const string TaskRiskEnforced = "task.riskEnforced";
 }
 
 /// <summary>订单相关通知的载荷；只带定位信息，不带敏感内容。</summary>
@@ -54,6 +60,12 @@ public sealed record TaskRiskReviewNotificationPayload(Guid TaskId, string Title
 /// 因为禁止类别的申诉成立也不会放行——客户端不能只看 appealStatus 就以为可以发布了。
 /// </summary>
 public sealed record TaskRiskAppealNotificationPayload(Guid TaskId, string Title, string AppealStatus, string Verdict, string? RuleCode, bool CanPublish, string? DecisionNote);
+
+/// <summary>
+/// 发布后风险处置的载荷：状态（<c>RecheckRequired</c> / <c>Suspended</c>）、结论与原因。
+/// 原因里只有规则类别与版本号，不含匹配词（与用户侧的风险说明同一口径）。
+/// </summary>
+public sealed record TaskRiskEnforcementNotificationPayload(Guid TaskId, string Title, string EnforcementStatus, string Verdict, string? RuleCode, string? Reason);
 
 /// <summary>持久化通知，供收件箱列表与未读数使用。</summary>
 public sealed record NotificationResponse(Guid Id, Guid EventId, string Type, int Version, DateTimeOffset CreatedAt, DateTimeOffset? ReadAt, JsonElement Payload);

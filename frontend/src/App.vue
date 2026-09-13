@@ -1477,6 +1477,8 @@ onMounted(async () => {
               <p v-if="task.status === 'Expired'" class="order-note rejection"><b>已过期：</b>截止时间已过，系统自动关闭，不能再报名或执行。</p>
               <p v-if="task.cancellationReason" class="order-note rejection"><b>撤销原因：</b>{{ task.cancellationReason }}</p>
               <p v-if="task.riskPublishBlocked" class="order-note rejection"><b>风险拦截（{{ riskVerdictLabel(task.riskVerdict ?? 'Allowed') }}）：</b>{{ taskRiskNotice(task) }}<span v-if="task.riskRuleCode"> · {{ task.riskRuleCode }} · 规则第 {{ task.riskRuleVersion }} 版 · {{ riskReviewStatusLabel(task.riskReviewStatus ?? 'NotRequired') }}</span></p>
+              <p v-if="task.riskEnforcementStatus === 'Suspended'" class="order-note rejection"><b>平台已按风控处置：</b>{{ task.riskEnforcementReason }}<span v-if="task.status === 'Assigned'"> · 订单已冻结，运营会按争议流程处理。</span></p>
+              <p v-else-if="task.riskEnforcementStatus === 'RecheckRequired'" class="order-note"><b>需要人工复检：</b>{{ task.riskEnforcementReason }}<span> · 任务仍在线上，复核结论出来后这里会更新。</span></p>
               <p v-if="task.riskAppealStatus && task.riskAppealStatus !== 'None'" class="order-note"><b>{{ riskAppealStatusLabel(task.riskAppealStatus) }}：</b>{{ task.riskAppealReason }}<template v-if="task.riskAppealDecisionNote"> · 运营结论：{{ task.riskAppealDecisionNote }}</template></p>
               <div class="order-actions">
                 <button v-if="task.status === 'ReadyToPublish'" type="button" :disabled="publishingTaskId === task.id" @click="publishMyTask(task)">{{ publishingTaskId === task.id ? '发布中…' : '发布到任务大厅' }}</button>

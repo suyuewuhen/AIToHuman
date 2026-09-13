@@ -2,6 +2,7 @@ using AIToHuman.Application.Idempotency;
 using AIToHuman.Application.Risk;
 using AIToHuman.Contracts.Admin;
 using AIToHuman.Contracts.Tasks;
+using AIToHuman.Domain.Admin;
 using AIToHuman.Domain.Common;
 using AIToHuman.Domain.Idempotency;
 using AIToHuman.Domain.Orders;
@@ -521,6 +522,61 @@ public sealed class PostgresRegressionTests(PostgresRegressionFixture fixture) :
                     extraRule
                 ]),
             world.AdminId);
+
+    /// <summary>
+    /// 发布后风控处置在真库上的往返：规则升级后复检把一条在线任务自动下架，
+    /// 新增的三列（处置状态、原因、时刻）必须真的落库、并能被另一个作用域读回来
+    /// ——这一层正是"手写列复制漏列"最容易出错的地方（见本文件开头那条草稿编辑缺陷）。
+    /// </summary>
+    [PostgresFact]
+    public async Task Risk_enforcement_round_trips_and_the_sweep_is_idempotent()
+    {
+        using var world = new PostgresWorld(fixture.ConnectionString, Now);
+        var taskId = world.CreatePublished("帮我把一台无人机送到郊区");
+        var applicationId = world.Apply(taskId);
+
+        // 运营收紧规则：把"无人机"列为禁止类别。
+        Update(world, world.RiskRules.GetDetail(), "把无人机作业列为禁止类别", 5000m,
+            new RiskRuleDetailRequest("prohibited.no_drones", "未经许可的无人机作业", "Blocked",
+                "任务涉及未经许可的无人机飞行，属于受管制活动。", ["无人机", "穿越机"]));
+
+        var result = world.Enforcement.Recheck();
+        Assert.Equal(1, result.Scanned);
+        Assert.Equal(1, result.Unpublished);
+
+        // 换一个作用域（另一个请求）读回来：确认新列真的落库了，而不是只活在当前上下文里。
+        using (var freshScope = world.NewScope())
+        {
+            var reloaded = world.ServiceIn(freshScope).Get(taskId)!;
+            Assert.Equal("Cancelled", reloaded.Status);
+            Assert.Equal("Suspended", reloaded.RiskEnforcementStatus);
+            Assert.Contains("prohibited.no_drones", reloaded.RiskEnforcementReason);
+            Assert.NotNull(reloaded.RiskEnforcedAt);
+        }
+
+        await using var context = fixture.CreateContext();
+        var record = await context.Tasks.AsNoTracking().SingleAsync(item => item.Id == taskId);
+        Assert.Equal("Cancelled", record.Status);
+        Assert.Equal("Suspended", record.RiskEnforcementStatus);
+        Assert.Contains("无人机", record.RiskEnforcementReason);
+        Assert.NotNull(record.RiskEnforcedAt);
+        Assert.Contains("prohibited.no_drones", record.CancellationReason);
+
+        // 平台的处置在运营审计里留痕（操作人是系统身份），被作废报名的服务者收到提醒。
+        var audit = await context.AdminAudits.AsNoTracking().SingleAsync(item => item.Action == RiskEnforcementService.UnpublishAction);
+        Assert.Equal(AdminAuditEntry.SystemActorId, audit.ActorId);
+        Assert.Equal(taskId, audit.TargetId);
+
+        var notifications = await context.Notifications.AsNoTracking()
+            .Where(item => item.UserId == world.Worker)
+            .Select(item => item.Type)
+            .ToListAsync();
+        Assert.Contains("task.cancelled", notifications);
+        Assert.NotEqual(Guid.Empty, applicationId);
+
+        // 第二轮不会再扫到它：版本号已经刷成最新，这也是"重复处置/重复通知"的天然屏障。
+        Assert.Equal(0, world.Enforcement.Recheck().Scanned);
+    }
 
     /// <summary>带时区偏移的截止时间与中文文本在真库上的往返：领域层统一归一化成 UTC，文本原样保存。</summary>
     [PostgresFact]

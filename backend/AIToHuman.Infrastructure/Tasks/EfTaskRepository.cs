@@ -93,6 +93,22 @@ public sealed class EfTaskRepository(TaskDbContext db) : ITaskRepository
         .Select(Map)
         .ToArray();
 
+    /// <summary>
+    /// 发布后复检的候选：仍在线（Published / Assigned）但判定用的规则版本不是当前版本的任务，
+    /// 按判定时刻升序取前 <paramref name="limit"/> 条（最久没复检的先来）。
+    /// 与其它扫描一样保持跟踪，保存时用读到的版本做并发校验。
+    /// </summary>
+    public IReadOnlyCollection<TaskItem> ListRiskRecheckCandidates(int assessedRuleVersion, int limit) => db.Tasks
+        .Include(task => task.Applications)
+        .Where(task => (task.Status == nameof(DomainTaskStatus.Published) || task.Status == nameof(DomainTaskStatus.Assigned))
+            && task.RiskRuleVersion != assessedRuleVersion)
+        .OrderBy(task => task.RiskAssessedAt)
+        .ThenBy(task => task.Id)
+        .Take(limit)
+        .AsEnumerable()
+        .Select(Map)
+        .ToArray();
+
     // 注意：Get 必须保持跟踪状态。乐观并发令牌依赖「做业务判断时读到的版本」与
     // Save 时 WHERE 里用的原始版本是同一个；一旦这里用 AsNoTracking，Save 会重新读库拿到
     // 最新版本再自增，并发写入就永远不会冲突。
@@ -152,6 +168,8 @@ public sealed class EfTaskRepository(TaskDbContext db) : ITaskRepository
         RiskAppealStatus = task.RiskAppealStatus.ToString(), RiskAppealReason = task.RiskAppealReason,
         RiskAppealedAt = task.RiskAppealedAt, RiskAppealDecidedBy = task.RiskAppealDecidedBy,
         RiskAppealDecidedAt = task.RiskAppealDecidedAt, RiskAppealDecisionNote = task.RiskAppealDecisionNote,
+        RiskEnforcementStatus = task.RiskEnforcementStatus.ToString(), RiskEnforcementReason = task.RiskEnforcementReason,
+        RiskEnforcedAt = task.RiskEnforcedAt,
         Applications = task.Applications.Select(item => ToRecord(item, task.Id)).ToList()
     };
 
@@ -169,7 +187,12 @@ public sealed class EfTaskRepository(TaskDbContext db) : ITaskRepository
         record.RiskRuleVersion, record.RiskAssessedAt, ParseRiskReviewStatus(record.RiskReviewStatus),
         record.RiskReviewedBy, record.RiskReviewedAt, record.RiskReviewNote,
         ParseRiskAppealStatus(record.RiskAppealStatus), record.RiskAppealReason, record.RiskAppealedAt,
-        record.RiskAppealDecidedBy, record.RiskAppealDecidedAt, record.RiskAppealDecisionNote);
+        record.RiskAppealDecidedBy, record.RiskAppealDecidedAt, record.RiskAppealDecisionNote,
+        ParseRiskEnforcementStatus(record.RiskEnforcementStatus), record.RiskEnforcementReason, record.RiskEnforcedAt);
+
+    /// <summary>风控处置状态列同样是后加的，未知取值一律按"没有处置"处理。</summary>
+    private static RiskEnforcementStatus ParseRiskEnforcementStatus(string? value) =>
+        Enum.TryParse<RiskEnforcementStatus>(value, ignoreCase: true, out var parsed) ? parsed : RiskEnforcementStatus.None;
 
     /// <summary>申诉状态列同样是后加的，未知取值一律按"没有申诉"处理。</summary>
     private static RiskAppealStatus ParseRiskAppealStatus(string? value) =>

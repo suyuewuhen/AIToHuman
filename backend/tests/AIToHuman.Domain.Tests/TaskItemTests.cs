@@ -13,9 +13,9 @@ public sealed class TaskItemTests
     {
         var task = CreateTask();
         task.Publish(_now);
-        task.IncreaseReward(new Money(75));
+        task.IncreaseReward(new Money(75), _now);
         Assert.Equal(75, task.Reward.Amount);
-        Assert.Throws<DomainException>(() => task.IncreaseReward(new Money(70)));
+        Assert.Throws<DomainException>(() => task.IncreaseReward(new Money(70), _now));
     }
 
     [Fact]

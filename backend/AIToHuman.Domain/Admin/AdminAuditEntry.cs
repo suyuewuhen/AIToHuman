@@ -9,6 +9,13 @@ public sealed class AdminAuditEntry
     public const int MaxTargetTypeLength = 40;
     public const int MaxReasonLength = 200;
 
+    /// <summary>
+    /// 平台自身的动作（例如发布后风险复检直接把一条任务下架）用这个身份留痕。
+    /// 它是固定的、不会分配给任何真实账号的 ID：审计里一眼能区分"人做的"和"系统做的"，
+    /// 又不必为系统动作开一条没有操作人的例外（"每一条运营动作都要有操作人"这条不变量要保住）。
+    /// </summary>
+    public static readonly Guid SystemActorId = Guid.Parse("00000000-0000-0000-0000-00000000ffff");
+
     private AdminAuditEntry(Guid id, Guid actorId, string action, string targetType, Guid targetId, string reason, DateTimeOffset occurredAt)
     {
         Id = id;

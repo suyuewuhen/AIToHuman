@@ -174,6 +174,35 @@ public sealed class Order
     }
 
     /// <summary>
+    /// 平台按风控处置冻结订单：任务在发布后被复检判定为禁止类别、但已经有订单时走这条路。
+    ///
+    /// 它刻意复用"争议"这条既有路径：同样把订单冻结成 <see cref="OrderStatus.Disputed"/>，
+    /// 于是它天然出现在运营的争议队列里，处置选项（强制完成 / 退回返工 / 终止订单）也完全一样。
+    /// 区别只有一处——<see cref="DisputeOpenedBy"/> 留空表示这**不是任何一方发起的**，而是平台的动作。
+    /// </summary>
+    public void SuspendByRisk(string reason, DateTimeOffset now)
+    {
+        if (!CanBeSuspendedForRisk)
+        {
+            throw new DomainException($"订单当前状态 {Status} 不能按风控冻结。");
+        }
+
+        var trimmed = reason?.Trim() ?? string.Empty;
+        if (trimmed.Length is < 1 or > MaxDisputeReasonLength)
+        {
+            throw new DomainException($"按风控冻结订单必须写明原因，长度不超过 {MaxDisputeReasonLength} 个字符。");
+        }
+
+        Status = OrderStatus.Disputed;
+        DisputeReason = trimmed;
+        DisputeOpenedBy = null;
+        DisputeOpenedAt = UtcTimestamp.Normalize(now);
+    }
+
+    /// <summary>还能不能被风控冻结：已结束、已取消或已经在争议里的订单不动它（争议队列里已经有人管了）。</summary>
+    public bool CanBeSuspendedForRisk => Status is not (OrderStatus.Cancelled or OrderStatus.Approved or OrderStatus.Disputed);
+
+    /// <summary>
     /// 发起争议，请平台介入。需求方只能在服务者提交验收后发起（不想验收又谈不拢时）；
     /// 服务者只能在验收被驳回后发起（不认可驳回理由、拒绝返工时）。
     /// 争议期间订单冻结：双方都不能提交、验收、驳回或取消，等运营处置。

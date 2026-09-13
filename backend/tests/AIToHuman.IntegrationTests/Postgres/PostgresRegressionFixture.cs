@@ -151,6 +151,7 @@ public sealed class PostgresWorld : IDisposable
         services.AddScoped<AdminConsoleService>();
         services.AddScoped<RiskAppealService>();
         services.AddScoped<RiskRuleCatalogService>();
+        services.AddScoped<RiskEnforcementService>();
 
         provider = services.BuildServiceProvider();
         scope = provider.CreateScope();
@@ -166,6 +167,7 @@ public sealed class PostgresWorld : IDisposable
     public AdminConsoleService Admin => Services.GetRequiredService<AdminConsoleService>();
     public RiskAppealService Appeals => Services.GetRequiredService<RiskAppealService>();
     public RiskRuleCatalogService RiskRules => Services.GetRequiredService<RiskRuleCatalogService>();
+    public RiskEnforcementService Enforcement => Services.GetRequiredService<RiskEnforcementService>();
     public IRiskRuleCatalogStore RuleStore => Services.GetRequiredService<IRiskRuleCatalogStore>();
     public NotificationService Notifications => Services.GetRequiredService<NotificationService>();
     public ITaskRepository Tasks => Services.GetRequiredService<ITaskRepository>();
@@ -177,6 +179,8 @@ public sealed class PostgresWorld : IDisposable
     public TaskService ServiceIn(IServiceScope other) => other.ServiceProvider.GetRequiredService<TaskService>();
 
     public RiskRuleCatalogService RiskRulesIn(IServiceScope other) => other.ServiceProvider.GetRequiredService<RiskRuleCatalogService>();
+
+    public RiskEnforcementService EnforcementIn(IServiceScope other) => other.ServiceProvider.GetRequiredService<RiskEnforcementService>();
 
     public CreateTaskRequest DraftRequest(
         string title,

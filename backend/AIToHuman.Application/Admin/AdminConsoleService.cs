@@ -269,7 +269,10 @@ public sealed class AdminConsoleService(
             task.Status.ToString(),
             task.RiskReviewedAt,
             task.RiskReviewNote,
-            task.RiskReviewedBy);
+            task.RiskReviewedBy,
+            task.RiskEnforcementStatus.ToString(),
+            task.RiskEnforcementReason,
+            task.RiskEnforcedAt);
     }
 
     private static AdminOrderItemResponse MapOrder(Order order, IReadOnlyDictionary<Guid, AdminUserView> parties) => new(

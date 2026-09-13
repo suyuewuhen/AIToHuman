@@ -51,8 +51,13 @@ public sealed class TaskDbContext(DbContextOptions<TaskDbContext> options) : DbC
             entity.Property(item => item.RiskAppealStatus).HasConversion<string>().HasMaxLength(16).IsRequired().HasDefaultValue(nameof(RiskAppealStatus.None));
             entity.Property(item => item.RiskAppealReason).HasMaxLength(TaskItem.MaxRiskAppealReasonLength);
             entity.Property(item => item.RiskAppealDecisionNote).HasMaxLength(TaskItem.MaxRiskReviewNoteLength);
+            // 发布后的风控处置：同样带数据库默认值，存量行回填成"没有处置过"。
+            entity.Property(item => item.RiskEnforcementStatus).HasConversion<string>().HasMaxLength(16).IsRequired().HasDefaultValue(nameof(RiskEnforcementStatus.None));
+            entity.Property(item => item.RiskEnforcementReason).HasMaxLength(TaskItem.MaxRiskEnforcementReasonLength);
             // 运营按"待处置申诉"扫队列，这条索引让它不必全表扫描。
             entity.HasIndex(item => new { item.RiskAppealStatus, item.RiskAppealedAt });
+            // 发布后复检按「仍然在线 + 规则版本不是最新」挑候选，这条索引让它不必全表扫描。
+            entity.HasIndex(item => new { item.Status, item.RiskRuleVersion });
             // 运营复核队列按“待复核 + 创建时间”扫描，这条索引让它不必全表扫描。
             entity.HasIndex(item => new { item.RiskReviewStatus, item.CreatedAt });
             entity.HasIndex(item => new { item.Status, item.Deadline });
@@ -293,6 +298,11 @@ public sealed class TaskRecord
     public Guid? RiskAppealDecidedBy { get; set; }
     public DateTimeOffset? RiskAppealDecidedAt { get; set; }
     public string? RiskAppealDecisionNote { get; set; }
+
+    /// <summary>发布后的风控处置状态（None / RecheckRequired / Suspended）与原因、时刻。</summary>
+    public string RiskEnforcementStatus { get; set; } = "None";
+    public string? RiskEnforcementReason { get; set; }
+    public DateTimeOffset? RiskEnforcedAt { get; set; }
     public int Version { get; set; }
     public List<ApplicationRecord> Applications { get; set; } = [];
 }

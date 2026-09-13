@@ -54,6 +54,14 @@ public sealed class InMemoryTaskRepository : ITaskRepository, IAdminTaskQuery
         .ThenBy(task => task.Id)
         .Take(limit)
         .ToArray();
+    /// <summary>发布后复检的候选：仍在线但判定用的规则版本不是当前版本的任务，最久没复检的先来。</summary>
+    public IReadOnlyCollection<TaskItem> ListRiskRecheckCandidates(int assessedRuleVersion, int limit) => _tasks.Values
+        .Where(task => task.Status is TaskStatus.Published or TaskStatus.Assigned && task.RiskRuleVersion != assessedRuleVersion)
+        .OrderBy(task => task.RiskAssessedAt)
+        .ThenBy(task => task.Id)
+        .Take(limit)
+        .ToArray();
+
     public TaskItem? Get(Guid id) => _tasks.GetValueOrDefault(id);
 
     public void Add(TaskItem task)

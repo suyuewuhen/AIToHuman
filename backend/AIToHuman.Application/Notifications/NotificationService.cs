@@ -50,6 +50,14 @@ public sealed class NotificationService(INotificationRepository repository, Time
     public void EnqueueOrderDisputeResolved(Order order, Guid recipientId, DateTimeOffset now) =>
         EnqueueOrderEvent(recipientId, NotificationTypes.OrderDisputeResolved, DeriveEventId(order.Id, $"DisputeResolved:{recipientId:N}"), order, now);
 
+    /// <summary>
+    /// 平台按风控冻结订单：**双方都要通知**，所以事件键按接收者派生。
+    /// 这一点与参与者发起的 <see cref="EnqueueOrderDisputed"/> 不同——那条只通知"对方"，
+    /// 事件键不含接收者；如果这里复用它，第二个人会被事件键去重悄悄挡掉。
+    /// </summary>
+    public void EnqueueOrderSuspendedByRisk(Order order, Guid recipientId, DateTimeOffset now) =>
+        EnqueueOrderEvent(recipientId, NotificationTypes.OrderDisputed, DeriveEventId(order.Id, $"SuspendedByRisk:{recipientId:N}"), order, now);
+
     /// <summary>服务者撤回报名：通知任务所有者。事件键直接用报名 ID，同一条报名只会通知一次。</summary>
     public void EnqueueApplicationWithdrawn(TaskItem task, TaskApplication application, DateTimeOffset now)
     {
@@ -107,6 +115,26 @@ public sealed class NotificationService(INotificationRepository repository, Time
                 task.RiskRuleCode, !task.IsPublishBlockedByRisk, task.RiskAppealDecisionNote),
             PayloadOptions);
         repository.Add(new Notification(recipientId, eventId, NotificationTypes.TaskRiskAppealDecided, EnvelopeVersion, payload, now));
+    }
+
+    /// <summary>
+    /// 发布后风险处置：任务被自动下架、订单被冻结、或要求人工复检。
+    /// 事件键按「任务 + 处置状态 + 接收者 + 规则版本」派生：规则再升级一次、同一条任务又被处置时，
+    /// 仍然能产生一条新通知（这跟"重复处置不重复通知"是两回事）。
+    /// </summary>
+    public void EnqueueTaskRiskEnforced(TaskItem task, Guid recipientId, DateTimeOffset now)
+    {
+        if (recipientId == Guid.Empty) return;
+
+        var eventId = DeriveEventId(task.Id, $"RiskEnforced:{task.RiskEnforcementStatus}:{task.RiskRuleVersion}:{recipientId:N}");
+        if (repository.ExistsByEventId(eventId)) return;
+
+        var payload = JsonSerializer.Serialize(
+            new TaskRiskEnforcementNotificationPayload(
+                task.Id, task.Title, task.RiskEnforcementStatus.ToString(), task.RiskVerdict.ToString(),
+                task.RiskRuleCode, task.RiskEnforcementReason),
+            PayloadOptions);
+        repository.Add(new Notification(recipientId, eventId, NotificationTypes.TaskRiskEnforced, EnvelopeVersion, payload, now));
     }
 
     /// <summary>订单会话新消息：通知对方参与者。事件键用消息 ID，每条消息都是独立事件。</summary>

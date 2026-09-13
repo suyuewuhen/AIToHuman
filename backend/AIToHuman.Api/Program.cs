@@ -25,6 +25,7 @@ using AIToHuman.Application.Idempotency;
 using AIToHuman.Application.Risk;
 using AIToHuman.Infrastructure.Idempotency;
 using AIToHuman.Infrastructure.Risk;
+using AIToHuman.Api.Risk;
 using AIToHuman.Api.Tasks;
 using AIToHuman.Application.Admin;
 using AIToHuman.Application.Settings;
@@ -90,6 +91,7 @@ if (usePostgres)
     builder.Services.AddScoped<IRiskRuleCatalogStore, EfRiskRuleCatalogStore>();
     builder.Services.AddScoped<IRiskRuleCatalogProvider, RiskRuleCatalogStoreProvider>();
     builder.Services.AddScoped<RiskRuleCatalogService>();
+    builder.Services.AddScoped<RiskEnforcementService>();
     builder.Services.AddScoped<RiskAppealService>();
     builder.Services.AddScoped<IUnitOfWork, EfUnitOfWork>();
     builder.Services.AddScoped<AuthService>();
@@ -118,6 +120,7 @@ else
     builder.Services.AddSingleton<IRiskRuleCatalogStore, InMemoryRiskRuleCatalogStore>();
     builder.Services.AddSingleton<IRiskRuleCatalogProvider, RiskRuleCatalogStoreProvider>();
     builder.Services.AddScoped<RiskRuleCatalogService>();
+    builder.Services.AddScoped<RiskEnforcementService>();
     builder.Services.AddScoped<RiskAppealService>();
     builder.Services.AddSingleton<IUnitOfWork, InMemoryUnitOfWork>();
 }
@@ -156,6 +159,8 @@ builder.Services.AddHostedService<EvidenceRescanService>();
 // 幂等记录只增不减：后台按保留策略定期清理，避免这张表一直涨。
 builder.Services.AddScoped<IdempotencyCleanup>();
 builder.Services.AddHostedService<IdempotencyCleanupService>();
+// 发布后风险复检：规则目录改过之后，把仍在线的任务按最新一版规则重新判一遍。
+builder.Services.AddHostedService<RiskRecheckService>();
 // 过期任务的兜底扫描：超过截止时间仍无人被选中的已发布任务会被置为过期并通知相关人。
 builder.Services.AddHostedService<TaskExpiryService>();
 builder.Services.AddProblemDetails();
@@ -618,6 +623,18 @@ adminConsole.MapPost("/risk/rules/reset", (ResetRiskRuleCatalogRequest request, 
     var restored = service.ResetToBuiltIn(request, actorId);
     app.Logger.LogInformation("运营 {ActorId} 把风险规则目录恢复到内置目录（v{Version}）：{Reason}", actorId, restored.Version, request.Reason);
     return Results.Ok(restored);
+});
+
+// 发布后复检：规则目录改过之后，或在线的任务需要立即重新判定时，运营可以手动跑一轮。
+// 单条任务的处置结果（自动下架、冻结订单）各自写运营审计；这里只回传本轮统计。
+adminConsole.MapPost("/risk/recheck", (int? limit, ClaimsPrincipal user, RiskEnforcementService service) =>
+{
+    var actorId = ResolveAdminId(user);
+    var result = service.Recheck(limit);
+    app.Logger.LogInformation(
+        "运营 {ActorId} 手动触发发布后风险复检（规则第 {Version} 版）：扫描 {Scanned} 条，下架 {Unpublished} 条、冻结订单 {Frozen} 条、要求复检 {Flagged} 条。",
+        actorId, result.RuleVersion, result.Scanned, result.Unpublished, result.Frozen, result.Flagged);
+    return Results.Ok(result.ToResponse());
 });
 
 // 误拦申诉：被拦的所有者提交的申诉排在这里。转人工被驳回的可以申诉成立并放行；

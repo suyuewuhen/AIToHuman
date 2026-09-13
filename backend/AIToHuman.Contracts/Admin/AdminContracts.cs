@@ -111,9 +111,25 @@ public sealed record AdminRiskReviewItemResponse(
     string TaskStatus,
     DateTimeOffset? ReviewedAt,
     string? ReviewNote,
-    Guid? ReviewedBy);
+    Guid? ReviewedBy,
+    string EnforcementStatus = "None",
+    string? EnforcementReason = null,
+    DateTimeOffset? EnforcedAt = null);
 
 public sealed record AdminRiskReviewListResponse(IReadOnlyList<AdminRiskReviewItemResponse> Items, int Limit);
+
+/// <summary>
+/// 手动触发一轮发布后风险复检的结果：扫了多少条、各处置结果多少条。
+/// <paramref name="RuleVersion"/> 是本轮用的规则版本，<paramref name="Skipped"/> 是留给下一轮的（订单不可冻结等）。
+/// </summary>
+public sealed record AdminRiskRecheckResponse(
+    int RuleVersion,
+    int Scanned,
+    int Refreshed,
+    int Flagged,
+    int Unpublished,
+    int Frozen,
+    int Skipped);
 
 /// <summary>
 /// 处置风险复核：<c>decision</c> 取 <c>Approve</c>（放行，之后可发布）或 <c>Reject</c>（驳回，不能发布），依据必填。

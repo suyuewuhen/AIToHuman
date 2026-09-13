@@ -12,7 +12,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { APP_HOME_URL } from '../api/base'
 import { clearAccessToken, getAccessToken, getCurrentUser, login, type CurrentUser } from '../api/auth'
-import { adminOrderStatusLabel, adminTaskStatusLabel, cancelAdminTask, decideRiskAppeal, decideRiskReview, disputeResolutionLabel, getRiskRuleDetail, getRiskRules, listAdminAudits, listDisputedOrders, listRiskAppeals, listRiskReviews, listRiskRuleVersions, resetRiskRules, resolveDispute, riskAppealStatusLabel, riskReviewStatusLabel, riskVerdictLabel, searchAdminTasks, searchAdminUsers, updateRiskRules, type AdminAuditItem, type AdminOrderItem, type AdminRiskAppealItem, type AdminRiskReviewItem, type AdminTaskItem, type AdminUserItem, type DisputeDecision, type RiskAppealDecision, type RiskReviewDecision, type RiskRuleCatalog, type RiskRuleCatalogDetail, type RiskRuleCatalogVersion } from '../api/admin'
+import { adminAuditActorLabel, adminOrderStatusLabel, adminTaskStatusLabel, cancelAdminTask, decideRiskAppeal, decideRiskReview, disputeResolutionLabel, getRiskRuleDetail, getRiskRules, listAdminAudits, listDisputedOrders, listRiskAppeals, listRiskReviews, listRiskRuleVersions, resetRiskRules, resolveDispute, riskAppealStatusLabel, riskReviewStatusLabel, riskVerdictLabel, runRiskRecheck, searchAdminTasks, searchAdminUsers, updateRiskRules, type AdminAuditItem, type AdminOrderItem, type AdminRiskAppealItem, type AdminRiskReviewItem, type AdminTaskItem, type AdminUserItem, type DisputeDecision, type RiskAppealDecision, type RiskReviewDecision, type RiskRuleCatalog, type RiskRuleCatalogDetail, type RiskRuleCatalogVersion } from '../api/admin'
 import { listSettingAudits, listSettings, resetSetting, settingChoiceLabel, settingSourceLabel, testSetting, updateSetting, type AdminSetting, type SettingAudit, type SettingTestResult } from '../api/settings'
 import { formatDeadline } from '../utils/format'
 
@@ -409,8 +409,28 @@ async function loadAdminRiskReviews() {
   }
 }
 
-function startAdminRiskDecision(item: AdminRiskReviewItem) {
-  adminRiskDecisionId.value = item.taskId
+/**
+ * 手动跑一轮发布后复检：规则目录改完之后，仍然在线的任务要按最新规则重新判一遍。
+ * 后台每五分钟也会自动跑一轮；这里给"改完想立刻看结果"的运营用，跑完刷新队列与审计。
+ */
+async function recheckPublishedTasks() {
+  adminTaskBusy.value = true
+  adminTaskError.value = ''
+  adminTaskNotice.value = ''
+  try {
+    const result = await runRiskRecheck()
+    adminTaskNotice.value = `复检完成（规则第 ${result.ruleVersion} 版）：扫描 ${result.scanned} 条，自动下架 ${result.unpublished} 条、冻结订单 ${result.frozen} 条、要求人工复检 ${result.flagged} 条${result.skipped > 0 ? `，另有 ${result.skipped} 条留给下一轮` : ''}。`
+    const [queue, catalog] = await Promise.all([listRiskReviews(20), getRiskRules()])
+    adminRiskReviews.value = queue.items
+    adminRiskRules.value = catalog
+  } catch (error) {
+    adminTaskError.value = error instanceof Error ? error.message : '发布后复检失败'
+  } finally {
+    adminTaskBusy.value = false
+  }
+}
+
+function startAdminRiskDecision(item: AdminRiskReviewItem) {  adminRiskDecisionId.value = item.taskId
   adminRiskNote.value = ''
   adminTaskError.value = ''
   adminTaskNotice.value = ''
@@ -726,6 +746,10 @@ async function confirmResetRiskRules() {
 
         <div v-else-if="settingsTab === 'risk'" class="settings-body">
           <p class="settings-hint">风险拦截是确定性规则：创建草稿时就判定，发布前再判一次。禁止类别（例如代考、违禁品、跟踪偷拍）一律不能发布，人工也无权放行；命中“需人工复核”的任务排在这里，运营放行后需求方才能发布。依据会写进运营审计并通知任务所有者。</p>
+          <p class="settings-hint"><b>发布后复检</b>：规则目录改过之后，已经在线的任务会按最新一版规则重新判一次——命中禁止类别的当场下架（有订单的改为冻结订单，进争议队列），只命中“需人工复核”的任务保持在线并回到这个队列。后台每五分钟自动跑一轮，也可以在这里立刻跑一轮。</p>
+          <div class="setting-control">
+            <button type="button" class="settings-secondary" :disabled="adminTaskBusy" @click="recheckPublishedTasks()">{{ adminTaskBusy ? '复检中…' : '立即复检在线任务' }}</button>
+          </div>
           <p v-if="adminRiskRules" class="settings-hint">当前规则目录第 <b>{{ adminRiskRules.version }}</b> 版，共 {{ adminRiskRules.rules.length }} 条，其中禁止 {{ adminRiskRules.rules.filter(rule => rule.verdict === 'Blocked').length }} 条；悬赏超过 ¥{{ adminRiskRules.highRewardThreshold }} 转人工。只展示规则类别，不展示匹配词。</p>
           <p v-if="adminTaskError" class="auth-error">{{ adminTaskError }}</p>
           <p v-if="adminTaskNotice" class="settings-notice">{{ adminTaskNotice }}</p>
@@ -738,6 +762,8 @@ async function confirmResetRiskRules() {
               <small>需求方 {{ item.ownerDisplayName ?? '未知需求方' }}{{ item.ownerEmail ? `（${item.ownerEmail}）` : '' }} · 任务号 {{ item.taskId.slice(0, 8) }}</small>
               <small class="evidence-note">{{ item.description }}</small>
               <small class="evidence-note">命中原因：{{ item.summary }}</small>
+              <small v-if="item.enforcementStatus === 'RecheckRequired'" class="evidence-note">规则升级后的复检要求：{{ item.enforcementReason }}（任务仍在线上）</small>
+              <small v-else-if="item.enforcementStatus === 'Suspended'" class="evidence-note">平台已按风控处置：{{ item.enforcementReason }}</small>
             </div>
             <div class="setting-actions">
               <template v-if="adminRiskDecisionId !== item.taskId">
@@ -879,7 +905,7 @@ async function confirmResetRiskRules() {
         <div v-else-if="settingsTab === 'audits'" class="settings-body">
           <span v-if="adminAudits.length === 0 && settingsAudits.length === 0" class="settings-empty">还没有变更记录。</span>
           <div v-for="audit in adminAudits" :key="audit.id" class="setting-audit">
-            <div><strong>{{ audit.action }} · {{ audit.targetType }}</strong><small>{{ formatDeadline(audit.occurredAt) }} · {{ audit.actorId.slice(0, 8) }}</small></div>
+            <div><strong>{{ audit.action }} · {{ audit.targetType }}</strong><small>{{ formatDeadline(audit.occurredAt) }} · {{ adminAuditActorLabel(audit.actorId) }}</small></div>
             <p><span>{{ audit.targetId.slice(0, 8) }}</span> → <b>{{ audit.reason }}</b></p>
           </div>
           <div v-for="audit in settingsAudits" :key="audit.id" class="setting-audit">

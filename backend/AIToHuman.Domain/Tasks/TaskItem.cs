@@ -298,6 +298,124 @@ public sealed class TaskItem
     /// <summary>正在等人工复核，复核通过前不能发布。</summary>
     public bool AwaitingRiskReview => RiskVerdict == RiskVerdict.NeedsReview && RiskReviewStatus == RiskReviewStatus.Pending;
 
+    /// <summary>
+    /// 发布后的风险处置状态：<see cref="RiskEnforcementStatus.RecheckRequired"/> 表示复检命中"需人工复核"
+    /// （任务仍在线，等运营复检），<see cref="RiskEnforcementStatus.Suspended"/> 表示已按风控下架或冻结订单。
+    /// </summary>
+    public RiskEnforcementStatus RiskEnforcementStatus { get; private set; } = RiskEnforcementStatus.None;
+
+    /// <summary>平台为什么处置了这条任务（下架、冻结订单或要求复检的原因）。</summary>
+    public string? RiskEnforcementReason { get; private set; }
+
+    public DateTimeOffset? RiskEnforcedAt { get; private set; }
+
+    /// <summary>风控处置原因的长度上限（与撤销原因一致，运营与用户看到的是同一段话）。</summary>
+    public const int MaxRiskEnforcementReasonLength = 200;
+
+    /// <summary>
+    /// 这条在线任务是不是还没按 <paramref name="effectiveRuleVersion"/> 这一版规则判定过。
+    /// 复检扫描按这个条件挑候选：判定完会把任务的规则版本号刷成最新，所以不会反复扫同一条。
+    /// </summary>
+    public bool NeedsRiskRecheck(int effectiveRuleVersion) =>
+        Status is TaskStatus.Published or TaskStatus.Assigned && RiskRuleVersion != effectiveRuleVersion;
+
+    /// <summary>
+    /// 发布后复检：用当下生效的规则重新判一次，并按结论处置。
+    ///
+    /// 三条边界是有意这么定的：
+    /// 一是**禁止类别当场处置**——平台红线不因为任务已经上线而放宽，不能挂进队列慢慢等；
+    /// 二是**没有订单就自动下架**（<see cref="RiskEnforcementOutcome.Unpublished"/>），
+    ///    有订单则交给用例层冻结订单（<see cref="RiskEnforcementOutcome.OrderFrozen"/>），
+    ///    因为"任务消失了但订单还挂在服务者名下"是不允许出现的状态；
+    /// 三是**只命中"需人工复核"时任务保持在线**，只把它送回运营队列要求复检——
+    ///    把一条只是需要看一眼的任务直接下架，对需求方和服务者都太粗暴。
+    /// </summary>
+    public RiskEnforcementOutcome ReassessRisk(RiskRuleCatalog catalog, DateTimeOffset now)
+    {
+        if (Status is not (TaskStatus.Published or TaskStatus.Assigned))
+        {
+            throw new DomainException($"任务当前状态 {Status} 不能做发布后风险复检。");
+        }
+
+        var normalizedNow = UtcTimestamp.Normalize(now);
+        var assessment = catalog.Evaluate(Title, Description, AcceptanceCriteria, ExecutionAddress, Reward.Amount, Deadline);
+
+        // 判定前的结论要留着比较：用来判断"这次命中是不是换了一条规则"，见下面的复检口径。
+        var previousRuleCode = RiskRuleCode;
+        var previousReviewStatus = RiskReviewStatus;
+
+        RiskVerdict = assessment.Verdict;
+        RiskRuleCode = assessment.RuleCode;
+        RiskCategory = assessment.Category;
+        RiskSummary = assessment.Description;
+        RiskRuleVersion = assessment.RuleVersion;
+        RiskAssessedAt = normalizedNow;
+
+        if (assessment.Verdict == RiskVerdict.Blocked) return SuspendForRisk(assessment, normalizedNow);
+
+        if (assessment.Verdict == RiskVerdict.NeedsReview)
+        {
+            // 已经就**同一条规则**放行过：规则版本升级了，但命中的还是那条规则、文本也没变，
+            // 人工当时就是看着它放行的，不需要重新排队。
+            // 不这么收敛的话，每一次改规则都会把所有含"身份证/医院/高金额"的在售任务重新推进队列，
+            // 运营和所有者都会被反复惊动一次。
+            if (previousReviewStatus == RiskReviewStatus.Approved
+                && string.Equals(previousRuleCode, assessment.RuleCode, StringComparison.Ordinal))
+            {
+                RiskReviewStatus = RiskReviewStatus.Approved;
+                ClearRecheckFlag();
+                return RiskEnforcementOutcome.Unchanged;
+            }
+
+            // 已经在队列里等人工：不要叠第二次"要求复检"，也不要重复通知。
+            if (previousReviewStatus == RiskReviewStatus.Pending) return RiskEnforcementOutcome.Unchanged;
+
+            RiskReviewStatus = RiskReviewStatus.Pending;
+            RiskEnforcementStatus = RiskEnforcementStatus.RecheckRequired;
+            RiskEnforcementReason = $"按第 {assessment.RuleVersion} 版规则复检后命中“{assessment.Category}”，需要人工复检（任务保持在线）。";
+            RiskEnforcedAt = normalizedNow;
+            return RiskEnforcementOutcome.FlaggedForRecheck;
+        }
+
+        // 复检后放行：撤掉只由复检产生的标记；人工放行/驳回的结论不动（那是人对某一版文本的判断）。
+        ClearRecheckFlag();
+        return RiskEnforcementOutcome.Unchanged;
+    }
+
+    /// <summary>撤掉"要求人工复检"的标记（判定放行、或人工已经给出结论时用）。</summary>
+    private void ClearRecheckFlag()
+    {
+        if (RiskEnforcementStatus != RiskEnforcementStatus.RecheckRequired) return;
+
+        RiskEnforcementStatus = RiskEnforcementStatus.None;
+        RiskEnforcementReason = null;
+        RiskEnforcedAt = null;
+        if (RiskReviewStatus == RiskReviewStatus.Pending) RiskReviewStatus = RiskReviewStatus.NotRequired;
+    }
+
+    /// <summary>
+    /// 命中禁止类别之后的处置：没有订单当场下架，有订单只打标记等用例层冻结订单。
+    /// 这里不写人工复核状态——复核是"人对文本的判断"，平台自动处置不能伪装成人工结论。
+    /// </summary>
+    private RiskEnforcementOutcome SuspendForRisk(RiskAssessment assessment, DateTimeOffset now)
+    {
+        var reason = $"风险复检命中平台禁止的类别（{assessment.RuleCode} · {assessment.Category}，规则第 {assessment.RuleVersion} 版）。";
+        if (reason.Length > MaxRiskEnforcementReasonLength) reason = reason[..(MaxRiskEnforcementReasonLength - 1)] + "…";
+
+        RiskEnforcementStatus = RiskEnforcementStatus.Suspended;
+        RiskEnforcementReason = reason;
+        RiskEnforcedAt = now;
+
+        if (Status == TaskStatus.Published)
+        {
+            // 还没有订单：直接下架，不留一条已被判定为禁止的任务在大厅里。
+            Cancel(reason, now);
+            return RiskEnforcementOutcome.Unpublished;
+        }
+
+        return RiskEnforcementOutcome.OrderFrozen;
+    }
+
     /// <summary>发布这一关是否已经被风险处置卡住（被禁止、待复核、或复核被驳回）。</summary>
     public bool IsPublishBlockedByRisk =>
         RiskReviewStatus == RiskReviewStatus.Rejected
@@ -336,7 +454,10 @@ public sealed class TaskItem
         DateTimeOffset? riskAppealedAt = null,
         Guid? riskAppealDecidedBy = null,
         DateTimeOffset? riskAppealDecidedAt = null,
-        string? riskAppealDecisionNote = null)
+        string? riskAppealDecisionNote = null,
+        RiskEnforcementStatus riskEnforcementStatus = RiskEnforcementStatus.None,
+        string? riskEnforcementReason = null,
+        DateTimeOffset? riskEnforcedAt = null)
     {
         var task = new TaskItem
         {
@@ -370,7 +491,10 @@ public sealed class TaskItem
             RiskAppealedAt = riskAppealedAt,
             RiskAppealDecidedBy = riskAppealDecidedBy,
             RiskAppealDecidedAt = riskAppealDecidedAt,
-            RiskAppealDecisionNote = riskAppealDecisionNote
+            RiskAppealDecisionNote = riskAppealDecisionNote,
+            RiskEnforcementStatus = riskEnforcementStatus,
+            RiskEnforcementReason = riskEnforcementReason,
+            RiskEnforcedAt = riskEnforcedAt
         };
         task._applications.AddRange(applications);
         return task;
@@ -415,7 +539,12 @@ public sealed class TaskItem
         Status = TaskStatus.Published;
     }
 
-    public void IncreaseReward(Money reward)
+    /// <summary>
+    /// 已发布任务加价。**加价不是绕过风控的通道**：悬赏金额本身就是规则输入（高金额转人工），
+    /// 所以加完之后立刻按"当下生效的那一版目录"重判一次，并把结论交给用例层去处置
+    /// （需要人工复检就进队列，命中禁止类别就下架或冻结订单）。
+    /// </summary>
+    public RiskEnforcementOutcome IncreaseReward(Money reward, DateTimeOffset now, RiskRuleCatalog? riskRules = null)
     {
         EnsureStatus(TaskStatus.Published);
         if (reward.Currency != Reward.Currency || reward.Amount <= Reward.Amount)
@@ -424,6 +553,7 @@ public sealed class TaskItem
         }
 
         Reward = reward;
+        return ReassessRisk(riskRules ?? RiskRuleCatalog.BuiltIn, now);
     }
 
     public TaskApplication Apply(Guid workerId, string? note, DateTimeOffset now)
@@ -728,5 +858,14 @@ public sealed class TaskItem
         RiskReviewedBy = reviewerId;
         RiskReviewedAt = UtcTimestamp.Normalize(now);
         RiskReviewNote = trimmed;
+
+        // 复检要求的"人工再看一眼"已经完成：撤掉复检标记。
+        // 任务是在线还是下架由任务状态决定，不由这个标记决定——所以这里不需要动 Status。
+        if (RiskEnforcementStatus == RiskEnforcementStatus.RecheckRequired)
+        {
+            RiskEnforcementStatus = RiskEnforcementStatus.None;
+            RiskEnforcementReason = null;
+            RiskEnforcedAt = null;
+        }
     }
 }

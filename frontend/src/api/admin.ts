@@ -100,6 +100,11 @@ export interface AdminRiskReviewItem {
   reviewedAt: string | null
   reviewNote: string | null
   reviewedBy: string | null
+  /** 发布后的风控处置状态：None / RecheckRequired（在线但要复检）/ Suspended（已下架或冻结订单）。 */
+  enforcementStatus: string
+  /** 平台为什么处置了它。 */
+  enforcementReason: string | null
+  enforcedAt: string | null
 }
 
 export interface AdminRiskReviewList {
@@ -296,6 +301,36 @@ export async function decideRiskReview(taskId: string, decision: RiskReviewDecis
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify({ decision, note }),
+  }))
+}
+
+/** 平台自身的动作在审计里用这个固定身份留痕（风控复检自动下架、冻结订单）。 */
+export const ADMIN_SYSTEM_ACTOR_ID = '00000000-0000-0000-0000-00000000ffff'
+
+/** 审计里的操作人：系统身份显示成"平台（风控）"，人显示 id 前缀。 */
+export function adminAuditActorLabel(actorId: string): string {
+  return actorId === ADMIN_SYSTEM_ACTOR_ID ? '平台（风控）' : actorId.slice(0, 8)
+}
+
+/** 一轮发布后风险复检的结果（运营手动触发时看的统计）。 */
+export interface AdminRiskRecheckResult {
+  ruleVersion: number
+  scanned: number
+  refreshed: number
+  flagged: number
+  unpublished: number
+  frozen: number
+  skipped: number
+}
+
+/**
+ * 手动跑一轮发布后复检：规则目录改完之后，仍然在线的任务要按新规则重新判一次。
+ * 后台每五分钟也会自动跑一轮（启动后 30 秒跑第一轮），这个入口是给"改完想立刻看结果"的运营用的。
+ */
+export async function runRiskRecheck(limit = 200): Promise<AdminRiskRecheckResult> {
+  return parseResponse<AdminRiskRecheckResult>(await apiFetch(`/api/v1/admin/risk/recheck?limit=${limit}`, {
+    method: 'POST',
+    headers: authHeaders(),
   }))
 }
 

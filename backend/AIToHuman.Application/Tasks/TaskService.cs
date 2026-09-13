@@ -13,7 +13,7 @@ using DomainTaskStatus = AIToHuman.Domain.Tasks.TaskStatus;
 
 namespace AIToHuman.Application.Tasks;
 
-public sealed class TaskService(ITaskRepository repository, IOrderRepository orderRepository, IReviewRepository reviewRepository, ITaskRevisionRepository revisionRepository, AIToHuman.Application.Admin.IUserDirectory userDirectory, TimeProvider timeProvider, NotificationService notifications, IUnitOfWork unitOfWork, IRiskRuleCatalogProvider? riskRuleCatalog = null)
+public sealed class TaskService(ITaskRepository repository, IOrderRepository orderRepository, IReviewRepository reviewRepository, ITaskRevisionRepository revisionRepository, AIToHuman.Application.Admin.IUserDirectory userDirectory, TimeProvider timeProvider, NotificationService notifications, IUnitOfWork unitOfWork, IRiskRuleCatalogProvider? riskRuleCatalog = null, AIToHuman.Application.Risk.RiskEnforcementService? riskEnforcement = null)
 {
     /// <summary>
     /// 这次写入该用哪一版风险规则：运营在后台改过就是最新那一版，否则是代码里的内置目录。
@@ -132,11 +132,26 @@ public sealed class TaskService(ITaskRepository repository, IOrderRepository ord
         return Map(task);
     }
 
+    /// <summary>
+    /// 已发布任务加价。加完之后按当前生效的规则重判一次（见 <see cref="TaskItem.IncreaseReward"/>）：
+    /// 加价到高金额本来就会转人工，如果这里不判定，"先发一条普通任务再改成高价"就是一条现成的绕过路径。
+    /// 命中之后要做的副作用（通知、审计、冻结订单）交给 <c>RiskEnforcementService</c>。
+    ///
+    /// 注入的 <c>riskEnforcement</c> 可空，是为了让手工装配的用例不必为每个测试都搭一套通知与审计仓储：
+    /// 不传时判定与状态变更照常发生，只是不发通知、不写审计；生产装配（Program.cs）一定会传入。
+    /// </summary>
     public TaskResponse IncreaseReward(Guid id, Guid ownerId, IncreaseRewardRequest request)
     {
         var task = GetOwned(id, ownerId);
-        task.IncreaseReward(new Money(request.Reward));
-        repository.Save(task);
+        var now = timeProvider.GetUtcNow();
+        var outcome = task.IncreaseReward(new Money(request.Reward), now, RiskRules);
+
+        unitOfWork.Execute(() =>
+        {
+            repository.Save(task);
+            riskEnforcement?.ApplyOutcome(task, outcome, now);
+        });
+
         return Map(task);
     }
 
@@ -520,7 +535,8 @@ public sealed class TaskService(ITaskRepository repository, IOrderRepository ord
 
     private TaskResponse Map(TaskItem task) => new(task.Id, task.OwnerId, task.Title, task.Description, task.District, task.Deadline, task.Reward.Amount, task.Reward.Currency, task.Status.ToString(), task.AcceptanceCriteria, MapApplications(task.Applications), task.ExpiredAt, task.CancelledAt, task.CancellationReason, task.ApplicationDeadline, task.AcceptingApplications(timeProvider.GetUtcNow()),
         task.RiskVerdict.ToString(), task.RiskRuleCode, task.RiskCategory, task.RiskSummary, task.RiskRuleVersion, task.RiskAssessedAt, task.RiskReviewStatus.ToString(), task.RiskReviewedAt, task.RiskReviewNote, task.IsPublishBlockedByRisk, CanEditDraft(task),
-        task.RiskAppealStatus.ToString(), task.RiskAppealReason, task.RiskAppealedAt, task.RiskAppealDecisionNote, task.CanAppealRisk);
+        task.RiskAppealStatus.ToString(), task.RiskAppealReason, task.RiskAppealedAt, task.RiskAppealDecisionNote, task.CanAppealRisk,
+        task.RiskEnforcementStatus.ToString(), task.RiskEnforcementReason, task.RiskEnforcedAt);
     private static TaskApplicationResponse MapApplication(TaskApplication application, IReadOnlyDictionary<Guid, (decimal Average, int Count)> credit, IReadOnlyDictionary<Guid, string> names)
     {
         var rating = credit.TryGetValue(application.WorkerId, out var summary) ? summary.Average : 0m;
@@ -586,7 +602,8 @@ public sealed class TaskService(ITaskRepository repository, IOrderRepository ord
         // 能读到的已发布任务结论必然是 Allowed。所以这里不需要像撤销原因那样按调用方分流。
         task.RiskVerdict.ToString(), task.RiskRuleCode, task.RiskCategory, task.RiskSummary, task.RiskRuleVersion,
         task.RiskReviewStatus.ToString(), task.RiskReviewNote, task.IsPublishBlockedByRisk, CanEditDraft(task),
-        task.RiskAppealStatus.ToString(), task.RiskAppealReason, task.RiskAppealedAt, task.RiskAppealDecisionNote, task.CanAppealRisk);
+        task.RiskAppealStatus.ToString(), task.RiskAppealReason, task.RiskAppealedAt, task.RiskAppealDecisionNote, task.CanAppealRisk,
+        task.RiskEnforcementStatus.ToString(), task.RiskEnforcementReason, task.RiskEnforcedAt);
     private static OrderResponse Map(Order order) => new(order.Id, order.TaskId, order.OwnerId, order.WorkerId, order.Title, order.Reward.Amount, order.Reward.Currency, order.Status.ToString(), order.CreatedAt, order.EvidenceNote, order.ReviewNote, order.SubmittedAt, order.ReviewedAt, order.ReworkCount, order.RejectionNote, 0, order.CancelledAt, order.CancelledBy, order.CancellationReason, order.DisputeReason, order.DisputeOpenedBy, order.DisputeOpenedAt, order.DisputeResult, order.DisputeResolutionNote, order.DisputeResolvedAt);
     private static ReviewResponse MapReview(Review review, bool visible) => new(review.Id, review.OrderId, review.ReviewerId, review.RevieweeId, review.Rating, visible ? review.Comment : "评价将在双方完成后公开", review.CreatedAt, visible);
 

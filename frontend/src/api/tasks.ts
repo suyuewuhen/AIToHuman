@@ -62,6 +62,14 @@ export interface TaskItem {
   riskAppealDecisionNote?: string | null
   /** 能不能提交申诉（被禁止类别命中、或转人工后被驳回，且当前没有待处置申诉）。 */
   canAppealRisk?: boolean
+  /**
+   * 发布后的风控处置状态：None / RecheckRequired（保持在线但要求人工复检）/ Suspended（已下架或冻结订单）。
+   * 判定发生在规则升级或加价之后，客户端只展示服务端给的结论。
+   */
+  riskEnforcementStatus?: string
+  /** 平台为什么处置了这条任务。 */
+  riskEnforcementReason?: string | null
+  riskEnforcedAt?: string | null
 }
 
 /**
