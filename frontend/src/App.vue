@@ -1779,7 +1779,7 @@ onMounted(async () => {
             <span v-else-if="taskApplications.length === 0">暂无有效报名</span>
             <div v-for="application in taskApplications" v-else :key="application.id" class="application-row">
               <div>
-                <strong>服务者 {{ application.workerId.slice(0, 8) }}</strong>
+                <strong>服务者 {{ application.workerDisplayName || application.workerId.slice(0, 8) }}</strong>
                 <small class="application-credit">
                   <template v-if="application.workerReviewCount > 0">公开评价 {{ application.workerAverageRating.toFixed(1) }} 分 · {{ application.workerReviewCount }} 条</template>
                   <template v-else>暂无公开评价（评价在双方都提交或订单完成满 7 天后公开）</template>

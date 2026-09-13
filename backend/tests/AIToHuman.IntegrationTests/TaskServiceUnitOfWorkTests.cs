@@ -4,6 +4,7 @@ using AIToHuman.Application.Orders;
 using AIToHuman.Application.Tasks;
 using AIToHuman.Contracts.Tasks;
 using AIToHuman.Domain.Orders;
+using AIToHuman.Infrastructure.Admin;
 using AIToHuman.Infrastructure.Notifications;
 using AIToHuman.Infrastructure.Orders;
 using AIToHuman.Infrastructure.Tasks;
@@ -97,7 +98,7 @@ public sealed class TaskServiceUnitOfWorkTests
         var service = new TaskService(
             new InMemoryTaskRepository(),
             orderRepository,
-            new InMemoryReviewRepository(), new InMemoryTaskRevisionRepository(),
+            new InMemoryReviewRepository(), new InMemoryTaskRevisionRepository(), new EmptyUserDirectory(),
             clock,
             new NotificationService(new InMemoryNotificationRepository(), clock),
             unitOfWork);

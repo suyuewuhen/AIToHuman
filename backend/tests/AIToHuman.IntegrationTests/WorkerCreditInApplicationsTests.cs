@@ -1,7 +1,9 @@
+using AIToHuman.Application.Admin;
 using AIToHuman.Application.Notifications;
 using AIToHuman.Application.Orders;
 using AIToHuman.Application.Tasks;
 using AIToHuman.Contracts.Tasks;
+using AIToHuman.Infrastructure.Admin;
 using AIToHuman.Infrastructure.Notifications;
 using AIToHuman.Infrastructure.Orders;
 using AIToHuman.Infrastructure.Persistence;
@@ -97,16 +99,49 @@ public sealed class WorkerCreditInApplicationsTests
         Assert.Equal(fromPublicSummary.ReviewCount, fromApplications.WorkerReviewCount);
     }
 
+    [Fact]
+    public void The_applications_list_shows_the_workers_display_name()
+    {
+        var world = new World(directory: new StubUserDirectory("张师傅"));
+        var (taskId, ownerId) = world.OpenTaskWithApplication();
+
+        var application = world.Applications(taskId, ownerId).Single();
+
+        // 需求方看到的是"谁报名了"，而不是一串 id 前缀。
+        Assert.Equal("张师傅", application.WorkerDisplayName);
+    }
+
+    [Fact]
+    public void A_missing_display_name_degrades_to_null_instead_of_breaking_the_list()
+    {
+        var world = new World();
+        var (taskId, ownerId) = world.OpenTaskWithApplication();
+
+        var application = world.Applications(taskId, ownerId).Single();
+
+        // 拿不到显示名（没有 PostgreSQL 时用户目录就是空实现）只留空，页面退化成显示 id 前缀。
+        Assert.Null(application.WorkerDisplayName);
+        Assert.Equal(world.Worker, application.WorkerId);
+    }
+
+    private sealed class StubUserDirectory(string displayName) : IUserDirectory
+    {
+        public IReadOnlyCollection<AdminUserView> Search(string? keyword, int limit) => [];
+
+        public IReadOnlyDictionary<Guid, AdminUserView> FindMany(IReadOnlyCollection<Guid> ids) =>
+            ids.ToDictionary(id => id, id => new AdminUserView(id, "worker@example.com", displayName, "worker", Now));
+    }
+
     private sealed class World
     {
         private readonly InMemoryTaskRepository tasks = new();
 
-        public World()
+        public World(IUserDirectory? directory = null)
         {
             Worker = Guid.NewGuid();
             Clock = new MutableTimeProvider(Now);
             Notifications = new NotificationService(new InMemoryNotificationRepository(), Clock);
-            Service = new TaskService(tasks, new InMemoryOrderRepository(), new InMemoryReviewRepository(), new InMemoryTaskRevisionRepository(), Clock, Notifications, new InMemoryUnitOfWork());
+            Service = new TaskService(tasks, new InMemoryOrderRepository(), new InMemoryReviewRepository(), new InMemoryTaskRevisionRepository(), directory ?? new EmptyUserDirectory(), Clock, Notifications, new InMemoryUnitOfWork());
         }
 
         public Guid Worker { get; }

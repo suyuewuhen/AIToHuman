@@ -328,6 +328,40 @@ public sealed class PostgresRegressionTests(PostgresRegressionFixture fixture) :
         Assert.Equal(2, audits.Count);
     }
 
+    /// <summary>
+    /// 幂等记录的清理在真库上要走一条 DELETE（而不是把记录读进内存）：只删过期的，
+    /// 还在重试窗口内的必须留下，否则"重试去重"会在最需要的时候失效。
+    /// </summary>
+    [PostgresFact]
+    public async Task Expired_idempotency_records_are_deleted_without_touching_fresh_ones()
+    {
+        using var world = new PostgresWorld(fixture.ConnectionString, Now);
+        var user = Guid.NewGuid();
+
+        using (var scope = world.NewScope())
+        {
+            var store = scope.ServiceProvider.GetRequiredService<IIdempotencyStore>();
+            var expired = IdempotencyEntry.Start(user, "expired", new string('a', 64), Now - TimeSpan.FromDays(2));
+            store.TryStart(expired, out _);
+            store.Complete(expired, StatusCodes.Status201Created, """{"id":"old"}""", "application/json", Now - TimeSpan.FromDays(2));
+
+            var fresh = IdempotencyEntry.Start(user, "fresh", new string('b', 64), Now - TimeSpan.FromMinutes(1));
+            store.TryStart(fresh, out _);
+            store.Complete(fresh, StatusCodes.Status201Created, """{"id":"new"}""", "application/json", Now);
+        }
+
+        using (var scope = world.NewScope())
+        {
+            var cleanup = new IdempotencyCleanup(scope.ServiceProvider.GetRequiredService<IIdempotencyStore>(), world.Clock);
+            var result = cleanup.Sweep();
+            Assert.Equal(1, result.Deleted);
+        }
+
+        await using var context = fixture.CreateContext();
+        var rows = await context.IdempotencyEntries.AsNoTracking().ToListAsync();
+        Assert.Equal("fresh", Assert.Single(rows).Key);
+    }
+
     /// <summary>带时区偏移的截止时间与中文文本在真库上的往返：领域层统一归一化成 UTC，文本原样保存。</summary>
     [PostgresFact]
     public async Task Utc_offsets_and_chinese_text_round_trip_through_the_database()

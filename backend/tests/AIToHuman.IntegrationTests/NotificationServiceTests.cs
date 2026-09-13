@@ -7,6 +7,7 @@ using AIToHuman.Contracts.Tasks;
 using AIToHuman.Domain.Notifications;
 using AIToHuman.Domain.Orders;
 using AIToHuman.Domain.Tasks;
+using AIToHuman.Infrastructure.Admin;
 using AIToHuman.Infrastructure.Notifications;
 using AIToHuman.Infrastructure.Orders;
 using AIToHuman.Infrastructure.Persistence;
@@ -269,7 +270,7 @@ public sealed class NotificationServiceTests
         var taskService = new TaskService(
             new InMemoryTaskRepository(),
             new InMemoryOrderRepository(),
-            new InMemoryReviewRepository(), new InMemoryTaskRevisionRepository(),
+            new InMemoryReviewRepository(), new InMemoryTaskRevisionRepository(), new EmptyUserDirectory(),
             new FixedTimeProvider(Now),
             notifications,
             new InMemoryUnitOfWork());

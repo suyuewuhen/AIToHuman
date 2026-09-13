@@ -17,4 +17,10 @@ public interface IIdempotencyStore
 
     /// <summary>丢掉占位（业务抛异常、响应太大、或占位已过期时用）。</summary>
     void Remove(IdempotencyEntry entry);
+
+    /// <summary>
+    /// 删除过期记录并返回实际删除条数：已完成的按 <paramref name="completedBefore"/> 判定，
+    /// 未完成占位按 <paramref name="startedBefore"/> 判定（两者分开，避免把刚开始处理的请求清掉）。
+    /// </summary>
+    int DeleteExpired(DateTimeOffset completedBefore, DateTimeOffset startedBefore, int limit);
 }

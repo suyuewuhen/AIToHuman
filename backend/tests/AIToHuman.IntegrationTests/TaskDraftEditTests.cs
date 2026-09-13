@@ -133,7 +133,7 @@ public sealed class TaskDraftEditTests
             AdminId = Guid.NewGuid();
             Clock = new MutableTimeProvider(Now);
             Notifications = new NotificationService(new InMemoryNotificationRepository(), Clock);
-            Service = new TaskService(tasks, orders, new InMemoryReviewRepository(), new InMemoryTaskRevisionRepository(), Clock, Notifications, new InMemoryUnitOfWork());
+            Service = new TaskService(tasks, orders, new InMemoryReviewRepository(), new InMemoryTaskRevisionRepository(), new EmptyUserDirectory(), Clock, Notifications, new InMemoryUnitOfWork());
             Admin = new AdminConsoleService(tasks, orders, new EmptyUserDirectory(), tasks, orders, new InMemoryAdminAuditRepository(), Clock, Notifications, new InMemoryUnitOfWork());
         }
 

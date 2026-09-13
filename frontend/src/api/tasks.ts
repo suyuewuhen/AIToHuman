@@ -8,6 +8,8 @@ export interface TaskApplication {
   workerAverageRating: number
   /** 公开评价条数（盲期内的评价不计入）。 */
   workerReviewCount: number
+  /** 服务者显示名；取不到时为 null，页面退化成显示 id 前缀。 */
+  workerDisplayName?: string | null
 }
 
 export interface TaskItem {

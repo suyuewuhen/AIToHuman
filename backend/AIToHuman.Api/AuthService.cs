@@ -2,6 +2,7 @@ using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Security.Cryptography;
 using AIToHuman.Contracts;
+using AIToHuman.Domain.Common;
 using AIToHuman.Infrastructure.Persistence;
 using Microsoft.IdentityModel.Tokens;
 
@@ -13,9 +14,9 @@ public sealed class AuthService(TaskDbContext db, IConfiguration configuration, 
     {
         var email = NormalizeEmail(request.Email);
         ValidatePassword(request.Password);
-        if (string.IsNullOrWhiteSpace(request.DisplayName) || request.DisplayName.Trim().Length > 80) throw new InvalidOperationException("昵称必须为 1 到 80 个字符。");
-        if (!Roles.Contains(request.Role, StringComparer.OrdinalIgnoreCase)) throw new InvalidOperationException("角色必须是 owner 或 worker。");
-        if (db.Users.Any(item => item.Email == email)) throw new InvalidOperationException("该邮箱已注册。");
+        if (string.IsNullOrWhiteSpace(request.DisplayName) || request.DisplayName.Trim().Length > 80) throw new ValidationException("昵称必须为 1 到 80 个字符。");
+        if (!Roles.Contains(request.Role, StringComparer.OrdinalIgnoreCase)) throw new ValidationException("角色必须是 owner 或 worker。");
+        if (db.Users.Any(item => item.Email == email)) throw new ConflictException("该邮箱已注册。");
         var user = new UserRecord { Id = Guid.NewGuid(), Email = email, DisplayName = request.DisplayName.Trim(), Role = request.Role.ToLowerInvariant(), PasswordHash = HashPassword(request.Password), CreatedAt = timeProvider.GetUtcNow() };
         db.Users.Add(user);
         db.SaveChanges();
@@ -31,7 +32,7 @@ public sealed class AuthService(TaskDbContext db, IConfiguration configuration, 
 
     public AuthResponse SwitchRole(Guid userId, string role)
     {
-        if (!Roles.Contains(role, StringComparer.OrdinalIgnoreCase)) throw new InvalidOperationException("角色必须是 owner 或 worker。");
+        if (!Roles.Contains(role, StringComparer.OrdinalIgnoreCase)) throw new ValidationException("角色必须是 owner 或 worker。");
         var user = db.Users.SingleOrDefault(item => item.Id == userId) ?? throw new UnauthorizedAccessException("用户不存在或已停用。");
         return CreateResponse(user, role.ToLowerInvariant());
     }
@@ -47,8 +48,8 @@ public sealed class AuthService(TaskDbContext db, IConfiguration configuration, 
         return new(user.Id, user.Email, user.DisplayName, responseRole, new JwtSecurityTokenHandler().WriteToken(token), expires * 60);
     }
 
-    private static string NormalizeEmail(string email) => string.IsNullOrWhiteSpace(email) ? throw new InvalidOperationException("邮箱不能为空。") : email.Trim().ToLowerInvariant();
-    private static void ValidatePassword(string password) { if (string.IsNullOrWhiteSpace(password) || password.Length < 8) throw new InvalidOperationException("密码至少需要 8 个字符。"); }
+    private static string NormalizeEmail(string email) => string.IsNullOrWhiteSpace(email) ? throw new ValidationException("邮箱不能为空。") : email.Trim().ToLowerInvariant();
+    private static void ValidatePassword(string password) { if (string.IsNullOrWhiteSpace(password) || password.Length < 8) throw new ValidationException("密码至少需要 8 个字符。"); }
     private static string HashPassword(string password)
     {
         var salt = RandomNumberGenerator.GetBytes(16);

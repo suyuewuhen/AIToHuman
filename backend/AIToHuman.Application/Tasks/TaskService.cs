@@ -11,7 +11,7 @@ using DomainTaskStatus = AIToHuman.Domain.Tasks.TaskStatus;
 
 namespace AIToHuman.Application.Tasks;
 
-public sealed class TaskService(ITaskRepository repository, IOrderRepository orderRepository, IReviewRepository reviewRepository, ITaskRevisionRepository revisionRepository, TimeProvider timeProvider, NotificationService notifications, IUnitOfWork unitOfWork)
+public sealed class TaskService(ITaskRepository repository, IOrderRepository orderRepository, IReviewRepository reviewRepository, ITaskRevisionRepository revisionRepository, AIToHuman.Application.Admin.IUserDirectory userDirectory, TimeProvider timeProvider, NotificationService notifications, IUnitOfWork unitOfWork)
 {
     /// <summary>创建草稿：落库的同时记下第 1 版快照（谁建的、当时是什么内容、风险结论如何）。</summary>
     public TaskResponse Create(CreateTaskRequest request)
@@ -172,14 +172,13 @@ public sealed class TaskService(ITaskRepository repository, IOrderRepository ord
     }
 
     /// <summary>
-    /// 报名列表（仅任务所有者）。每条报名带上该服务者的公开评价摘要，
-    /// 让需求方在选人前就能比较信用，而不是只能看到一个 workerId。
+    /// 报名列表（仅任务所有者）。每条报名带上该服务者的公开评价摘要与显示名，
+    /// 让需求方在选人前就能比较"是谁、信用如何"，而不是只能看到一个 workerId。
     /// </summary>
     public IReadOnlyCollection<TaskApplicationResponse> ListApplications(Guid id, Guid ownerId)
     {
         var task = GetOwned(id, ownerId);
-        var credit = LoadWorkerCredit(task.Applications);
-        return task.Applications.Select(application => MapApplication(application, credit)).ToArray();
+        return MapApplications(task.Applications);
     }
 
     public IReadOnlyCollection<TaskSummaryResponse> ListMine(Guid ownerId) => repository.ListByOwner(ownerId).Select(task => MapSummary(task, includeCancellationTrail: true)).ToArray();
@@ -477,10 +476,14 @@ public sealed class TaskService(ITaskRepository repository, IOrderRepository ord
     private TaskResponse Map(TaskItem task) => new(task.Id, task.OwnerId, task.Title, task.Description, task.District, task.Deadline, task.Reward.Amount, task.Reward.Currency, task.Status.ToString(), task.AcceptanceCriteria, MapApplications(task.Applications), task.ExpiredAt, task.CancelledAt, task.CancellationReason, task.ApplicationDeadline, task.AcceptingApplications(timeProvider.GetUtcNow()),
         task.RiskVerdict.ToString(), task.RiskRuleCode, task.RiskCategory, task.RiskSummary, task.RiskRuleVersion, task.RiskAssessedAt, task.RiskReviewStatus.ToString(), task.RiskReviewedAt, task.RiskReviewNote, task.IsPublishBlockedByRisk, CanEditDraft(task),
         task.RiskAppealStatus.ToString(), task.RiskAppealReason, task.RiskAppealedAt, task.RiskAppealDecisionNote, task.CanAppealRisk);
-    private static TaskApplicationResponse MapApplication(TaskApplication application, IReadOnlyDictionary<Guid, (decimal Average, int Count)> credit) =>
-        credit.TryGetValue(application.WorkerId, out var summary)
-            ? new(application.Id, application.WorkerId, application.Note, application.Status.ToString(), application.SubmittedAt, summary.Average, summary.Count)
-            : new(application.Id, application.WorkerId, application.Note, application.Status.ToString(), application.SubmittedAt);
+    private static TaskApplicationResponse MapApplication(TaskApplication application, IReadOnlyDictionary<Guid, (decimal Average, int Count)> credit, IReadOnlyDictionary<Guid, string> names)
+    {
+        var rating = credit.TryGetValue(application.WorkerId, out var summary) ? summary.Average : 0m;
+        var count = credit.TryGetValue(application.WorkerId, out summary) ? summary.Count : 0;
+        var name = names.TryGetValue(application.WorkerId, out var displayName) ? displayName : null;
+
+        return new(application.Id, application.WorkerId, application.Note, application.Status.ToString(), application.SubmittedAt, rating, count, name);
+    }
 
     /// <summary>一次把涉及到的服务者信用都取出来，避免每条报名各自查一遍。</summary>
     private IReadOnlyDictionary<Guid, (decimal Average, int Count)> LoadWorkerCredit(IEnumerable<TaskApplication> applications)
@@ -495,11 +498,25 @@ public sealed class TaskService(ITaskRepository repository, IOrderRepository ord
         return credit;
     }
 
+    /// <summary>服务者显示名：同样是批量取，拿不到就留空（页面上退化成显示 id 前缀）。</summary>
+    private IReadOnlyDictionary<Guid, string> LoadWorkerNames(IEnumerable<TaskApplication> applications)
+    {
+        var workerIds = applications.Select(item => item.WorkerId).Distinct().ToArray();
+        if (workerIds.Length == 0) return new Dictionary<Guid, string>();
+
+        return userDirectory.FindMany(workerIds)
+            .Where(pair => !string.IsNullOrWhiteSpace(pair.Value.DisplayName))
+            .ToDictionary(pair => pair.Key, pair => pair.Value.DisplayName);
+    }
+
     private IReadOnlyList<TaskApplicationResponse> MapApplications(IEnumerable<TaskApplication> applications)
     {
         var materialized = applications.ToArray();
+        if (materialized.Length == 0) return [];
+
         var credit = LoadWorkerCredit(materialized);
-        return materialized.Select(application => MapApplication(application, credit)).ToArray();
+        var names = LoadWorkerNames(materialized);
+        return materialized.Select(application => MapApplication(application, credit, names)).ToArray();
     }
 
     /// <summary>

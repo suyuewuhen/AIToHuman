@@ -146,7 +146,7 @@ public sealed class RiskAppealTests
             AdminId = Guid.NewGuid();
             Clock = new MutableTimeProvider(Now);
             Notifications = new NotificationService(new InMemoryNotificationRepository(), Clock);
-            Service = new TaskService(tasks, orders, new InMemoryReviewRepository(), new InMemoryTaskRevisionRepository(), Clock, Notifications, new InMemoryUnitOfWork());
+            Service = new TaskService(tasks, orders, new InMemoryReviewRepository(), new InMemoryTaskRevisionRepository(), new EmptyUserDirectory(), Clock, Notifications, new InMemoryUnitOfWork());
             Admin = new AdminConsoleService(tasks, orders, new EmptyUserDirectory(), tasks, orders, audits, Clock, Notifications, new InMemoryUnitOfWork());
             Appeals = new RiskAppealService(tasks, audits, new EmptyUserDirectory(), Clock, Notifications, new InMemoryUnitOfWork());
         }

@@ -64,6 +64,18 @@ public sealed class EfIdempotencyStore(TaskDbContext db) : IIdempotencyStore
         db.SaveChanges();
     }
 
+    /// <summary>
+    /// 用一条 DELETE 批量清理（不把记录读进内存）：已完成的看 <c>CompletedAt</c>，
+    /// 未完成占位看 <c>StartedAt</c>，两者分开判定。
+    /// </summary>
+    public int DeleteExpired(DateTimeOffset completedBefore, DateTimeOffset startedBefore, int limit) =>
+        db.IdempotencyEntries
+            .Where(item => (item.CompletedAt != null && item.CompletedAt < completedBefore)
+                || (item.CompletedAt == null && item.StartedAt < startedBefore))
+            .OrderBy(item => item.StartedAt)
+            .Take(limit)
+            .ExecuteDelete();
+
     private static IdempotencyEntry Map(IdempotencyRecord record) => IdempotencyEntry.Rehydrate(
         record.UserId, record.Key, record.RequestHash, record.StatusCode, record.ResponseBody,
         record.ContentType, record.StartedAt, record.CompletedAt);

@@ -146,6 +146,9 @@ builder.Services.AddSingleton<INotificationFanout>(provider => new RedisNotifica
 builder.Services.AddHostedService<NotificationFanoutSubscriber>();
 // 待扫描凭证的自动重扫：扫描服务不可用时不让凭证永远卡在“不可下载”。
 builder.Services.AddHostedService<EvidenceRescanService>();
+// 幂等记录只增不减：后台按保留策略定期清理，避免这张表一直涨。
+builder.Services.AddScoped<IdempotencyCleanup>();
+builder.Services.AddHostedService<IdempotencyCleanupService>();
 // 过期任务的兜底扫描：超过截止时间仍无人被选中的已发布任务会被置为过期并通知相关人。
 builder.Services.AddHostedService<TaskExpiryService>();
 builder.Services.AddProblemDetails();
@@ -210,14 +213,16 @@ app.UseExceptionHandler(errorApp => errorApp.Run(async context =>
     var (status, title) = exception switch
     {
         AiPlanningTimeoutException => (StatusCodes.Status504GatewayTimeout, "AI 规划服务响应超时"),
+        AiPlanningNotConfiguredException => (StatusCodes.Status502BadGateway, "AI 规划服务尚未配置"),
         AiPlanningUnavailableException => (StatusCodes.Status502BadGateway, "AI 规划服务暂时不可用"),
         AiPlanningUpstreamException => (StatusCodes.Status502BadGateway, "AI 规划服务请求失败"),
         DbUpdateConcurrencyException => (StatusCodes.Status409Conflict, "资源已被其他操作更新"),
         ConcurrencyConflictException => (StatusCodes.Status409Conflict, "配置已被其他操作更新"),
+        ConflictException => (StatusCodes.Status409Conflict, "资源冲突"),
         ArgumentException => (StatusCodes.Status400BadRequest, "请求参数不正确"),
+        ValidationException => (StatusCodes.Status422UnprocessableEntity, "请求参数不符合要求"),
         DomainException => (StatusCodes.Status422UnprocessableEntity, "业务规则不允许该操作"),
         BadHttpRequestException => (StatusCodes.Status400BadRequest, "请求格式不正确"),
-        InvalidOperationException invalid when invalid.Message.Contains("已注册", StringComparison.Ordinal) => (StatusCodes.Status409Conflict, "资源冲突"),
         InvalidOperationException => (StatusCodes.Status422UnprocessableEntity, "请求参数不符合要求"),
         KeyNotFoundException => (StatusCodes.Status404NotFound, "资源不存在"),
         UnauthorizedAccessException => (StatusCodes.Status403Forbidden, "无权执行该操作"),
@@ -233,7 +238,9 @@ app.UseExceptionHandler(errorApp => errorApp.Run(async context =>
         {
             // EF 的并发异常文案是技术细节，这里换成用户能理解并据以重试的说明。
             DbUpdateConcurrencyException => "该任务或订单刚刚被其他人更新，请刷新后重试。",
-            ArgumentException or DomainException or KeyNotFoundException or UnauthorizedAccessException or AiPlanningTimeoutException or AiPlanningUnavailableException or AiPlanningUpstreamException or ConcurrencyConflictException => exception.Message,
+            // ValidationException 是"请求本身写错了"，消息可以直接给用户看（例如"角色必须是 owner 或 worker。"）；
+            // InvalidOperationException 不在这里，它的文案可能带内部细节，只保留通用说明。
+            ValidationException or ArgumentException or DomainException or ConflictException or KeyNotFoundException or UnauthorizedAccessException or AiPlanningTimeoutException or AiPlanningUnavailableException or AiPlanningUpstreamException or AiPlanningNotConfiguredException or ConcurrencyConflictException => exception.Message,
             _ => "请求暂时无法处理。"
         },
         Instance = context.Request.Path
@@ -397,7 +404,7 @@ app.MapPost("/api/v1/ai/plan/stream", async (AiTaskPlanRequest request, AiPlanni
     var userId = ResolveUserId(user, request.UserId ?? Guid.Empty, environment);
     var userMessage = request.Message?.Trim() ?? string.Empty;
     if (userMessage.Length is < 1 or > ConversationLimits.MaxMessageLength)
-        throw new InvalidOperationException($"消息内容应为 1 至 {ConversationLimits.MaxMessageLength} 个字符。");
+        throw new ValidationException($"消息内容应为 1 至 {ConversationLimits.MaxMessageLength} 个字符。");
 
     var history = conversationService.BuildHistory(request.ConversationId, userId, ConversationLimits.MaxHistoryMessages - 1);
     var messages = history.Append(new AiConversationMessage("user", userMessage)).ToArray();
@@ -577,7 +584,7 @@ static bool ParseAppealDecision(string? decision)
     var trimmed = decision?.Trim();
     if (string.Equals(trimmed, "accept", StringComparison.OrdinalIgnoreCase)) return true;
     if (string.Equals(trimmed, "deny", StringComparison.OrdinalIgnoreCase)) return false;
-    throw new InvalidOperationException($"申诉处置结论 {decision} 不存在：可选值为 Accept（认为误伤）或 Deny（维持原判）。");
+    throw new ValidationException($"申诉处置结论 {decision} 不存在：可选值为 Accept（认为误伤）或 Deny（维持原判）。");
 }
 
 static Guid ResolveUserId(ClaimsPrincipal user, Guid developmentFallback, IHostEnvironment environment)

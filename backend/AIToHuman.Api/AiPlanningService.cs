@@ -6,6 +6,7 @@ using System.Text.Json;
 using AIToHuman.Api;
 using AIToHuman.Application.Settings;
 using AIToHuman.Contracts.Tasks;
+using AIToHuman.Domain.Common;
 using AIToHuman.Domain.Conversations;
 
 /// <summary>
@@ -29,6 +30,12 @@ public sealed class AiPlanningTimeoutException(int timeoutSeconds, Exception inn
 
 public sealed class AiPlanningUnavailableException(Exception innerException)
     : Exception("无法连接 AI 规划服务。", innerException);
+
+/// <summary>
+/// 运营侧还没把 AI 服务配置好（缺 API Key 之类）：这不是用户输入的问题，所以按 502 返回，
+/// 但把"该去哪里补配置"这类可行动的线索原样交给调用方，避免只能看到一句"请求暂时无法处理"。
+/// </summary>
+public sealed class AiPlanningNotConfiguredException(string message) : Exception(message);
 
 public sealed class AiPlanningUpstreamException(string message)
     : Exception(message);
@@ -123,7 +130,7 @@ public sealed class AiPlanningService(HttpClient httpClient, ISettingsProvider s
     {
         var settings = ResolveSettings();
         if (string.IsNullOrWhiteSpace(settings.ApiKey))
-            throw new InvalidOperationException("AI 服务尚未配置 API Key：请在运营后台设置 ai.apiKey，或配置环境变量 VolcengineAI__ApiKey。");
+            throw new AiPlanningNotConfiguredException("AI 服务尚未配置 API Key：请在运营后台设置 ai.apiKey，或配置环境变量 VolcengineAI__ApiKey。");
 
         var conversation = ValidateConversation(messages);
         var now = timeProvider.GetUtcNow();
@@ -274,20 +281,20 @@ public sealed class AiPlanningService(HttpClient httpClient, ISettingsProvider s
     private static IReadOnlyList<AiConversationMessage> ValidateConversation(IReadOnlyList<AiConversationMessage>? messages)
     {
         if (messages is null || messages.Count == 0)
-            throw new InvalidOperationException("请先告诉 AI 你想完成什么。");
+            throw new ValidationException("请先告诉 AI 你想完成什么。");
         if (messages.Count > 30)
-            throw new InvalidOperationException("本次对话过长，请生成草稿或重新开始。");
+            throw new ValidationException("本次对话过长，请生成草稿或重新开始。");
         if (!string.Equals(messages[^1].Role, "user", StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException("最后一条对话必须来自用户。");
+            throw new ValidationException("最后一条对话必须来自用户。");
 
         return messages.Select(item =>
         {
             var role = item.Role.Trim().ToLowerInvariant();
             var content = item.Content.Trim();
             if (role is not ("user" or "assistant"))
-                throw new InvalidOperationException("对话角色不正确。");
+                throw new ValidationException("对话角色不正确。");
             if (content.Length is < 1 or > 4000)
-                throw new InvalidOperationException("每条对话内容应为 1 至 4000 个字符。");
+                throw new ValidationException("每条对话内容应为 1 至 4000 个字符。");
             return new AiConversationMessage(role, content);
         }).ToArray();
     }

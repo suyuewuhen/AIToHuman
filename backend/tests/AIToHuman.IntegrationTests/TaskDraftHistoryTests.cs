@@ -4,6 +4,7 @@ using AIToHuman.Application.Orders;
 using AIToHuman.Application.Tasks;
 using AIToHuman.Contracts.Tasks;
 using AIToHuman.Domain.Common;
+using AIToHuman.Infrastructure.Admin;
 using AIToHuman.Infrastructure.Notifications;
 using AIToHuman.Infrastructure.Orders;
 using AIToHuman.Infrastructure.Persistence;
@@ -127,7 +128,7 @@ public sealed class TaskDraftHistoryTests
             Clock = new MutableTimeProvider(Now);
             Notifications = new NotificationService(new InMemoryNotificationRepository(), Clock);
             Service = new TaskService(
-                tasks, orders, new InMemoryReviewRepository(), new InMemoryTaskRevisionRepository(), Clock, Notifications,
+                tasks, orders, new InMemoryReviewRepository(), new InMemoryTaskRevisionRepository(), new EmptyUserDirectory(), Clock, Notifications,
                 unitOfWork ?? new InMemoryUnitOfWork());
         }
 

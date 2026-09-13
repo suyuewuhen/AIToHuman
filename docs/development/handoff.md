@@ -33,7 +33,7 @@ AI 多轮澄清（每轮一个问题）
 
 ## 2. 当前工作区状态
 
-工作区状态：`main` 与 `origin/main` 同步；本轮的「误拦申诉」随本轮提交一起进入 `main`（`git log -1` 可见）。上一版交接文档描述的“多轮 AI 未提交实现”已经全部提交，本文不再区分“基线 / 未提交”两种状态。
+工作区状态：`main` 与 `origin/main` 同步；本轮的「加固：幂等清理与可读错误」随本轮提交一起进入 `main`（`git log -1` 可见）。上一版交接文档描述的“多轮 AI 未提交实现”已经全部提交，本文不再区分“基线 / 未提交”两种状态。
 
 从上一版基线 `f196850` 到当前 `e45da76` 的主要变化：
 
@@ -473,7 +473,7 @@ netstat -ano | Select-String ':5188|:5173'
 | POST | `/api/v1/admin/risk/appeals/{taskId}/decide` | 处置申诉（`decision=Accept\|Deny`，依据必填 ≤200 字）；禁止类别即使 Accept 也不会放行 |
 | GET/WS | `/hubs/notifications` | SignalR 主动通知；推送 `notification.created` 信封 |
 
-普通 API 错误使用 Problem Details，主要映射为 `400`、`401`、`403`、`404`、`409`、`422`、`502` 和 `504`。`409` 既用于资源冲突（例如邮箱已注册），也用于乐观并发冲突。AI SSE 在响应开始后的错误使用流内 `error` 事件。
+普通 API 错误使用 Problem Details，主要映射为 `400`、`401`、`403`、`404`、`409`、`422`、`502` 和 `504`。`409` 既用于资源冲突（例如邮箱已注册，`ConflictException`），也用于乐观并发冲突。**用户能看懂的错误要给出原因**：`ValidationException`（请求本身写错，如缺 `role`、密码过短）→ `422` + 原样消息，`ConflictException` → `409` + 原样消息，`DomainException` → `422` + 原样消息，AI 侧未配置 → `502` + 可行动的排查线索；**未预期的 `InvalidOperationException` 仍然只返回通用文案**（它的消息可能带内部细节，不外泄）。AI SSE 在响应开始后的错误使用流内 `error` 事件。
 
 ## 10. 数据库、权限与状态
 
@@ -523,7 +523,9 @@ Development + PostgreSQL 启动时改为应用 EF Core 迁移（`Database.Migrat
 - 主键是 `(UserId, Key)`，并发请求里只有一个能占位，另一个若发现记录尚未完成返回 `409`「正在处理中」；占位后 2 分钟仍未完成（上次执行中途挂了）视为过期，允许重试真正执行；键按用户隔离，不同用户可以用相同的键。
 - 不缓存的情形：`5xx`（服务端出错时重试应当真的重跑）、响应体超过 32000 字符、非 JSON 响应（例如文件下载）以及业务抛异常——这些情况下占位会被清掉，重试会重新执行。
 - 不参与幂等的请求：匿名请求（`/api/v1/auth/*`、`/api/v1/session/*`）与 SSE 流 `/api/v1/ai/plan/stream`（长连接，回放没有意义）。
-- 存储是 `idempotency_entries`（迁移 22），中间件在认证/授权之后执行。**尚未实现**：旧记录的清理任务（记录会一直留着）、ETag/版本字段返回，以及前端「自动生成并复用幂等键」的改造（目前前端按钮是置灰防重复点击，没有真正用上这个头）。
+- 存储是 `idempotency_entries`（迁移 22），中间件在认证/授权之后执行。
+- **清理是自动的**：`IdempotencyCleanupService`（后台任务，每小时一轮）按保留策略删除过期记录——已完成记录保留 24 小时、未完成占位保留 10 分钟，单次最多 500 条（分档判定，避免把刚开始处理的请求清掉）；启动日志会打印策略原文，清理失败只记警告并在下一轮重试。客户端的重试窗口只有几秒到几分钟，24 小时足够覆盖真实场景。
+- **尚未实现**：ETag/版本字段返回，以及前端「自动生成并复用幂等键」的改造（目前前端按钮是置灰防重复点击，没有真正用上这个头）。
 
 ```text
 Task:  ReadyToPublish → Published → Assigned → Closed
@@ -743,6 +745,14 @@ npm run build
 - 真库用例：申诉与处置结论落库（`RiskAppealStatus`/`RiskAppealReason`/`RiskAppealDecidedBy`）、跨作用域可读回、禁止类别申诉成立后依旧不能发布、审计两条。
 - 设计取舍（有意为之，写进文档）：申诉成立**不改变** `prohibited.*` 的可发布性——平台红线不因为多了一个入口而放开；因此运营侧接口与通知载荷都显式给出"这次结论能不能真的放行"。
 
+本轮（加固：清理与可读错误）新增验证：
+
+- 编译与测试：`dotnet build AIToHuman.sln --no-restore` 0 警告 0 错误；领域 255 + 集成 **303** = **558** 个用例全通过（新增 4 个清理用例、1 个真库清理用例、2 个显示名用例）；前端 `npm run typecheck` 与 `npm run build` 通过（223.10 kB）。
+- 幂等记录清理：`IdempotencyCleanup` 的策略是"已完成保留 24 小时、未完成占位保留 10 分钟、单次最多 500 条"；用例覆盖"只删过期的、还在重试窗口内的必须留下""批量上限分批删完""空扫返回 0"；真库用例验证 EF 侧走一条 `DELETE`（`ExecuteDelete`）而不是把记录读进内存，且不误删新鲜记录。后台任务启动时会打印策略原文（实测启动日志：`幂等记录清理已启动：已完成记录保留 24 小时、未完成占位保留 10 分钟，单次最多清理 500 条。`）。
+- 可读错误（本轮真正想解决的问题）：以前缺字段的注册请求只返回 `422「请求暂时无法处理。」`，连"少了 role"都要靠猜。现在实测：缺 `role` → `422请求参数不符合要求 / 角色必须是 owner 或 worker。`；密码过短 → `422 / 密码至少需要 8 个字符。`；昵称超长 → `422 / 昵称必须为 1 到 80 个字符。`；非法角色 → `422 / 角色必须是 owner 或 worker。`；**重复邮箱 → `409资源冲突 / 该邮箱已注册。`**（以前状态码对、原因被吞）。
+- 实现方式：新增 `ValidationException`（→422+消息）与 `ConflictException`（→409+消息）两个明确的类型，把 AuthService、AiPlanningService 的对话校验、Program.cs 里的消息长度与申诉结论解析都改成前者；重复邮箱从"靠消息里包含『已注册』做字符串匹配"改成明确的 `ConflictException`（那条脆弱的匹配分支已删除）；AI 未配置密钥改用新的 `AiPlanningNotConfiguredException`（→502 + "去运营后台补 ai.apiKey"的可行动线索）。**未预期的 `InvalidOperationException` 仍然只返回通用文案**，避免把 EF 之类的内部消息漏给客户端。
+- 报名列表显示服务者名字：`TaskApplicationResponse` 增加 `workerDisplayName`，与信用摘要同一次批量取（`IUserDirectory.FindMany`）；实测报名行返回 `workerDisplayName=张师傅`；拿不到名字（无 PostgreSQL 时是空实现）时返回 `null`，页面退化成显示 id 前缀——用例锁住了"缺名字不炸列表"。
+
 ## 12. 完成状态与后续顺序
 
 ### P0
@@ -849,9 +859,15 @@ npm run build
 - 接口与通知：`POST /tasks/{id}/risk-appeals`、`GET/POST /admin/risk/appeals`（处置），新事件 `task.riskAppealDecided`（载荷含 `canPublish` 与 `decisionNote`），审计动作 `task.risk.appeal.accept|deny`。
 - 前端：“我的任务”的“申诉误判”（禁止类别额外提示不会因此可发布）+ 申诉状态与运营结论展示；运营弹窗新增“误拦申诉”页签。
 
+本轮追加（加固：清理与可读错误）：
+
+- 幂等清理：`IIdempotencyStore.DeleteExpired`（EF 走 `ExecuteDelete`，内存实现逐个摘除）+ `IdempotencyCleanup`（策略与批量上限）+ `IdempotencyCleanupService`（每小时一轮的后台任务，失败只警告）。
+- 可读错误：新增 `ValidationException`/`ConflictException`/`AiPlanningNotConfiguredException` 并在异常映射里逐类给出状态码与"消息是否外泄"，删掉了"消息里包含『已注册』"那条字符串匹配分支。
+- 报名列表：`workerDisplayName`（批量取，取不到返回 null）；`TaskService` 构造新增 `IUserDirectory` 参数，12 个手工构造它的测试文件同步补参数。
+
 ### 后续跟进（原 P1 的延伸项）
 
-- 幂等键的收尾：`idempotency_entries` 没有清理任务（记录会一直留着，需要按 `StartedAt` 定期归档）；没有 ETag/版本字段返回；前端还没有"自动生成并复用幂等键"，目前只靠按钮置灰防重复点击（见第 10 节）。
+- 幂等键的收尾：没有 ETag/版本字段返回；前端还没有"自动生成并复用幂等键"，目前只靠按钮置灰防重复点击（见第 10 节）。记录清理已经自动化（24 小时 / 10 分钟 / 每小时一轮）。
 - 对象存储的短时签名 URL 已实现（见第 3、11 节）；如果以后要让前端完全绕开后端，需要补 CORS 配置与审计补偿。
 - 选定病毒/内容扫描服务后把 `evidence.scanner.provider` 切成 `http` + `failMode=closed`（重扫闭环已经就绪，只差真实服务商）。
 - 运营后台的其余部分：客服工单、争议的责任判定与赔付/退款、争议申诉与处理时限。风险复核队列、误拦申诉与人工下架都已实现；风险规则目录本身还不能后台编辑（改规则要发版并提升版本号），申诉也没有次数与频率限制。上传大小与份数上限已经进了设置目录；凭证类型白名单**故意不进**（放开等于允许上传可执行内容）。
@@ -918,6 +934,8 @@ npm run build
 - [ ] 用两个账号跑一遍双向信用：服务者完成一单且双方互评后，需求方在自己的任务“查看报名”里应看到该服务者的公开评分与条数，且与 `GET /api/v1/users/{id}/review-summary` 一致；只有单方评价（盲期内）时列表里应为 0 分 / 0 条。
 - [ ] 幂等键：对同一个写接口用同一个 `Idempotency-Key` 连发两次，第二次应返回与第一次相同的状态码和响应体，并带 `Idempotency-Replayed: true`；把请求体改掉再用同一个键，应返回 `409`；不带这个头时行为应和以前完全一样。
 - [ ] 误拦申诉：把一条敏感草稿提交申诉，运营在“误拦申诉”页签里给出结论（依据必填）；如果命中的是禁止类别，申诉成立后任务**依旧不能发布**，所有者收到的通知里 `canPublish` 应为 false；同一版内容再次申诉应返回 `422`，改过文案后可以重新申诉。
+- [ ] 幂等清理：启动 API 后日志应出现「幂等记录清理已启动：已完成记录保留 24 小时、未完成占位保留 10 分钟，单次最多清理 500 条。」；把库里某条 `idempotency_entries` 的 `CompletedAt` 手工改成两天前，下一个整点（或重启后第一轮）应被清掉。
+- [ ] 可读错误：故意发一个缺 `role` 的注册请求，应返回 `422` 且 detail 是「角色必须是 owner 或 worker。」而不是「请求暂时无法处理。」；用已注册邮箱再注册应返回 `409` 且 detail 是「该邮箱已注册。」。
 - [ ] 新功能先补 Contract、领域规则和测试，再扩展页面。
 
 ## 14. 相关文档

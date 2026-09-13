@@ -1,6 +1,7 @@
 using AIToHuman.Application.Notifications;
 using AIToHuman.Application.Tasks;
 using AIToHuman.Contracts.Tasks;
+using AIToHuman.Infrastructure.Admin;
 using AIToHuman.Infrastructure.Notifications;
 using AIToHuman.Infrastructure.Orders;
 using AIToHuman.Infrastructure.Persistence;
@@ -169,7 +170,7 @@ public sealed class TaskSearchAndDisclosureTests
         var service = new TaskService(
             new InMemoryTaskRepository(),
             new InMemoryOrderRepository(),
-            new InMemoryReviewRepository(), new InMemoryTaskRevisionRepository(),
+            new InMemoryReviewRepository(), new InMemoryTaskRevisionRepository(), new EmptyUserDirectory(),
             clock,
             new NotificationService(new InMemoryNotificationRepository(), clock),
             new InMemoryUnitOfWork());

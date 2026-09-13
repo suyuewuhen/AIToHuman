@@ -2,6 +2,7 @@ using AIToHuman.Application.Notifications;
 using AIToHuman.Application.Tasks;
 using AIToHuman.Contracts.Tasks;
 using AIToHuman.Domain.Common;
+using AIToHuman.Infrastructure.Admin;
 using AIToHuman.Infrastructure.Notifications;
 using AIToHuman.Infrastructure.Orders;
 using AIToHuman.Infrastructure.Persistence;
@@ -181,7 +182,7 @@ public sealed class ReviewBlindPeriodTests
             Service = new TaskService(
                 new InMemoryTaskRepository(),
                 new InMemoryOrderRepository(),
-                new InMemoryReviewRepository(), new InMemoryTaskRevisionRepository(),
+                new InMemoryReviewRepository(), new InMemoryTaskRevisionRepository(), new EmptyUserDirectory(),
                 Clock,
                 new NotificationService(new InMemoryNotificationRepository(), Clock),
                 new InMemoryUnitOfWork());

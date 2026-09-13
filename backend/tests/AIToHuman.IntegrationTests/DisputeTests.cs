@@ -192,7 +192,7 @@ public sealed class DisputeTests
             Clock = new MutableTimeProvider(Now);
             Notifications = new NotificationService(new InMemoryNotificationRepository(), Clock);
             var work = unitOfWork ?? new InMemoryUnitOfWork();
-            Service = new TaskService(tasks, orders, new InMemoryReviewRepository(), new InMemoryTaskRevisionRepository(), Clock, Notifications, work);
+            Service = new TaskService(tasks, orders, new InMemoryReviewRepository(), new InMemoryTaskRevisionRepository(), new EmptyUserDirectory(), Clock, Notifications, work);
             Admin = new AdminConsoleService(
                 tasks,
                 orders,

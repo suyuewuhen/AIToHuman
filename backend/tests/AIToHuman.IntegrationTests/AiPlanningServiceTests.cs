@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text.Json;
 using AIToHuman.Contracts.Tasks;
+using AIToHuman.Domain.Common;
 
 namespace AIToHuman.IntegrationTests;
 
@@ -359,7 +360,7 @@ public sealed class AiPlanningServiceTests
 
         var (_, error) = await Harness.DrainAsync(service, Harness.Messages(Harness.User("帮我取件")));
 
-        var exception = Assert.IsType<InvalidOperationException>(error);
+        var exception = Assert.IsType<AiPlanningNotConfiguredException>(error);
         Assert.Contains("尚未配置 API Key", exception.Message);
     }
 
@@ -371,7 +372,7 @@ public sealed class AiPlanningServiceTests
 
         var (_, error) = await Harness.DrainAsync(service, Harness.Messages(Harness.Assistant("你好，请问要做什么？")));
 
-        var exception = Assert.IsType<InvalidOperationException>(error);
+        var exception = Assert.IsType<ValidationException>(error);
         Assert.Equal("最后一条对话必须来自用户。", exception.Message);
     }
 
@@ -387,7 +388,7 @@ public sealed class AiPlanningServiceTests
 
         var (_, error) = await Harness.DrainAsync(service, Harness.Messages(messages));
 
-        var exception = Assert.IsType<InvalidOperationException>(error);
+        var exception = Assert.IsType<ValidationException>(error);
         Assert.Equal("本次对话过长，请生成草稿或重新开始。", exception.Message);
     }
 
@@ -399,7 +400,7 @@ public sealed class AiPlanningServiceTests
 
         var (_, error) = await Harness.DrainAsync(service, Harness.Messages(Harness.User(new string('你', 4001))));
 
-        var exception = Assert.IsType<InvalidOperationException>(error);
+        var exception = Assert.IsType<ValidationException>(error);
         Assert.Equal("每条对话内容应为 1 至 4000 个字符。", exception.Message);
     }
 
@@ -411,7 +412,7 @@ public sealed class AiPlanningServiceTests
 
         var (_, error) = await Harness.DrainAsync(service, Harness.Messages(new AiConversationMessage("system", "越权角色"), Harness.User("帮我取件")));
 
-        var exception = Assert.IsType<InvalidOperationException>(error);
+        var exception = Assert.IsType<ValidationException>(error);
         Assert.Equal("对话角色不正确。", exception.Message);
     }
 
@@ -423,7 +424,7 @@ public sealed class AiPlanningServiceTests
 
         var (_, error) = await Harness.DrainAsync(service, Harness.Messages());
 
-        var exception = Assert.IsType<InvalidOperationException>(error);
+        var exception = Assert.IsType<ValidationException>(error);
         Assert.Equal("请先告诉 AI 你想完成什么。", exception.Message);
     }
 }

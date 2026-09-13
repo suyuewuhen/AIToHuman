@@ -37,4 +37,23 @@ public sealed class InMemoryIdempotencyStore : IIdempotencyStore
     }
 
     public void Remove(IdempotencyEntry entry) => _entries.TryRemove((entry.UserId, entry.Key), out _);
+
+    public int DeleteExpired(DateTimeOffset completedBefore, DateTimeOffset startedBefore, int limit)
+    {
+        var expired = _entries.Values
+            .Where(entry => entry.IsCompleted
+                ? entry.CompletedAt < completedBefore
+                : entry.StartedAt < startedBefore)
+            .OrderBy(entry => entry.StartedAt)
+            .Take(limit)
+            .ToArray();
+
+        var deleted = 0;
+        foreach (var entry in expired)
+        {
+            if (_entries.TryRemove((entry.UserId, entry.Key), out _)) deleted++;
+        }
+
+        return deleted;
+    }
 }

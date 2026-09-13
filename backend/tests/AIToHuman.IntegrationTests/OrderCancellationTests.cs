@@ -7,6 +7,7 @@ using AIToHuman.Contracts.Tasks;
 using AIToHuman.Domain.Common;
 using AIToHuman.Domain.Orders;
 using AIToHuman.Domain.Tasks;
+using AIToHuman.Infrastructure.Admin;
 using AIToHuman.Infrastructure.Notifications;
 using AIToHuman.Infrastructure.Orders;
 using AIToHuman.Infrastructure.Persistence;
@@ -287,7 +288,7 @@ public sealed class OrderCancellationTests
             Service = new TaskService(
                 repository,
                 new InMemoryOrderRepository(),
-                new InMemoryReviewRepository(), new InMemoryTaskRevisionRepository(),
+                new InMemoryReviewRepository(), new InMemoryTaskRevisionRepository(), new EmptyUserDirectory(),
                 Clock,
                 Notifications,
                 unitOfWork ?? new InMemoryUnitOfWork());

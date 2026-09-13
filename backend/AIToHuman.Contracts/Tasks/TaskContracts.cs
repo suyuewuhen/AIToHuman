@@ -38,7 +38,8 @@ public sealed record TaskApplicationResponse(
     string Status,
     DateTimeOffset SubmittedAt,
     decimal WorkerAverageRating = 0,
-    int WorkerReviewCount = 0);
+    int WorkerReviewCount = 0,
+    string? WorkerDisplayName = null);
 public sealed record TaskResponse(Guid Id, Guid OwnerId, string Title, string Description, string District, DateTimeOffset Deadline, decimal Reward, string Currency, string Status, IReadOnlyList<string> AcceptanceCriteria, IReadOnlyList<TaskApplicationResponse> Applications, DateTimeOffset? ExpiredAt = null, DateTimeOffset? CancelledAt = null, string? CancellationReason = null, DateTimeOffset? ApplicationDeadline = null, bool AcceptingApplications = false, string RiskVerdict = "Allowed", string? RiskRuleCode = null, string? RiskCategory = null, string? RiskSummary = null, int RiskRuleVersion = 0, DateTimeOffset? RiskAssessedAt = null, string RiskReviewStatus = "NotRequired", DateTimeOffset? RiskReviewedAt = null, string? RiskReviewNote = null, bool RiskPublishBlocked = false, bool DraftEditable = false, string RiskAppealStatus = "None", string? RiskAppealReason = null, DateTimeOffset? RiskAppealedAt = null, string? RiskAppealDecisionNote = null, bool CanAppealRisk = false);
 public sealed record OrderResponse(Guid Id, Guid TaskId, Guid OwnerId, Guid WorkerId, string Title, decimal Reward, string Currency, string Status, DateTimeOffset CreatedAt, string? EvidenceNote, string? ReviewNote, DateTimeOffset? SubmittedAt, DateTimeOffset? ReviewedAt, int ReworkCount, string? RejectionNote, int UnreadMessageCount = 0, DateTimeOffset? CancelledAt = null, Guid? CancelledBy = null, string? CancellationReason = null, string? DisputeReason = null, Guid? DisputeOpenedBy = null, DateTimeOffset? DisputeOpenedAt = null, string? DisputeResult = null, string? DisputeResolutionNote = null, DateTimeOffset? DisputeResolvedAt = null);
 public sealed record OrderActionRequest(Guid ActorId, string? Note);
