@@ -22,6 +22,7 @@ public sealed class TaskDbContext(DbContextOptions<TaskDbContext> options) : DbC
     public DbSet<SystemSettingRecord> SystemSettings => Set<SystemSettingRecord>();
     public DbSet<SettingsAuditRecord> SettingsAudits => Set<SettingsAuditRecord>();
     public DbSet<AdminAuditRecord> AdminAudits => Set<AdminAuditRecord>();
+    public DbSet<TaskRevisionRecord> TaskRevisions => Set<TaskRevisionRecord>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -190,6 +191,24 @@ public sealed class TaskDbContext(DbContextOptions<TaskDbContext> options) : DbC
             entity.Property(item => item.Action).HasMaxLength(AdminAuditEntry.MaxActionLength).IsRequired();
             entity.Property(item => item.TargetType).HasMaxLength(AdminAuditEntry.MaxTargetTypeLength).IsRequired();
             entity.Property(item => item.Reason).HasMaxLength(AdminAuditEntry.MaxReasonLength).IsRequired();
+        });
+
+        modelBuilder.Entity<TaskRevisionRecord>(entity =>
+        {
+            entity.ToTable("task_draft_revisions");
+            entity.HasKey(item => item.Id);
+            // 同一任务的版本号唯一：并发编辑时后写入者会撞唯一索引，是并发保护的兜底（第一道是 tasks.Version）。
+            entity.HasIndex(item => new { item.TaskId, item.Revision }).IsUnique();
+            entity.Property(item => item.Title).HasMaxLength(80).IsRequired();
+            entity.Property(item => item.Description).HasMaxLength(TaskDraftRevision.MaxDescriptionLength).IsRequired();
+            entity.Property(item => item.District).HasMaxLength(TaskDraftRevision.MaxDistrictLength).IsRequired();
+            entity.Property(item => item.RewardAmount).HasPrecision(18, 2);
+            entity.Property(item => item.RewardCurrency).HasMaxLength(3).IsRequired();
+            entity.Property(item => item.AcceptanceCriteriaJson).HasMaxLength(8000).IsRequired();
+            entity.Property(item => item.ExecutionAddress).HasMaxLength(TaskItem.MaxExecutionAddressLength);
+            entity.Property(item => item.RiskVerdict).HasConversion<string>().HasMaxLength(16).IsRequired();
+            entity.Property(item => item.RiskRuleCode).HasMaxLength(80);
+            entity.Property(item => item.ChangeSummary).HasMaxLength(200).IsRequired();
         });
     }
 }
@@ -399,9 +418,31 @@ public sealed class AdminAuditRecord
     public DateTimeOffset OccurredAt { get; set; }
 }
 
-/// <summary>配置变更审计，只追加；取值已由应用层脱敏。</summary>
-public sealed class SettingsAuditRecord
+/// <summary>草稿版本快照，只追加；字段上限由领域层校验后写入。</summary>
+public sealed class TaskRevisionRecord
 {
+    public Guid Id { get; set; }
+    public Guid TaskId { get; set; }
+    public int Revision { get; set; }
+    public string Title { get; set; } = "";
+    public string Description { get; set; } = "";
+    public string District { get; set; } = "";
+    public DateTimeOffset Deadline { get; set; }
+    public decimal RewardAmount { get; set; }
+    public string RewardCurrency { get; set; } = "CNY";
+    public string AcceptanceCriteriaJson { get; set; } = "[]";
+    public string? ExecutionAddress { get; set; }
+    public DateTimeOffset? ApplicationDeadline { get; set; }
+    public string RiskVerdict { get; set; } = "Allowed";
+    public string? RiskRuleCode { get; set; }
+    public int RiskRuleVersion { get; set; }
+    public Guid EditedBy { get; set; }
+    public string ChangeSummary { get; set; } = "";
+    public DateTimeOffset CreatedAt { get; set; }
+}
+
+/// <summary>配置变更审计，只追加；取值已由应用层脱敏。</summary>
+public sealed class SettingsAuditRecord{
     public Guid Id { get; set; }
     public string Key { get; set; } = "";
     public string Action { get; set; } = "Update";

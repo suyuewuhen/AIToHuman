@@ -11,14 +11,22 @@ using DomainTaskStatus = AIToHuman.Domain.Tasks.TaskStatus;
 
 namespace AIToHuman.Application.Tasks;
 
-public sealed class TaskService(ITaskRepository repository, IOrderRepository orderRepository, IReviewRepository reviewRepository, TimeProvider timeProvider, NotificationService notifications, IUnitOfWork unitOfWork)
+public sealed class TaskService(ITaskRepository repository, IOrderRepository orderRepository, IReviewRepository reviewRepository, ITaskRevisionRepository revisionRepository, TimeProvider timeProvider, NotificationService notifications, IUnitOfWork unitOfWork)
 {
+    /// <summary>创建草稿：落库的同时记下第 1 版快照（谁建的、当时是什么内容、风险结论如何）。</summary>
     public TaskResponse Create(CreateTaskRequest request)
     {
+        var now = timeProvider.GetUtcNow();
         var task = new TaskItem(
             request.OwnerId, request.Title, request.Description, request.District, request.Deadline, new Money(request.Reward),
-            request.AcceptanceCriteria, timeProvider.GetUtcNow(), request.ExecutionAddress, request.ApplicationDeadline);
-        repository.Add(task);
+            request.AcceptanceCriteria, now, request.ExecutionAddress, request.ApplicationDeadline);
+
+        unitOfWork.Execute(() =>
+        {
+            repository.Add(task);
+            revisionRepository.Add(TaskDraftRevision.Initial(task, request.OwnerId, now));
+        });
+
         return Map(task);
     }
 
@@ -32,12 +40,14 @@ public sealed class TaskService(ITaskRepository repository, IOrderRepository ord
 
     /// <summary>
     /// 编辑草稿：只有所有者、且只有还没发布的草稿可以改。字段校验与创建时同一套，
-    /// 改完会重新判定风险并清空原有的人工复核结论（审核绑定的是当时那份文本）。
+    /// 改完会重新判定风险并清空原有的人工复核结论（审核绑定的是当时那份文本），
+    /// 同时追加一版快照并记下"这次改了哪些字段"。
     /// </summary>
     public TaskResponse UpdateDraft(Guid id, Guid ownerId, UpdateTaskDraftRequest request)
     {
         var task = GetOwned(id, ownerId);
-        task.UpdateDraft(
+        var now = timeProvider.GetUtcNow();
+        var changedFields = task.UpdateDraft(
             request.Title,
             request.Description,
             request.District,
@@ -46,9 +56,23 @@ public sealed class TaskService(ITaskRepository repository, IOrderRepository ord
             request.AcceptanceCriteria,
             request.ExecutionAddress,
             request.ApplicationDeadline,
-            timeProvider.GetUtcNow());
-        repository.Save(task);
+            now);
+
+        unitOfWork.Execute(() =>
+        {
+            repository.Save(task);
+            revisionRepository.Add(TaskDraftRevision.FromEdit(task, revisionRepository.LatestRevision(task.Id) + 1, ownerId, changedFields, now));
+        });
+
         return Map(task);
+    }
+
+    /// <summary>草稿历史（仅所有者）：从创建到最近一次编辑，按版本号升序。</summary>
+    public TaskDraftRevisionListResponse ListDraftRevisions(Guid id, Guid ownerId)
+    {
+        var task = GetOwned(id, ownerId);
+        var items = revisionRepository.ListByTask(task.Id).Select(MapRevision).ToArray();
+        return new(items);
     }
 
     public TaskResponse IncreaseReward(Guid id, Guid ownerId, IncreaseRewardRequest request)
@@ -489,6 +513,12 @@ public sealed class TaskService(ITaskRepository repository, IOrderRepository ord
         task.RiskReviewStatus.ToString(), task.RiskReviewNote, task.IsPublishBlockedByRisk, CanEditDraft(task));
     private static OrderResponse Map(Order order) => new(order.Id, order.TaskId, order.OwnerId, order.WorkerId, order.Title, order.Reward.Amount, order.Reward.Currency, order.Status.ToString(), order.CreatedAt, order.EvidenceNote, order.ReviewNote, order.SubmittedAt, order.ReviewedAt, order.ReworkCount, order.RejectionNote, 0, order.CancelledAt, order.CancelledBy, order.CancellationReason, order.DisputeReason, order.DisputeOpenedBy, order.DisputeOpenedAt, order.DisputeResult, order.DisputeResolutionNote, order.DisputeResolvedAt);
     private static ReviewResponse MapReview(Review review, bool visible) => new(review.Id, review.OrderId, review.ReviewerId, review.RevieweeId, review.Rating, visible ? review.Comment : "评价将在双方完成后公开", review.CreatedAt, visible);
+
+    private static TaskDraftRevisionResponse MapRevision(TaskDraftRevision revision) => new(
+        revision.Id, revision.TaskId, revision.Revision, revision.Title, revision.Description, revision.District,
+        revision.Deadline, revision.RewardAmount, revision.RewardCurrency, revision.AcceptanceCriteria,
+        revision.ExecutionAddress, revision.ApplicationDeadline, revision.RiskVerdict, revision.RiskRuleCode,
+        revision.RiskRuleVersion, revision.EditedBy, revision.ChangeSummary, revision.CreatedAt);
     private static void EnsureParticipant(Order order, Guid actorId) { if (order.OwnerId != actorId && order.WorkerId != actorId) throw new UnauthorizedAccessException("只有订单参与者可以执行该操作。"); }
     private bool IsReviewPublic(Guid orderId, DateTimeOffset createdAt)
     {

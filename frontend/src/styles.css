@@ -355,3 +355,9 @@ h1 em { color: var(--acid); font-style: normal; }
 
 /* 报名行里的服务者信用：选人前要看得到分数与样本量 */
 .application-credit { color: #8a6100 !important; }
+
+/* 草稿修改记录：按版本列出的历史快照 */
+.draft-history { display: grid; gap: 8px; margin-top: 12px; padding: 12px; border: 1px dashed var(--line); background: #fbf7ec; }
+.draft-history-row { padding: 8px 10px; border: 1px solid var(--line); background: #fffdf7; }
+.draft-history-row strong { display: block; font-size: 11px; }
+.draft-history-row small { display: block; margin-top: 3px; color: #626b66; font-size: 10px; line-height: 1.5; }

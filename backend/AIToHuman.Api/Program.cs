@@ -69,6 +69,7 @@ if (usePostgres)
 {
     builder.Services.AddDbContext<TaskDbContext>(options => options.UseNpgsql(postgresConnection));
     builder.Services.AddScoped<ITaskRepository, EfTaskRepository>();
+    builder.Services.AddScoped<ITaskRevisionRepository, EfTaskRevisionRepository>();
     builder.Services.AddScoped<IOrderRepository, EfOrderRepository>();
     builder.Services.AddScoped<IReviewRepository, EfReviewRepository>();
     builder.Services.AddScoped<IConversationRepository, EfConversationRepository>();
@@ -88,6 +89,7 @@ else
     // 同一个内存实例同时充当普通仓储与运营检索：分别注册两个实现会得到两份互不相干的数据。
     builder.Services.AddSingleton<InMemoryTaskRepository>();
     builder.Services.AddSingleton<ITaskRepository>(provider => provider.GetRequiredService<InMemoryTaskRepository>());
+    builder.Services.AddSingleton<ITaskRevisionRepository, InMemoryTaskRevisionRepository>();
     builder.Services.AddSingleton<IAdminTaskQuery>(provider => provider.GetRequiredService<InMemoryTaskRepository>());
 
     builder.Services.AddSingleton<InMemoryOrderRepository>();
@@ -308,6 +310,12 @@ tasks.MapPut("/{id:guid}", (Guid id, UpdateTaskDraftRequest request, ClaimsPrinc
     EnsureRole(user, "owner", environment);
     var ownerId = ResolveUserId(user, request.OwnerId, environment);
     return Results.Ok(service.UpdateDraft(id, ownerId, request with { OwnerId = ownerId }));
+});
+// 草稿历史：从创建到最近一次编辑的每一版快照（含该版的风险结论），仅所有者可读。
+tasks.MapGet("/{id:guid}/revisions", (Guid id, Guid? ownerId, ClaimsPrincipal user, IHostEnvironment environment, TaskService service) =>
+{
+    EnsureRole(user, "owner", environment);
+    return Results.Ok(service.ListDraftRevisions(id, ResolveUserId(user, ownerId ?? Guid.Empty, environment)));
 });
 tasks.MapPost("/{id:guid}/increase-reward", (Guid id, Guid? ownerId, IncreaseRewardRequest request, ClaimsPrincipal user, IHostEnvironment environment, TaskService service) =>
 {

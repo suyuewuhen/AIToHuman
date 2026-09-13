@@ -64,13 +64,18 @@ public sealed class TaskItem
     /// <summary>
     /// 标题、描述、区域、验收标准与执行地址的校验。创建草稿和编辑草稿共用这一套，
     /// 否则很容易出现“创建时拦得住的字段，编辑时能绕过去”的缺口。
+    /// 描述与验收标准同时给了上限：草稿版本快照要按这些上限落库，没有上限就没法给它列宽。
     /// </summary>
     private static void EnsureDraftFields(string title, string description, string district, string[] criteria, string? executionAddress)
     {
         if (string.IsNullOrWhiteSpace(title) || title.Trim().Length > 80) throw new DomainException("任务标题必须为 1 到 80 个字符。");
         if (string.IsNullOrWhiteSpace(description)) throw new DomainException("任务描述不能为空。");
+        if (description.Trim().Length > TaskDraftRevision.MaxDescriptionLength) throw new DomainException($"任务描述不能超过 {TaskDraftRevision.MaxDescriptionLength} 个字符。");
         if (string.IsNullOrWhiteSpace(district)) throw new DomainException("任务必须包含公开区域。");
+        if (district.Trim().Length > TaskDraftRevision.MaxDistrictLength) throw new DomainException($"公开区域不能超过 {TaskDraftRevision.MaxDistrictLength} 个字符。");
         if (criteria.Length == 0) throw new DomainException("任务至少需要一项验收标准。");
+        if (criteria.Length > TaskDraftRevision.MaxCriteriaCount) throw new DomainException($"验收标准最多 {TaskDraftRevision.MaxCriteriaCount} 条。");
+        if (criteria.Any(item => item.Length > TaskDraftRevision.MaxCriterionLength)) throw new DomainException($"每条验收标准不能超过 {TaskDraftRevision.MaxCriterionLength} 个字符。");
         if (executionAddress?.Trim().Length > MaxExecutionAddressLength) throw new DomainException($"执行地址不能超过 {MaxExecutionAddressLength} 个字符。");
     }
 
@@ -80,8 +85,10 @@ public sealed class TaskItem
     /// 这里最要紧的一条是**清空原有的人工复核结论**：审核是针对某一版文本做出的，
     /// 如果编辑后保留“已放行”，那么“先提一份干净文案过审、再改成代考”就是一条现成的绕过路径。
     /// 反过来，被运营驳回的草稿只要改掉了敏感内容，也会重新进入新一轮复核，而不是被永久钉死。
+    ///
+    /// 返回这次改了哪些字段（面向人的名字），调用方据此追加一版草稿快照。
     /// </summary>
-    public void UpdateDraft(
+    public IReadOnlyCollection<string> UpdateDraft(
         string title,
         string description,
         string district,
@@ -101,16 +108,30 @@ public sealed class TaskItem
         var normalizedDeadline = UtcTimestamp.Normalize(deadline);
         if (normalizedDeadline <= normalizedNow) throw new DomainException("截止时间必须晚于当前时间。");
 
+        var normalizedAddress = NormalizeExecutionAddress(executionAddress);
+        var normalizedApplicationDeadline = NormalizeApplicationDeadline(applicationDeadline, normalizedDeadline, normalizedNow, "当前时间");
+
+        var changed = new List<string>();
+        if (Title != title.Trim()) changed.Add("标题");
+        if (Description != description.Trim()) changed.Add("描述");
+        if (District != district.Trim()) changed.Add("公开区域");
+        if (Deadline != normalizedDeadline) changed.Add("截止时间");
+        if (Reward.Amount != reward.Amount || Reward.Currency != reward.Currency) changed.Add("悬赏");
+        if (!AcceptanceCriteria.SequenceEqual(criteria)) changed.Add("验收标准");
+        if (ExecutionAddress != normalizedAddress) changed.Add("执行地址");
+        if (ApplicationDeadline != normalizedApplicationDeadline) changed.Add("报名截止时间");
+
         Title = title.Trim();
         Description = description.Trim();
         District = district.Trim();
         Deadline = normalizedDeadline;
         Reward = reward;
         AcceptanceCriteria = criteria;
-        ExecutionAddress = NormalizeExecutionAddress(executionAddress);
-        ApplicationDeadline = NormalizeApplicationDeadline(applicationDeadline, normalizedDeadline, normalizedNow, "当前时间");
+        ExecutionAddress = normalizedAddress;
+        ApplicationDeadline = normalizedApplicationDeadline;
 
         AssessRisk(normalizedNow, resetHumanDecision: true);
+        return changed;
     }
 
     /// <summary>报名截止时间：可选。到点后不再接受新报名，但已经报名的服务者仍然可以被选中。</summary>

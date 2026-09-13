@@ -144,7 +144,7 @@ public sealed class ApplicationWithdrawTests
             Service = new TaskService(
                 tasks,
                 new InMemoryOrderRepository(),
-                new InMemoryReviewRepository(),
+                new InMemoryReviewRepository(), new InMemoryTaskRevisionRepository(),
                 Clock,
                 Notifications,
                 unitOfWork ?? new InMemoryUnitOfWork());

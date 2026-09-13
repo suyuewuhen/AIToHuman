@@ -72,6 +72,32 @@ public sealed record MyApplicationResponse(
 
 public sealed record MyApplicationListResponse(IReadOnlyList<MyApplicationResponse> Items);
 
+/// <summary>
+/// 草稿的一版历史快照。第 1 版是创建草稿，之后每次编辑追加一版。
+/// 带上这一版文本对应的风险结论，方便事后对账“第几版被判成禁止/转人工”。
+/// </summary>
+public sealed record TaskDraftRevisionResponse(
+    Guid Id,
+    Guid TaskId,
+    int Revision,
+    string Title,
+    string Description,
+    string District,
+    DateTimeOffset Deadline,
+    decimal Reward,
+    string Currency,
+    IReadOnlyList<string> AcceptanceCriteria,
+    string? ExecutionAddress,
+    DateTimeOffset? ApplicationDeadline,
+    string RiskVerdict,
+    string? RiskRuleCode,
+    int RiskRuleVersion,
+    Guid EditedBy,
+    string ChangeSummary,
+    DateTimeOffset CreatedAt);
+
+public sealed record TaskDraftRevisionListResponse(IReadOnlyList<TaskDraftRevisionResponse> Items);
+
 /// <summary>大厅列表查询：按区域与悬赏区间筛选，游标分页，按截止时间升序。</summary>
 public sealed record TaskSearchRequest(string? District, decimal? MinReward, decimal? MaxReward, int Limit, string? Cursor);
 

@@ -207,6 +207,39 @@ public sealed class PostgresRegressionTests(PostgresRegressionFixture fixture) :
         Assert.Equal(TaskStatus.Published.ToString(), world.Service.Publish(approved, world.Owner).Status);
     }
 
+    /// <summary>
+    /// 草稿版本历史在真库上的完整性：编号单调、每次编辑一版，
+    /// 并且**并发落败的那次编辑不能留下多余版本**（版本快照与任务写入在同一个事务里）。
+    /// </summary>
+    [PostgresFact]
+    public async Task Draft_revisions_are_numbered_in_order_and_a_losing_edit_leaves_no_trace()
+    {
+        using var world = new PostgresWorld(fixture.ConnectionString, Now);
+        var taskId = world.CreateDraft("明天下午帮我去前台取一份文件");
+
+        world.Service.UpdateDraft(taskId, world.Owner, world.DraftUpdateRequest("明天下午帮我去公司前台取一份文件", reward: 60));
+
+        // 两个作用域各读到同一版本；先写成功，后写必须冲突。
+        using var staleScope = world.NewScope();
+        var staleService = world.ServiceIn(staleScope);
+        staleService.Get(taskId);
+        world.Service.UpdateDraft(taskId, world.Owner, world.DraftUpdateRequest("明天下午帮我去公司前台取一份文件", district: "西城区"));
+        Assert.Throws<DbUpdateConcurrencyException>(() =>
+            staleService.UpdateDraft(taskId, world.Owner, world.DraftUpdateRequest("这次改动不该留下痕迹", reward: 99)));
+
+        await using var context = fixture.CreateContext();
+        var revisions = await context.TaskRevisions.AsNoTracking()
+            .Where(item => item.TaskId == taskId)
+            .OrderBy(item => item.Revision)
+            .ToListAsync();
+
+        Assert.Equal([1, 2, 3], revisions.Select(item => item.Revision));
+        Assert.Equal("创建草稿", revisions[0].ChangeSummary);
+        Assert.DoesNotContain(revisions, item => item.Title == "这次改动不该留下痕迹");
+        // 唯一索引 (TaskId, Revision) 也在这条链路上被真实写入验证过。
+        Assert.Equal(3, revisions.Count);
+    }
+
     /// <summary>带时区偏移的截止时间与中文文本在真库上的往返：领域层统一归一化成 UTC，文本原样保存。</summary>
     [PostgresFact]
     public async Task Utc_offsets_and_chinese_text_round_trip_through_the_database()

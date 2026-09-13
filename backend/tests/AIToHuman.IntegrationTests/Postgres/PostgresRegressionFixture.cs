@@ -125,6 +125,7 @@ public sealed class PostgresWorld : IDisposable
         var services = new ServiceCollection();
         services.AddDbContext<TaskDbContext>(options => options.UseNpgsql(connectionString));
         services.AddScoped<ITaskRepository, EfTaskRepository>();
+        services.AddScoped<ITaskRevisionRepository, EfTaskRevisionRepository>();
         services.AddScoped<IOrderRepository, EfOrderRepository>();
         services.AddScoped<IReviewRepository, EfReviewRepository>();
         services.AddScoped<IConversationRepository, EfConversationRepository>();

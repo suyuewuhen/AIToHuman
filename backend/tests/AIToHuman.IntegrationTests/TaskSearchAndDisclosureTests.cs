@@ -169,7 +169,7 @@ public sealed class TaskSearchAndDisclosureTests
         var service = new TaskService(
             new InMemoryTaskRepository(),
             new InMemoryOrderRepository(),
-            new InMemoryReviewRepository(),
+            new InMemoryReviewRepository(), new InMemoryTaskRevisionRepository(),
             clock,
             new NotificationService(new InMemoryNotificationRepository(), clock),
             new InMemoryUnitOfWork());

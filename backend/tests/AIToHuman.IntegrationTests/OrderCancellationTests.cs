@@ -287,7 +287,7 @@ public sealed class OrderCancellationTests
             Service = new TaskService(
                 repository,
                 new InMemoryOrderRepository(),
-                new InMemoryReviewRepository(),
+                new InMemoryReviewRepository(), new InMemoryTaskRevisionRepository(),
                 Clock,
                 Notifications,
                 unitOfWork ?? new InMemoryUnitOfWork());

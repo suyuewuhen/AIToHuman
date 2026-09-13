@@ -25,10 +25,14 @@ public sealed class TaskServiceUnitOfWorkTests
         var owner = Guid.NewGuid();
         var applicationId = PrepareApplication(service, owner, out var taskId);
 
+        // 基线不再是 0：创建草稿要同时写任务与第 1 版快照，本身就用掉一个工作单元。
+        var executionsBeforeSelect = unitOfWork.Executions;
+        var commitsBeforeSelect = unitOfWork.Commits;
+
         var result = service.Select(taskId, applicationId, new SelectApplicationRequest(owner));
 
-        Assert.Equal(1, unitOfWork.Executions);
-        Assert.Equal(1, unitOfWork.Commits);
+        Assert.Equal(executionsBeforeSelect + 1, unitOfWork.Executions);
+        Assert.Equal(commitsBeforeSelect + 1, unitOfWork.Commits);
         Assert.Equal("Assigned", result.Task.Status);
         Assert.Equal("Accepted", result.Order.Status);
     }
@@ -41,10 +45,14 @@ public sealed class TaskServiceUnitOfWorkTests
         var owner = Guid.NewGuid();
         var applicationId = PrepareApplication(service, owner, out var taskId);
 
+        var executionsBeforeSelect = unitOfWork.Executions;
+        var commitsBeforeSelect = unitOfWork.Commits;
+
         Assert.Throws<InvalidOperationException>(() => service.Select(taskId, applicationId, new SelectApplicationRequest(owner)));
 
-        Assert.Equal(1, unitOfWork.Executions);
-        Assert.Equal(0, unitOfWork.Commits);
+        // 选人尝试了一次，但因为订单写入失败，提交次数没有增加。
+        Assert.Equal(executionsBeforeSelect + 1, unitOfWork.Executions);
+        Assert.Equal(commitsBeforeSelect, unitOfWork.Commits);
     }
 
     [Fact]
@@ -89,7 +97,7 @@ public sealed class TaskServiceUnitOfWorkTests
         var service = new TaskService(
             new InMemoryTaskRepository(),
             orderRepository,
-            new InMemoryReviewRepository(),
+            new InMemoryReviewRepository(), new InMemoryTaskRevisionRepository(),
             clock,
             new NotificationService(new InMemoryNotificationRepository(), clock),
             unitOfWork);

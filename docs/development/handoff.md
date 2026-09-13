@@ -33,7 +33,7 @@ AI 多轮澄清（每轮一个问题）
 
 ## 2. 当前工作区状态
 
-工作区状态：`main` 与 `origin/main` 同步；本轮的「报名列表内联服务者信用」随本轮提交一起进入 `main`（`git log -1` 可见）。上一版交接文档描述的“多轮 AI 未提交实现”已经全部提交，本文不再区分“基线 / 未提交”两种状态。
+工作区状态：`main` 与 `origin/main` 同步；本轮的「草稿版本号与编辑历史」随本轮提交一起进入 `main`（`git log -1` 可见）。上一版交接文档描述的“多轮 AI 未提交实现”已经全部提交，本文不再区分“基线 / 未提交”两种状态。
 
 从上一版基线 `f196850` 到当前 `e45da76` 的主要变化：
 
@@ -106,6 +106,12 @@ docs/                             ai-planning、api/api-guidelines、architectur
 - 公开详情只对已发布及之后的状态开放；`ReadyToPublish` 草稿仅所有者可见，其他人（含匿名）一律 `404`，避免草稿内容泄露。
 - 精确执行地址属于订单参与者层信息：所有者始终可读，被选中的服务者在订单成立后可读，已报名但未被选中的服务者与其他人返回 `403`；大厅与公开详情只暴露 `hasExecutionAddress` 布尔值，永远不含地址本身。
 - 需求方在选人前能看到服务者的公开评价摘要：报名列表（`GET /api/v1/tasks/{id}/applications`，仅所有者）每条报名都带 `workerAverageRating` 与 `workerReviewCount`，**只统计已公开的评价**（同一订单双方都提交，或订单完成满 7 天），盲期内的评价不计入；口径与 `GET /api/v1/users/{id}/review-summary` 完全一致（服务层用同一个 `PublicCredit` 计算）。没有公开评价的服务者显示 0 分 / 0 条，页面写“暂无公开评价”而不是伪造分数；每个报名只看自己那个 workerId，不会串号。
+
+- 草稿历史（`task_draft_revisions`，迁移 21）：**一行就是一个版本的完整快照**，只追加、不可改。创建草稿时写入第 1 版（`changeSummary = "创建草稿"`，`editedBy` 是创建者），之后每次编辑追加一版，版本号在同一任务内单调递增。每版都记下该版文本对应的风险结论（`riskVerdict`/`riskRuleCode`/`riskRuleVersion`），所以能回答"第几版被判成禁止、当时用的是哪一版规则"。
+- 每次编辑由领域层比对前后字段得出"改了哪些字段"（标题/描述/公开区域/截止时间/悬赏/验收标准/执行地址/报名截止时间），拼成 `changeSummary`，例如"标题、悬赏"；超过 6 项收敛成"…等 N 项"；一个字段都没变则写"无字段变化"。
+- 任务写入与版本快照在**同一个工作单元**里：创建草稿也是一次事务边界（写任务 + 写第 1 版），编辑同样如此；并发落败的编辑不会留下多余版本——先撞 `tasks.Version` 乐观并发令牌，`(TaskId, Revision)` 唯一索引只作兜底。
+- 读接口：`GET /api/v1/tasks/{id}/revisions?ownerId=...`，**只有所有者能读**（其他人 `403`，任务不存在 `404`），按版本号升序返回。
+- 前端："我的任务"里每条任务都有"修改记录"，展开后逐版显示版本号、变更摘要、时间、修改人，以及该版的标题/区域/悬赏/截止时间；非放行版本还会显示风险结论与原因代码。
 
 ### 风险规则与人工复核
 
@@ -410,7 +416,8 @@ netstat -ano | Select-String ':5188|:5173'
 | GET | `/api/v1/tasks/{id}` | 公开任务详情；草稿仅所有者可见，其他人 404 |
 | GET | `/api/v1/tasks/{id}/execution-address` | 精确执行地址；仅所有者与被选中的服务者 |
 | POST | `/api/v1/tasks` | owner 创建任务草稿 |
-| PUT | `/api/v1/tasks/{id}` | 所有者编辑草稿（仅 `ReadyToPublish`；字段校验与创建一致，改完重判风险并作废原人工复核结论） |
+| PUT | `/api/v1/tasks/{id}` | 所有者编辑草稿（仅 `ReadyToPublish`；字段校验与创建一致，改完重判风险并作废原人工复核结论，同时追加一版快照） |
+| GET | `/api/v1/tasks/{id}/revisions?ownerId=...` | 草稿历史（仅所有者）：从创建到最近一次编辑的每版快照、变更摘要与当版风险结论 |
 | POST | `/api/v1/tasks/{id}/publish` | 所有者发布 |
 | POST | `/api/v1/tasks/{id}/increase-reward` | 分配前加价 |
 | POST | `/api/v1/tasks/{id}/applications` | worker 报名 |
@@ -464,7 +471,7 @@ netstat -ano | Select-String ':5188|:5173'
 
 Development + PostgreSQL 启动时改为应用 EF Core 迁移（`Database.Migrate()`），不再使用 `EnsureCreated()` 和幂等建表 SQL。生产环境由部署流程执行迁移，不在应用启动时自动迁移。
 
-迁移历史（20 个）：`AddUsers` → `AddOrders` → `AddOrderEvidence` → `AddReviews` → `AddOrderRework` → `AddConversations` → `AddTaskTables` → `AddConcurrencyTokens` → `AddNotifications` → `AddOrderMessages` → `AddTaskExecutionAddress` → `AddEvidence` → `AddSystemSettings` → `AddEvidenceScanAttempts` → `AddEvidenceMetadataRemoved` → `AddAdminAudit` → `AddOrderCancellationAndTaskExpiry` → `AddApplicationDeadline` → `AddOrderDispute` → `AddTaskRiskAssessment`。其中 `AddTaskTables` 补上了此前只由 `EnsureCreated()` 建出、从未纳入迁移的 `tasks` 与 `task_applications` 两张核心表；`AddConcurrencyTokens` 给 `tasks`/`orders` 加 `Version` 乐观并发令牌；`AddTaskExecutionAddress` 给 `tasks` 加参与者层的精确执行地址；`AddEvidence` 建 `evidence` 表；`AddSystemSettings` 建运营配置的两张表；`AddEvidenceScanAttempts` 给 `evidence` 补上扫描尝试次数、最近一次说明与尝试时间；`AddEvidenceMetadataRemoved` 补上“已移除元数据”说明与按人限速用的索引；`AddAdminAudit` 建运营操作审计表 `admin_audit_entries`（人工下架等动作只追加留痕）；`AddOrderCancellationAndTaskExpiry` 给 `orders` 加取消三列、给 `tasks` 加 `ExpiredAt`/`CancelledAt`/`CancellationReason`；`AddApplicationDeadline` 给 `tasks` 加可选的报名截止时间；`AddOrderDispute` 给 `orders` 加争议六列并补 `(Status, CreatedAt)` 索引供运营按状态检索；`AddTaskRiskAssessment` 给 `tasks` 加风险判定的 10 列并补 `(RiskReviewStatus, CreatedAt)` 索引供复核队列扫描——存量行用数据库默认值 `Allowed`/`NotRequired` 回填，读取时对未知取值也做防御性解析（历史行不会因为枚举名不认识而读不出来）。
+迁移历史（21 个）：`AddUsers` → `AddOrders` → `AddOrderEvidence` → `AddReviews` → `AddOrderRework` → `AddConversations` → `AddTaskTables` → `AddConcurrencyTokens` → `AddNotifications` → `AddOrderMessages` → `AddTaskExecutionAddress` → `AddEvidence` → `AddSystemSettings` → `AddEvidenceScanAttempts` → `AddEvidenceMetadataRemoved` → `AddAdminAudit` → `AddOrderCancellationAndTaskExpiry` → `AddApplicationDeadline` → `AddOrderDispute` → `AddTaskRiskAssessment` → `AddTaskDraftRevisions`。其中 `AddTaskTables` 补上了此前只由 `EnsureCreated()` 建出、从未纳入迁移的 `tasks` 与 `task_applications` 两张核心表；`AddConcurrencyTokens` 给 `tasks`/`orders` 加 `Version` 乐观并发令牌；`AddTaskExecutionAddress` 给 `tasks` 加参与者层的精确执行地址；`AddEvidence` 建 `evidence` 表；`AddSystemSettings` 建运营配置的两张表；`AddEvidenceScanAttempts` 给 `evidence` 补上扫描尝试次数、最近一次说明与尝试时间；`AddEvidenceMetadataRemoved` 补上“已移除元数据”说明与按人限速用的索引；`AddAdminAudit` 建运营操作审计表 `admin_audit_entries`（人工下架等动作只追加留痕）；`AddOrderCancellationAndTaskExpiry` 给 `orders` 加取消三列、给 `tasks` 加 `ExpiredAt`/`CancelledAt`/`CancellationReason`；`AddApplicationDeadline` 给 `tasks` 加可选的报名截止时间；`AddOrderDispute` 给 `orders` 加争议六列并补 `(Status, CreatedAt)` 索引供运营按状态检索；`AddTaskRiskAssessment` 给 `tasks` 加风险判定的 10 列并补 `(RiskReviewStatus, CreatedAt)` 索引供复核队列扫描——存量行用数据库默认值 `Allowed`/`NotRequired` 回填，读取时对未知取值也做防御性解析（历史行不会因为枚举名不认识而读不出来）；`AddTaskDraftRevisions` 建草稿历史表 `task_draft_revisions`（一行一个版本的完整快照 + `ChangeSummary` + 当版风险结论）并给 `(TaskId, Revision)` 建唯一索引。
 
 早期 `EnsureCreated()` 建出的本地库没有迁移历史记录。启动逻辑会检测这种情况：先用模型对比物理表的「表名.列名」，只有结构完全对得上时，才把当时已有的迁移整体标记为已应用并打警告日志；一旦缺表或缺列就直接报错说明缺了什么，提示删除重建，避免在错误的 schema 上继续运行。基线化之后新增的迁移会正常应用——例如 `AddConcurrencyTokens` 就是在基线化之后自动补上的 `Version` 列。目标库不存在时由 `Migrate()` 负责建库。
 
@@ -691,6 +698,16 @@ npm run build
 - 真实 PostgreSQL + 真实 HTTP 端到端：服务者完成第一单且双方互评（立即公开，需求方给 5 分），第二单只有需求方单方评 1 分（仍在盲期）；随后需求方在自己的任务报名列表里读到 `评分=5 条数=1`——盲期那条 1 分没有计入，且与 `GET /api/v1/users/{id}/review-summary` 返回的 `5 / 1` 完全一致；服务者身份读别人的报名列表返回 `403`；另一名新服务者的报名显示 `0 / 0`，没有串到别人的分数。
 - 实现要点：只用既有的 `IReviewRepository`，**没有改 `TaskService` 构造函数**（避免波及既有测试）；列表按 distinct workerId 批量取信用，不是每条报名各查一次。
 
+本轮（草稿版本号与编辑历史）新增验证：
+
+- 编译与测试：`dotnet build AIToHuman.sln --no-restore` 0 警告 0 错误；领域 244 + 集成 **279** = **523** 个用例全通过（新增 11 个领域用例、6 个用例层用例、1 个真库用例）；前端 `npm run typecheck` 与 `npm run build` 通过（216.84 kB）。
+- 迁移：既有开发库启动时自动应用第 21 个迁移 `AddTaskDraftRevisions`（日志“共 21 个迁移”），说明自愈基线化路径对新迁移依然有效；真库回归用例在随机空库上 `Migrate()` 也从零建出这张表。
+- 真机端到端（真实 PostgreSQL + 真实 HTTP）：创建后 1 版（`changeSummary=创建草稿`、`riskVerdict=Allowed`）→ 编辑标题/截止时间/悬赏后 2 版（`changeSummary=标题、截止时间、悬赏`，快照里的标题与悬赏都是新值）→ 改成“帮我代考英语四级”后 3 版（`changeSummary=标题、描述、公开区域、悬赏、验收标准`、`riskVerdict=Blocked`、`riskRuleCode=prohibited.exam_impersonation`、`riskRuleVersion=1`）；历史里保留每一版的原文（第 1 版是原来的标题、第 3 版是禁止内容），所以“从哪一版开始变味”是可查的。
+- 权限与边界：非所有者读历史 `403`，任务不存在 `404`；被判定为禁止的草稿仍然**可以继续编辑**（编辑不是发布门禁的一部分，用户要能改好它），但发布依旧 `422`。
+- 真库并发：两个作用域读到同一版本，先写成功、后写抛 `DbUpdateConcurrencyException`，事后历史仍是 1/2/3 且不包含落败那次编辑的内容——版本快照与任务写入在同一个事务里。
+- 顺带补的字段上限（创建与编辑共用）：描述 ≤4000 字、公开区域 ≤120 字、验收标准 ≤12 条且每条 ≤200 字；这些也是历史快照的列宽依据。
+- 顺带的测试维护：`TaskService` 构造新增 `ITaskRevisionRepository`，仓库里 10 个手工构造 `TaskService` 的测试文件同步补参数；`TaskServiceUnitOfWorkTests` 里两处“Select 恰好一次工作单元”的断言改成相对基线（创建草稿现在自己就用掉一次事务边界）。
+
 ## 12. 完成状态与后续顺序
 
 ### P0
@@ -777,13 +794,20 @@ npm run build
 - 服务层：`TaskService.PublicCredit(userId)` 把“哪些评价算公开”的判定收敛成一处，`GetReviewSummary` 与报名列表共用，避免两处口径漂移；`LoadWorkerCredit` 按 distinct workerId 批量取，`MapApplication` 接收摘要映射。
 - 前端：`api/tasks.ts` 的 `TaskApplication` 补两个字段；“查看报名”每条显示“公开评价 X.X 分 · N 条”，没有公开评价时说明公开条件（双方都提交或完成满 7 天）。
 
+本轮追加（草稿版本号与编辑历史）：
+
+- 领域：新增 `TaskDraftRevision`（只追加的版本快照，`Initial` 写第 1 版、`FromEdit` 追加后续版本，`ChangeSummary` 由字段名列表拼成、超过 6 项收成“等 N 项”）；`TaskItem.UpdateDraft` 现在返回“这次改了哪些字段”，并在改之前做前后比对。
+- 存储：`ITaskRevisionRepository`（EF 与内存两套实现）+ `task_draft_revisions` 表（迁移 21，`(TaskId, Revision)` 唯一索引）；`TaskService.Create` 与 `UpdateDraft` 都在同一个工作单元里写任务与快照。
+- 接口与前端：`GET /api/v1/tasks/{id}/revisions`（仅所有者）+“我的任务”里的“修改记录”展开面板（`styles.css` 的 `.draft-history*`）。
+- 顺带：创建/编辑共用更严的字段上限（描述 4000、区域 120、验收标准 ≤12 条且每条 ≤200），既是产品约束也是历史快照的列宽依据。
+
 ### 后续跟进（原 P1 的延伸项）
 
 - 对象存储的短时签名 URL 已实现（见第 3、11 节）；如果以后要让前端完全绕开后端，需要补 CORS 配置与审计补偿。
 - 选定病毒/内容扫描服务后把 `evidence.scanner.provider` 切成 `http` + `failMode=closed`（重扫闭环已经就绪，只差真实服务商）。
 - 运营后台的其余部分：误拦申诉与客服工单、争议的责任判定与赔付/退款、争议申诉与处理时限。风险复核队列与人工下架都已实现；风险规则目录本身还不能后台编辑（改规则要发版并提升版本号）。上传大小与份数上限已经进了设置目录；凭证类型白名单**故意不进**（放开等于允许上传可执行内容）。
 - 风险判定的增强：模型辅助分类（现在只有字面词表匹配，语义变体容易漏）、追加式决策历史表（现在只保留最新一条判定）、误拦与漏拦的回归测试集扩充（当前是 17 条禁止 + 6 条转人工 + 8 条正常用例）。
-- 草稿的版本与历史：现在没有 `TaskDraft` 实体、没有版本号，编辑是直接改 `TaskItem`，旧版本与“谁改了什么”都不留痕；需要审计或对账时得先补上草稿历史表。
+- 草稿的版本与历史：版本号与编辑历史**已实现**（`task_draft_revisions` 只追加，创建写第 1 版、每次编辑追加一版并写变更摘要与该版风险结论）。仍然没有独立的 `TaskDraft` 聚合，编辑是直接改 `ReadyToPublish` 的任务；历史是只读的，**没有回滚到某一版、也没有字段级 diff 展示**，运营后台也看不到（只有所有者能读）。
 - 真实基础设施的自动化回归测试：真实 PostgreSQL 已完成（见第 11 节本轮条目与第 7 节）；还剩 **Redis 扇出**与 **S3/MinIO 对象存储**两块的自动化——它们目前仍靠手工端到端验证。主机级 E2E（`WebApplicationFactory`）仍缺，因为本机离线还原不到 `Microsoft.AspNetCore.Mvc.Testing`。
 - 通知的更多事件类型（任务发布、加价、评价公开）与推送渠道（短信、邮件）。
 - 会话消息的分页与历史截断、消息撤回与编辑。
@@ -839,6 +863,7 @@ npm run build
 - [ ] 用一条敏感任务（例如“帮我把身份证送到××”）走完复核：`riskReviewStatus=Pending`、发布 `422`；运营在“风险复核”页签写依据放行后可以发布；驳回后发布 `422` 并显示驳回依据；需求方收件箱出现 `task.riskReviewed`。
 - [ ] `GET /api/v1/admin/risk/rules` 返回规则版本与规则清单，但**只有匹配词数量、没有匹配词本身**；非管理员访问返回 `403`。
 - [ ] 编辑一条草稿（改标题、悬赏、验收标准与截止时间后保存）：`GET /api/v1/tasks/{id}` 返回的字段应与提交一致，随后能发布；编辑已发布的任务应返回 `422`。
+- [ ] 编辑一条草稿两三次，然后点“修改记录”：应看到 1/2/3… 逐版列出、每版有变更摘要与时间；把草稿改成禁止内容后，最新那版应显示 `Blocked` 与原因代码；用别的账号读历史应返回 `403`。
 - [ ] 用敏感草稿验证防绕过：先由运营放行 → 再编辑草稿 → 复核状态应回到“待复核”、复核人与依据清空、重新出现在“风险复核”队列、发布被 `422` 拦住；再次放行后可以发布。
 - [ ] 跑一次 `dotnet test AIToHuman.sln --no-build --no-restore`：确认 `PostgresRegressionTests` 是**通过**而不是**跳过**（跳过说明本机没连上测试库，见第 7 节“真实数据库回归测试”）；再把 `AITOHUMAN_TEST_POSTGRES` 指向不可达端口确认它们变成跳过而不是失败。
 - [ ] 用两个账号跑一遍双向信用：服务者完成一单且双方互评后，需求方在自己的任务“查看报名”里应看到该服务者的公开评分与条数，且与 `GET /api/v1/users/{id}/review-summary` 一致；只有单方评价（盲期内）时列表里应为 0 分 / 0 条。

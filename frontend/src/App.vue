@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { getDevSession, type DevSession } from './api/session'
 import { clearAccessToken, getAccessToken, getCurrentUser, login, register, switchRole, type ActiveRole, type CurrentUser } from './api/auth'
-import { applyForTask, approveOrder, cancelOrder, cancelTask, createOrderReview, createTask, getExecutionAddress, getReviewSummary, increaseTaskReward, listMyApplications, listMyOrders, listMyTasks, listOrderReviews, listPublishedTasks, listTaskApplications, openDispute, publishTask, rejectOrder, resumeOrder, selectTaskApplication, startOrder, submitOrder, updateTaskDraft, withdrawApplication, type MyApplicationItem, type OrderItem, type ReviewItem, type TaskApplication, type TaskItem, type ReviewSummary } from './api/tasks'
+import { applyForTask, approveOrder, cancelOrder, cancelTask, createOrderReview, createTask, getExecutionAddress, getReviewSummary, increaseTaskReward, listMyApplications, listMyOrders, listMyTasks, listOrderReviews, listPublishedTasks, listTaskApplications, listTaskDraftRevisions, openDispute, publishTask, rejectOrder, resumeOrder, selectTaskApplication, startOrder, submitOrder, updateTaskDraft, withdrawApplication, type MyApplicationItem, type OrderItem, type ReviewItem, type TaskApplication, type TaskDraftRevision, type TaskItem, type ReviewSummary } from './api/tasks'
 import { connectNotifications as connectNotificationHub, disconnectNotifications, listNotifications, markNotificationsRead, type NotificationEnvelope, type NotificationItem } from './api/notifications'
 import { listOrderMessages, markOrderMessagesRead, sendOrderMessage, type OrderMessage } from './api/messages'
 import { absoluteMaxEvidenceBytes, allowedEvidenceTypes, downloadEvidence, listOrderEvidence, uploadOrderEvidence, type EvidenceItem } from './api/evidence'
@@ -543,8 +543,32 @@ function cancelDraftEdit() {
   draftEditError.value = ''
 }
 
-async function saveDraftEdit(task: TaskItem) {
-  const form = draftEditForm.value
+// 草稿历史：谁在什么时候把哪些字段改成了什么，以及那一版的风险结论。只有所有者能读。
+const draftHistoryTaskId = ref('')
+const draftHistory = ref<TaskDraftRevision[]>([])
+const draftHistoryBusy = ref(false)
+const draftHistoryError = ref('')
+
+async function toggleDraftHistory(task: TaskItem) {
+  if (draftHistoryTaskId.value === task.id) {
+    draftHistoryTaskId.value = ''
+    return
+  }
+
+  draftHistoryTaskId.value = task.id
+  draftHistoryBusy.value = true
+  draftHistoryError.value = ''
+  try {
+    draftHistory.value = await listTaskDraftRevisions(task.id, authUser.value?.userId ?? task.ownerId)
+  } catch (error) {
+    draftHistoryError.value = error instanceof Error ? error.message : '读取修改记录失败'
+    draftHistory.value = []
+  } finally {
+    draftHistoryBusy.value = false
+  }
+}
+
+async function saveDraftEdit(task: TaskItem) {  const form = draftEditForm.value
   const criteria = form.criteria
     .split('\n')
     .map((item) => item.trim())
@@ -1715,6 +1739,7 @@ onMounted(async () => {
               <div class="order-actions">
                 <button v-if="task.status === 'ReadyToPublish'" type="button" :disabled="publishingTaskId === task.id" @click="publishMyTask(task)">{{ publishingTaskId === task.id ? '发布中…' : '发布到任务大厅' }}</button>
                 <button v-if="task.draftEditable && draftEditId !== task.id" type="button" class="secondary-action" @click="startDraftEdit(task)">编辑草稿</button>
+                <button type="button" class="secondary-action" @click="toggleDraftHistory(task)">{{ draftHistoryTaskId === task.id ? '收起修改记录' : '修改记录' }}</button>
                 <button v-if="task.status === 'Published' && task.applicationCount > 0" type="button" class="secondary-action" @click="openMyTaskApplications(task)">查看报名</button>
                 <button v-else-if="task.status === 'Published'" type="button" class="secondary-action" @click="hallTab = 'public'">去大厅查看</button>
                 <button v-if="task.status === 'Published'" type="button" :disabled="raisingTaskId === task.id" @click="raiseTaskReward(task)">{{ raisingTaskId === task.id ? '加价中…' : '加价' }}</button>
@@ -1727,6 +1752,19 @@ onMounted(async () => {
                 <button type="button" class="danger" :disabled="taskCancelBusy" @click="confirmTaskCancel(task)">{{ taskCancelBusy ? '撤销中…' : '确认撤销' }}</button>
                 <button type="button" class="secondary-action" :disabled="taskCancelBusy" @click="taskCancelId = ''">放弃</button>
                 <span v-if="taskCancelError" class="cancel-error">{{ taskCancelError }}</span>
+              </div>
+              <div v-if="draftHistoryTaskId === task.id" class="draft-history">
+                <p class="draft-edit-hint">每一版都是当时的完整快照：第 1 版来自创建草稿，之后每次编辑追加一版；编辑会让之前的人工复核结论作废，所以这里也能看出哪一版被判成禁止或转人工。</p>
+                <span v-if="draftHistoryBusy" class="draft-edit-hint">正在读取…</span>
+                <span v-else-if="draftHistoryError" class="cancel-error">{{ draftHistoryError }}</span>
+                <span v-else-if="draftHistory.length === 0" class="draft-edit-hint">还没有历史版本。</span>
+                <div v-for="revision in draftHistory" v-else :key="revision.id" class="draft-history-row">
+                  <div>
+                    <strong>第 {{ revision.revision }} 版 · {{ revision.changeSummary }}</strong>
+                    <small>{{ formatDeadline(revision.createdAt) }} · 修改人 {{ revision.editedBy.slice(0, 8) }}<template v-if="revision.riskVerdict !== 'Allowed'"> · 风险结论 {{ riskVerdictLabel(revision.riskVerdict) }}（{{ revision.riskRuleCode }} · 规则第 {{ revision.riskRuleVersion }} 版）</template></small>
+                    <small class="evidence-note">{{ revision.title }} · {{ revision.district }} · 悬赏 ¥{{ revision.reward }} · 截止 {{ formatDeadline(revision.deadline) }}</small>
+                  </div>
+                </div>
               </div>
               <div v-if="draftEditId === task.id" class="draft-edit">
                 <p class="draft-edit-hint">编辑保存后会重新跑一遍风险规则；如果之前已经人工复核过，这次改动会让复核作废、按新内容重新排队。</p>

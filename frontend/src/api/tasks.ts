@@ -193,6 +193,38 @@ export async function publishTask(taskId: string, ownerId: string): Promise<Task
   }))
 }
 
+/** 草稿的一版历史快照：第 1 版是创建，之后每次编辑追加一版。 */
+export interface TaskDraftRevision {
+  id: string
+  taskId: string
+  revision: number
+  title: string
+  description: string
+  district: string
+  deadline: string
+  reward: number
+  currency: string
+  acceptanceCriteria: string[]
+  executionAddress: string | null
+  applicationDeadline: string | null
+  /** 这一版文本对应的风险结论（Allowed / NeedsReview / Blocked）。 */
+  riskVerdict: string
+  riskRuleCode: string | null
+  riskRuleVersion: number
+  editedBy: string
+  /** 这次改了哪些字段，例如“标题、截止时间”；创建那一版是“创建草稿”。 */
+  changeSummary: string
+  createdAt: string
+}
+
+/** 草稿历史（仅所有者可读）。 */
+export async function listTaskDraftRevisions(taskId: string, ownerId: string): Promise<TaskDraftRevision[]> {
+  const response = await parseResponse<{ items: TaskDraftRevision[] }>(
+    await fetch(`/api/v1/tasks/${taskId}/revisions?ownerId=${encodeURIComponent(ownerId)}`, { headers: authHeaders() }),
+  )
+  return response.items
+}
+
 /**
  * 编辑草稿：字段与创建任务完全一致，只有还没发布的草稿能改。
  * 服务端会在保存后重新判定风险并清空原有的人工复核结论，所以返回的任务里

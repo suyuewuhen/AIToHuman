@@ -181,7 +181,7 @@ public sealed class ReviewBlindPeriodTests
             Service = new TaskService(
                 new InMemoryTaskRepository(),
                 new InMemoryOrderRepository(),
-                new InMemoryReviewRepository(),
+                new InMemoryReviewRepository(), new InMemoryTaskRevisionRepository(),
                 Clock,
                 new NotificationService(new InMemoryNotificationRepository(), Clock),
                 new InMemoryUnitOfWork());

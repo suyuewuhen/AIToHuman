@@ -106,7 +106,7 @@ public sealed class WorkerCreditInApplicationsTests
             Worker = Guid.NewGuid();
             Clock = new MutableTimeProvider(Now);
             Notifications = new NotificationService(new InMemoryNotificationRepository(), Clock);
-            Service = new TaskService(tasks, new InMemoryOrderRepository(), new InMemoryReviewRepository(), Clock, Notifications, new InMemoryUnitOfWork());
+            Service = new TaskService(tasks, new InMemoryOrderRepository(), new InMemoryReviewRepository(), new InMemoryTaskRevisionRepository(), Clock, Notifications, new InMemoryUnitOfWork());
         }
 
         public Guid Worker { get; }

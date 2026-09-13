@@ -269,7 +269,7 @@ public sealed class NotificationServiceTests
         var taskService = new TaskService(
             new InMemoryTaskRepository(),
             new InMemoryOrderRepository(),
-            new InMemoryReviewRepository(),
+            new InMemoryReviewRepository(), new InMemoryTaskRevisionRepository(),
             new FixedTimeProvider(Now),
             notifications,
             new InMemoryUnitOfWork());
