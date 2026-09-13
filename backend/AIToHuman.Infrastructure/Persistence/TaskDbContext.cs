@@ -1,5 +1,6 @@
 using AIToHuman.Domain.Admin;
 using AIToHuman.Domain.Orders;
+using AIToHuman.Domain.Risk;
 using AIToHuman.Domain.Settings;
 using AIToHuman.Domain.Tasks;
 using Microsoft.EntityFrameworkCore;
@@ -36,6 +37,15 @@ public sealed class TaskDbContext(DbContextOptions<TaskDbContext> options) : DbC
             entity.Property(item => item.Status).HasConversion<string>().HasMaxLength(32);
             entity.Property(item => item.AcceptanceCriteriaJson).IsRequired();
             entity.Property(item => item.CancellationReason).HasMaxLength(TaskItem.MaxCancellationReasonLength);
+            // 显式给出数据库默认值：迁移给存量行填充的必须是合法枚举名，否则读回时会解析失败。
+            entity.Property(item => item.RiskVerdict).HasConversion<string>().HasMaxLength(16).IsRequired().HasDefaultValue(nameof(RiskVerdict.Allowed));
+            entity.Property(item => item.RiskRuleCode).HasMaxLength(80);
+            entity.Property(item => item.RiskCategory).HasMaxLength(60);
+            entity.Property(item => item.RiskSummary).HasMaxLength(400);
+            entity.Property(item => item.RiskReviewStatus).HasConversion<string>().HasMaxLength(16).IsRequired().HasDefaultValue(nameof(RiskReviewStatus.NotRequired));
+            entity.Property(item => item.RiskReviewNote).HasMaxLength(TaskItem.MaxRiskReviewNoteLength);
+            // 运营复核队列按“待复核 + 创建时间”扫描，这条索引让它不必全表扫描。
+            entity.HasIndex(item => new { item.RiskReviewStatus, item.CreatedAt });
             entity.HasIndex(item => new { item.Status, item.Deadline });
             entity.HasMany(item => item.Applications).WithOne(item => item.Task).HasForeignKey(item => item.TaskId).OnDelete(DeleteBehavior.Cascade);
         });
@@ -210,6 +220,20 @@ public sealed class TaskRecord
 
     /// <summary>报名截止时间（可选）：到点后不再接受新报名，已有报名仍可被选中。</summary>
     public DateTimeOffset? ApplicationDeadline { get; set; }
+
+    /// <summary>确定性风险规则的最新结论：Verdict/原因代码/类别/说明/规则版本与判定时刻。</summary>
+    public string RiskVerdict { get; set; } = "Allowed";
+    public string? RiskRuleCode { get; set; }
+    public string? RiskCategory { get; set; }
+    public string? RiskSummary { get; set; }
+    public int RiskRuleVersion { get; set; }
+    public DateTimeOffset? RiskAssessedAt { get; set; }
+
+    /// <summary>人工复核状态与处置留痕（处置人、时间、依据）。</summary>
+    public string RiskReviewStatus { get; set; } = "NotRequired";
+    public Guid? RiskReviewedBy { get; set; }
+    public DateTimeOffset? RiskReviewedAt { get; set; }
+    public string? RiskReviewNote { get; set; }
     public int Version { get; set; }
     public List<ApplicationRecord> Applications { get; set; } = [];
 }

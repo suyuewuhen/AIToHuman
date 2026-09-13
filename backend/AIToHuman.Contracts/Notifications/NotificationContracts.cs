@@ -26,6 +26,9 @@ public static class NotificationTypes
 
     /// <summary>争议已由运营处置：通知双方参与者，结果走 REST 详情。</summary>
     public const string OrderDisputeResolved = "order.disputeResolved";
+
+    /// <summary>任务的风险复核有了结论（放行或驳回）：通知任务所有者，结论与依据走 REST 详情。</summary>
+    public const string TaskRiskReviewed = "task.riskReviewed";
 }
 
 /// <summary>订单相关通知的载荷；只带定位信息，不带敏感内容。</summary>
@@ -36,6 +39,12 @@ public sealed record TaskNotificationPayload(Guid TaskId, string Status, string 
 
 /// <summary>报名变动通知的载荷：任务所有者据此知道有人撤回了报名。</summary>
 public sealed record TaskApplicationNotificationPayload(Guid TaskId, Guid ApplicationId, Guid WorkerId, string Title);
+
+/// <summary>
+/// 风险复核结论的载荷：只带结论与原因代码，复核依据（运营写的原文）走 REST 的任务详情，
+/// 避免把运营的内部说明塞进推送。
+/// </summary>
+public sealed record TaskRiskReviewNotificationPayload(Guid TaskId, string Title, string ReviewStatus, string Verdict, string? RuleCode, bool CanPublish);
 
 /// <summary>持久化通知，供收件箱列表与未读数使用。</summary>
 public sealed record NotificationResponse(Guid Id, Guid EventId, string Type, int Version, DateTimeOffset CreatedAt, DateTimeOffset? ReadAt, JsonElement Payload);

@@ -8,7 +8,7 @@ import { listOrderMessages, markOrderMessagesRead, sendOrderMessage, type OrderM
 import { absoluteMaxEvidenceBytes, allowedEvidenceTypes, downloadEvidence, listOrderEvidence, uploadOrderEvidence, type EvidenceItem } from './api/evidence'
 import { continueTaskConversation, type AiTaskPlan } from './api/ai'
 import { createConversation, getConversation, type Conversation } from './api/conversations'
-import { adminOrderStatusLabel, adminTaskStatusLabel, cancelAdminTask, disputeResolutionLabel, listAdminAudits, listDisputedOrders, resolveDispute, searchAdminTasks, searchAdminUsers, type AdminAuditItem, type AdminOrderItem, type AdminTaskItem, type AdminUserItem, type DisputeDecision } from './api/admin'
+import { adminOrderStatusLabel, adminTaskStatusLabel, cancelAdminTask, decideRiskReview, disputeResolutionLabel, getRiskRules, listAdminAudits, listDisputedOrders, listRiskReviews, resolveDispute, riskReviewStatusLabel, riskVerdictLabel, searchAdminTasks, searchAdminUsers, type AdminAuditItem, type AdminOrderItem, type AdminRiskReviewItem, type AdminTaskItem, type AdminUserItem, type DisputeDecision, type RiskReviewDecision, type RiskRuleCatalog } from './api/admin'
 import { listSettingAudits, listSettings, resetSetting, settingChoiceLabel, settingSourceLabel, testSetting, updateSetting, type AdminSetting, type SettingAudit, type SettingTestResult } from './api/settings'
 
 type Step = { label: string; done: boolean }
@@ -180,7 +180,7 @@ function evidenceStatusLabel(status: string) {
 
 // 运营配置：入口只对管理员展示，真正的授权在服务端（/api/v1/admin/settings 需要管理员身份）。
 const settingsOpen = ref(false)
-const settingsTab = ref<'values' | 'audits' | 'tasks' | 'users' | 'disputes'>('values')
+const settingsTab = ref<'values' | 'audits' | 'tasks' | 'users' | 'disputes' | 'risk'>('values')
 const settingsLoading = ref(false)
 const settingsError = ref('')
 const settingsNotice = ref('')
@@ -190,7 +190,7 @@ const settingsBusyKey = ref('')
 const settingsTests = ref<Record<string, SettingTestResult>>({})
 const settingsAudits = ref<SettingAudit[]>([])
 
-// 运营后台的人工兜底：风险规则引擎还没实现，所以这里是纯人工检索与下架。
+// 运营后台的人工兜底：跨所有者检索、人工下架，以及处置风险复核队列。
 const adminTaskKeyword = ref('')
 const adminTaskStatus = ref('')
 const adminTasks = ref<AdminTaskItem[]>([])
@@ -208,6 +208,11 @@ const adminOrders = ref<AdminOrderItem[]>([])
 const adminResolveOrderId = ref('')
 const adminResolveDecision = ref<DisputeDecision>('Approve')
 const adminResolveNote = ref('')
+// 风险复核：只列“转人工”的任务（禁止类别不会进队列），运营放行或驳回都必须写明依据。
+const adminRiskReviews = ref<AdminRiskReviewItem[]>([])
+const adminRiskRules = ref<RiskRuleCatalog | null>(null)
+const adminRiskDecisionId = ref('')
+const adminRiskNote = ref('')
 
 const isAdmin = computed(() => authUser.value?.isAdmin === true)
 const settingsGroups = computed(() => {
@@ -436,6 +441,60 @@ async function loadAdminAudits() {
   } finally {
     settingsLoading.value = false
   }
+}
+
+/** 风险复核队列：规则判成“需要人工复核”的任务排在这里，禁止类别不会出现。 */
+async function loadAdminRiskReviews() {
+  settingsTab.value = 'risk'
+  adminTaskBusy.value = true
+  adminTaskError.value = ''
+  try {
+    const [queue, catalog] = await Promise.all([listRiskReviews(20), getRiskRules()])
+    adminRiskReviews.value = queue.items
+    adminRiskRules.value = catalog
+  } catch (error) {
+    adminTaskError.value = error instanceof Error ? error.message : '读取风险复核队列失败'
+  } finally {
+    adminTaskBusy.value = false
+  }
+}
+
+function startAdminRiskDecision(item: AdminRiskReviewItem) {
+  adminRiskDecisionId.value = item.taskId
+  adminRiskNote.value = ''
+  adminTaskError.value = ''
+  adminTaskNotice.value = ''
+}
+
+async function confirmAdminRiskDecision(item: AdminRiskReviewItem, decision: RiskReviewDecision) {
+  if (!adminRiskNote.value.trim()) {
+    adminTaskError.value = '处置风险复核必须写明依据，依据会写进运营审计。'
+    return
+  }
+
+  adminTaskBusy.value = true
+  adminTaskError.value = ''
+  try {
+    const reviewed = await decideRiskReview(item.taskId, decision, adminRiskNote.value.trim())
+    adminTaskNotice.value = decision === 'Approve'
+      ? `任务「${reviewed.title}」已放行，需求方现在可以发布。`
+      : `任务「${reviewed.title}」已驳回，需求方不能发布该任务。`
+    adminRiskDecisionId.value = ''
+    await loadAdminRiskReviews()
+  } catch (error) {
+    adminTaskError.value = error instanceof Error ? error.message : '处置风险复核失败'
+  } finally {
+    adminTaskBusy.value = false
+  }
+}
+
+/** 草稿被风险规则拦住时给用户的说明；不需要拦就返回空串。 */
+function taskRiskNotice(task: TaskItem | null): string {
+  if (!task?.riskPublishBlocked) return ''
+  if (task.riskVerdict === 'Blocked') return `平台禁止的任务，不能发布：${task.riskSummary ?? ''}`
+  if (task.riskReviewStatus === 'Rejected') return `未通过人工复核：${task.riskReviewNote ?? ''}`
+  if (task.riskReviewStatus === 'Pending') return `正在等待人工复核，通过后才能发布：${task.riskSummary ?? ''}`
+  return task.riskSummary ?? ''
 }
 
 const completion = computed(() => !aiPlan.value || steps.value.length === 0
@@ -1455,8 +1514,9 @@ onMounted(async () => {
       <section class="auth-dialog publish-dialog">
         <div class="auth-dialog-head"><div><p class="eyebrow">PUBLISH CHECK / 03</p><h2>确认发布任务</h2></div><button type="button" class="icon-button" @click="publishPreview = null">×</button></div>
         <div class="preview-card"><span>{{ publishPreview.district }} · 草稿已保存</span><h3>{{ publishPreview.title }}</h3><p>{{ publishPreview.description }}</p><div><strong>固定悬赏 ¥{{ publishPreview.reward }}</strong><small>截止 {{ formatDeadline(publishPreview.deadline) }}<template v-if="publishPreview.applicationDeadline"> · 报名截止 {{ formatDeadline(publishPreview.applicationDeadline) }}</template> · {{ publishPreview.status }}</small></div></div>
+        <p v-if="publishPreview.riskPublishBlocked" class="notice warning risk-notice"><b>{{ riskVerdictLabel(publishPreview.riskVerdict ?? 'Allowed') }}：</b>{{ taskRiskNotice(publishPreview) }}<span v-if="publishPreview.riskRuleCode">（{{ publishPreview.riskRuleCode }} · 规则第 {{ publishPreview.riskRuleVersion }} 版）</span></p>
         <p class="publish-copy">发布后服务者将按 ¥{{ publishPreview.reward }} 报名。<template v-if="publishPreview.applicationDeadline">报名在 {{ formatDeadline(publishPreview.applicationDeadline) }} 前有效。</template><template v-else>报名一直开放到任务截止。</template>你可以在分配前加价，但不能降价。</p>
-        <button class="auth-submit" type="button" :disabled="publishing" @click="confirmPublish">{{ publishing ? '发布中…' : '确认并发布到任务大厅' }}</button>
+        <button class="auth-submit" type="button" :disabled="publishing || publishPreview.riskPublishBlocked" @click="confirmPublish">{{ publishing ? '发布中…' : (publishPreview.riskPublishBlocked ? '被风险规则拦住，暂不能发布' : '确认并发布到任务大厅') }}</button>
       </section>
     </div>
 
@@ -1556,6 +1616,7 @@ onMounted(async () => {
               <span>任务号 {{ task.id.slice(0, 8) }} · {{ task.applicationCount }} 人已报名</span>
               <p v-if="task.status === 'Expired'" class="order-note rejection"><b>已过期：</b>截止时间已过，系统自动关闭，不能再报名或执行。</p>
               <p v-if="task.cancellationReason" class="order-note rejection"><b>撤销原因：</b>{{ task.cancellationReason }}</p>
+              <p v-if="task.riskPublishBlocked" class="order-note rejection"><b>风险拦截（{{ riskVerdictLabel(task.riskVerdict ?? 'Allowed') }}）：</b>{{ taskRiskNotice(task) }}<span v-if="task.riskRuleCode"> · {{ task.riskRuleCode }} · 规则第 {{ task.riskRuleVersion }} 版 · {{ riskReviewStatusLabel(task.riskReviewStatus ?? 'NotRequired') }}</span></p>
               <div class="order-actions">
                 <button v-if="task.status === 'ReadyToPublish'" type="button" :disabled="publishingTaskId === task.id" @click="publishMyTask(task)">{{ publishingTaskId === task.id ? '发布中…' : '发布到任务大厅' }}</button>
                 <button v-if="task.status === 'Published' && task.applicationCount > 0" type="button" class="secondary-action" @click="openMyTaskApplications(task)">查看报名</button>
@@ -1680,13 +1741,14 @@ onMounted(async () => {
           <button type="button" :class="{ selected: settingsTab === 'tasks' }" @click="settingsTab = 'tasks'; loadAdminTasks()">任务检索</button>
           <button type="button" :class="{ selected: settingsTab === 'users' }" @click="settingsTab = 'users'; loadAdminUsers()">用户检索</button>
           <button type="button" :class="{ selected: settingsTab === 'disputes' }" @click="settingsTab = 'disputes'; loadAdminOrders()">争议处置 <b>{{ adminOrders.length }}</b></button>
-          <button type="button" class="settings-refresh" :disabled="settingsLoading || adminTaskBusy" @click="settingsTab === 'audits' ? loadAdminAudits() : (settingsTab === 'tasks' ? loadAdminTasks() : (settingsTab === 'users' ? loadAdminUsers() : (settingsTab === 'disputes' ? loadAdminOrders() : loadSettings())))">{{ settingsLoading || adminTaskBusy ? '读取中…' : '刷新 ↻' }}</button>
+          <button type="button" :class="{ selected: settingsTab === 'risk' }" @click="loadAdminRiskReviews()">风险复核 <b>{{ adminRiskReviews.length }}</b></button>
+          <button type="button" class="settings-refresh" :disabled="settingsLoading || adminTaskBusy" @click="settingsTab === 'audits' ? loadAdminAudits() : (settingsTab === 'tasks' ? loadAdminTasks() : (settingsTab === 'users' ? loadAdminUsers() : (settingsTab === 'disputes' ? loadAdminOrders() : (settingsTab === 'risk' ? loadAdminRiskReviews() : loadSettings()))))">{{ settingsLoading || adminTaskBusy ? '读取中…' : '刷新 ↻' }}</button>
         </div>
         <p v-if="settingsError" class="auth-error">{{ settingsError }}</p>
         <p v-if="settingsNotice" class="settings-notice">{{ settingsNotice }}</p>
 
         <div v-if="settingsTab === 'tasks'" class="settings-body">
-          <p class="settings-hint">跨所有者检索任务，并对尚未分配的任务做人工下架（原因会写进运营审计）。风险规则引擎还没实现，这里没有任何自动判定，只是人工兜底。</p>
+          <p class="settings-hint">跨所有者检索任务，并对尚未分配的任务做人工下架（原因会写进运营审计）。风险拦截由确定性规则在创建草稿与发布时自动完成，这里只是人工兜底。</p>
           <div class="setting-control">
             <input v-model.trim="adminTaskKeyword" type="text" placeholder="按标题 / 描述 / 区域搜索" @keyup.enter="loadAdminTasks()" />
             <select v-model="adminTaskStatus">
@@ -1758,6 +1820,35 @@ onMounted(async () => {
                 <input v-model.trim="adminResolveNote" type="text" maxlength="500" placeholder="填写处置依据（必填，最多 500 字）" />
                 <button type="button" class="settings-secondary danger" :disabled="adminTaskBusy" @click="confirmAdminResolve(order)">确认处置</button>
                 <button type="button" class="settings-secondary" :disabled="adminTaskBusy" @click="adminResolveOrderId = ''">取消</button>
+              </template>
+            </div>
+          </div>
+        </div>
+
+        <div v-else-if="settingsTab === 'risk'" class="settings-body">
+          <p class="settings-hint">风险拦截是确定性规则：创建草稿时就判定，发布前再判一次。禁止类别（例如代考、违禁品、跟踪偷拍）一律不能发布，人工也无权放行；命中“需人工复核”的任务排在这里，运营放行后需求方才能发布。依据会写进运营审计并通知任务所有者。</p>
+          <p v-if="adminRiskRules" class="settings-hint">当前规则目录第 <b>{{ adminRiskRules.version }}</b> 版，共 {{ adminRiskRules.rules.length }} 条，其中禁止 {{ adminRiskRules.rules.filter(rule => rule.verdict === 'Blocked').length }} 条；悬赏超过 ¥{{ adminRiskRules.highRewardThreshold }} 转人工。只展示规则类别，不展示匹配词。</p>
+          <p v-if="adminTaskError" class="auth-error">{{ adminTaskError }}</p>
+          <p v-if="adminTaskNotice" class="settings-notice">{{ adminTaskNotice }}</p>
+          <span v-if="adminRiskReviews.length === 0" class="settings-empty">当前没有待复核的任务。</span>
+          <div v-for="item in adminRiskReviews" v-else :key="item.taskId" class="admin-row">
+            <div>
+              <strong>{{ item.title }}</strong>
+              <small>{{ riskVerdictLabel(item.verdict) }} · {{ item.ruleCode }} · {{ item.category }} · 规则第 {{ item.ruleVersion }} 版 · 判定于 {{ item.assessedAt ? formatDeadline(item.assessedAt) : '—' }}</small>
+              <small>悬赏 ¥{{ item.rewardAmount }} {{ item.rewardCurrency }} · 截止 {{ formatDeadline(item.deadline) }} · {{ item.district }} · 任务{{ adminTaskStatusLabel(item.taskStatus) }}</small>
+              <small>需求方 {{ item.ownerDisplayName ?? '未知需求方' }}{{ item.ownerEmail ? `（${item.ownerEmail}）` : '' }} · 任务号 {{ item.taskId.slice(0, 8) }}</small>
+              <small class="evidence-note">{{ item.description }}</small>
+              <small class="evidence-note">命中原因：{{ item.summary }}</small>
+            </div>
+            <div class="setting-actions">
+              <template v-if="adminRiskDecisionId !== item.taskId">
+                <button type="button" class="settings-secondary" :disabled="adminTaskBusy" @click="startAdminRiskDecision(item)">处置</button>
+              </template>
+              <template v-else>
+                <input v-model.trim="adminRiskNote" type="text" maxlength="200" placeholder="填写复核依据（必填，最多 200 字）" />
+                <button type="button" class="settings-secondary" :disabled="adminTaskBusy" @click="confirmAdminRiskDecision(item, 'Approve')">放行</button>
+                <button type="button" class="settings-secondary danger" :disabled="adminTaskBusy" @click="confirmAdminRiskDecision(item, 'Reject')">驳回</button>
+                <button type="button" class="settings-secondary" :disabled="adminTaskBusy" @click="adminRiskDecisionId = ''">取消</button>
               </template>
             </div>
           </div>

@@ -19,6 +19,12 @@ public interface ITaskRepository
     /// <summary>服务者视角的“我的报名”：他报过名的任务（含已被处理与已撤回的记录），按报名时间倒序。</summary>
     IReadOnlyCollection<TaskItem> ListByApplicant(Guid workerId, int limit);
 
+    /// <summary>
+    /// 运营风险复核队列：处于“等人工复核”的任务，按创建时间升序取前 <paramref name="limit"/> 条（先来先处理）。
+    /// 实现要返回被跟踪的实体，处置时才能用读到的版本做并发校验，避免两个运营同时处置同一条。
+    /// </summary>
+    IReadOnlyCollection<TaskItem> ListPendingRiskReview(int limit);
+
     TaskItem? Get(Guid id);
     void Add(TaskItem task);
     void Save(TaskItem task);

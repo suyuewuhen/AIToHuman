@@ -61,8 +61,7 @@ public sealed class NotificationService(INotificationRepository repository, Time
         repository.Add(new Notification(task.OwnerId, application.Id, NotificationTypes.TaskApplicationWithdrawn, EnvelopeVersion, payload, now));
     }
 
-    private void EnqueueTaskEvent(TaskItem task, Guid recipientId, string type, string eventName, DateTimeOffset now)
-    {
+    private void EnqueueTaskEvent(TaskItem task, Guid recipientId, string type, string eventName, DateTimeOffset now)    {
         if (recipientId == Guid.Empty) return;
 
         var eventId = DeriveEventId(task.Id, $"{eventName}:{recipientId:N}");
@@ -70,6 +69,24 @@ public sealed class NotificationService(INotificationRepository repository, Time
 
         var payload = JsonSerializer.Serialize(new TaskNotificationPayload(task.Id, task.Status.ToString(), task.Title), PayloadOptions);
         repository.Add(new Notification(recipientId, eventId, type, EnvelopeVersion, payload, now));
+    }
+
+    /// <summary>
+    /// 风险复核出结论：通知任务所有者（放行可以发布、驳回则不能）。
+    /// 事件键按「任务 + 复核结论 + 接收者」派生，重复处置同一条任务不会产生第二条通知。
+    /// </summary>
+    public void EnqueueTaskRiskReviewed(TaskItem task, Guid recipientId, DateTimeOffset now)
+    {
+        if (recipientId == Guid.Empty) return;
+
+        var eventId = DeriveEventId(task.Id, $"RiskReviewed:{task.RiskReviewStatus}:{recipientId:N}");
+        if (repository.ExistsByEventId(eventId)) return;
+
+        var payload = JsonSerializer.Serialize(
+            new TaskRiskReviewNotificationPayload(
+                task.Id, task.Title, task.RiskReviewStatus.ToString(), task.RiskVerdict.ToString(), task.RiskRuleCode, !task.IsPublishBlockedByRisk),
+            PayloadOptions);
+        repository.Add(new Notification(recipientId, eventId, NotificationTypes.TaskRiskReviewed, EnvelopeVersion, payload, now));
     }
 
     /// <summary>订单会话新消息：通知对方参与者。事件键用消息 ID，每条消息都是独立事件。</summary>

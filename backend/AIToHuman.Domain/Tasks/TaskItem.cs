@@ -1,4 +1,5 @@
 using AIToHuman.Domain.Common;
+using AIToHuman.Domain.Risk;
 
 namespace AIToHuman.Domain.Tasks;
 
@@ -51,6 +52,10 @@ public sealed class TaskItem
         CreatedAt = UtcTimestamp.Normalize(createdAt);
         ExecutionAddress = NormalizeExecutionAddress(executionAddress);
         ApplicationDeadline = NormalizeApplicationDeadline(applicationDeadline, Deadline, CreatedAt);
+
+        // 风险判定发生在创建草稿时：被禁止的类别从一开始就锁死，转人工的类别直接进复核队列。
+        // 草稿仍然创建出来（用户能看到自己写的内容和原因），但发布这一关过不去。
+        AssessRisk(CreatedAt);
     }
 
     /// <summary>执行地址属于订单参与者层信息，最长 200 字。</summary>
@@ -102,6 +107,47 @@ public sealed class TaskItem
 
     public bool HasExecutionAddress => !string.IsNullOrWhiteSpace(ExecutionAddress);
 
+    /// <summary>确定性风险规则的结论；创建草稿时判定，发布前会按当时的字段重新判定一次。</summary>
+    public RiskVerdict RiskVerdict { get; private set; } = RiskVerdict.Allowed;
+
+    /// <summary>命中的原因代码（例如 <c>prohibited.exam_impersonation</c>）；放行时为 null。</summary>
+    public string? RiskRuleCode { get; private set; }
+
+    /// <summary>命中规则的类别名（面向人）。</summary>
+    public string? RiskCategory { get; private set; }
+
+    /// <summary>可展示给用户与运营的说明。刻意不含命中的具体词，避免被逐字试探绕过。</summary>
+    public string? RiskSummary { get; private set; }
+
+    /// <summary>判定时使用的规则目录版本，用于事后回溯“当时是哪一版规则”。</summary>
+    public int RiskRuleVersion { get; private set; }
+
+    public DateTimeOffset? RiskAssessedAt { get; private set; }
+
+    /// <summary>人工复核状态：只有转人工的任务会进入 Pending。</summary>
+    public RiskReviewStatus RiskReviewStatus { get; private set; } = RiskReviewStatus.NotRequired;
+
+    public Guid? RiskReviewedBy { get; private set; }
+    public DateTimeOffset? RiskReviewedAt { get; private set; }
+
+    /// <summary>运营复核的意见（放行或驳回的依据）。</summary>
+    public string? RiskReviewNote { get; private set; }
+
+    /// <summary>复核意见的长度上限。</summary>
+    public const int MaxRiskReviewNoteLength = 200;
+
+    /// <summary>被规则判定为禁止类别：任何人都不能发布，人工只能驳回、不能放行。</summary>
+    public bool IsRiskBlocked => RiskVerdict == RiskVerdict.Blocked;
+
+    /// <summary>正在等人工复核，复核通过前不能发布。</summary>
+    public bool AwaitingRiskReview => RiskVerdict == RiskVerdict.NeedsReview && RiskReviewStatus == RiskReviewStatus.Pending;
+
+    /// <summary>发布这一关是否已经被风险处置卡住（被禁止、待复核、或复核被驳回）。</summary>
+    public bool IsPublishBlockedByRisk =>
+        RiskReviewStatus == RiskReviewStatus.Rejected
+        || RiskVerdict == RiskVerdict.Blocked
+        || (RiskVerdict == RiskVerdict.NeedsReview && RiskReviewStatus != RiskReviewStatus.Approved);
+
     public static TaskItem Rehydrate(
         Guid id,
         Guid ownerId,
@@ -118,7 +164,17 @@ public sealed class TaskItem
         DateTimeOffset? expiredAt = null,
         DateTimeOffset? cancelledAt = null,
         string? cancellationReason = null,
-        DateTimeOffset? applicationDeadline = null)
+        DateTimeOffset? applicationDeadline = null,
+        RiskVerdict riskVerdict = RiskVerdict.Allowed,
+        string? riskRuleCode = null,
+        string? riskCategory = null,
+        string? riskSummary = null,
+        int riskRuleVersion = 0,
+        DateTimeOffset? riskAssessedAt = null,
+        RiskReviewStatus riskReviewStatus = RiskReviewStatus.NotRequired,
+        Guid? riskReviewedBy = null,
+        DateTimeOffset? riskReviewedAt = null,
+        string? riskReviewNote = null)
     {
         var task = new TaskItem
         {
@@ -136,7 +192,17 @@ public sealed class TaskItem
             ExpiredAt = expiredAt,
             CancelledAt = cancelledAt,
             CancellationReason = cancellationReason,
-            ApplicationDeadline = applicationDeadline
+            ApplicationDeadline = applicationDeadline,
+            RiskVerdict = riskVerdict,
+            RiskRuleCode = riskRuleCode,
+            RiskCategory = riskCategory,
+            RiskSummary = riskSummary,
+            RiskRuleVersion = riskRuleVersion,
+            RiskAssessedAt = riskAssessedAt,
+            RiskReviewStatus = riskReviewStatus,
+            RiskReviewedBy = riskReviewedBy,
+            RiskReviewedAt = riskReviewedAt,
+            RiskReviewNote = riskReviewNote
         };
         task._applications.AddRange(applications);
         return task;
@@ -164,6 +230,12 @@ public sealed class TaskItem
     public void Publish(DateTimeOffset now)
     {
         EnsureStatus(TaskStatus.ReadyToPublish);
+
+        // 发布前重新判定一次：悬赏与截止时间在草稿阶段会变（加价到高金额、改到深夜），
+        // 判定结果与原因代码都要跟当前字段一致，再决定这一关过不过。
+        AssessRisk(now);
+        EnsurePublishableByRisk();
+
         if (Deadline <= now) throw new DomainException("已过截止时间的任务不能发布。");
         // 报名截止时间已经过去还发布，等于把一个谁都报不了名的任务放进大厅。
         if (ApplicationDeadline is { } applicationDeadline && applicationDeadline <= now)
@@ -325,5 +397,82 @@ public sealed class TaskItem
         {
             throw new DomainException($"任务当前状态 {Status} 不允许该操作，期望状态为 {expected}。");
         }
+    }
+
+    /// <summary>
+    /// 跑一遍确定性规则并把结论记在任务上。已有人工结论时不让规则覆盖：
+    /// 运营驳回过的任务不会因为后续字段变化又变回可发布。
+    /// </summary>
+    private void AssessRisk(DateTimeOffset now)
+    {
+        var assessment = RiskRuleCatalog.Evaluate(Title, Description, AcceptanceCriteria, ExecutionAddress, Reward.Amount, Deadline);
+        var humanDecisionExists = RiskReviewStatus is RiskReviewStatus.Approved or RiskReviewStatus.Rejected;
+
+        RiskVerdict = assessment.Verdict;
+        RiskRuleCode = assessment.RuleCode;
+        RiskCategory = assessment.Category;
+        RiskSummary = assessment.Description;
+        RiskRuleVersion = assessment.RuleVersion;
+        RiskAssessedAt = UtcTimestamp.Normalize(now);
+
+        RiskReviewStatus = assessment.Verdict switch
+        {
+            RiskVerdict.NeedsReview when humanDecisionExists => RiskReviewStatus,
+            RiskVerdict.NeedsReview => RiskReviewStatus.Pending,
+            // 人工驳回是终态：即便规则不再命中，也不让它自己变回可发布。
+            _ when RiskReviewStatus == RiskReviewStatus.Rejected => RiskReviewStatus.Rejected,
+            _ => RiskReviewStatus.NotRequired
+        };
+    }
+
+    /// <summary>
+    /// 发布前的风险门禁：禁止类别一律不放行（人工也不能放行），转人工类别必须有运营的放行结论，
+    /// 已经被运营驳回的任务即使规则不再命中也不能发布。
+    /// </summary>
+    private void EnsurePublishableByRisk()
+    {
+        if (RiskReviewStatus == RiskReviewStatus.Rejected)
+        {
+            throw new DomainException($"该任务未通过人工复核，不能发布：{RiskReviewNote}");
+        }
+
+        if (RiskVerdict == RiskVerdict.Blocked)
+        {
+            throw new DomainException($"该任务属于平台禁止的类别（{RiskRuleCode} · {RiskCategory}），不能发布：{RiskSummary}");
+        }
+
+        if (RiskVerdict != RiskVerdict.NeedsReview || RiskReviewStatus == RiskReviewStatus.Approved) return;
+
+        throw new DomainException($"该任务需要人工复核（{RiskRuleCode} · {RiskCategory}），复核通过后才能发布：{RiskSummary}");
+    }
+
+    /// <summary>运营复核放行：只对仍在待复核队列里的任务有效，放行后可以发布。</summary>
+    public void ApproveRiskReview(Guid reviewerId, string note, DateTimeOffset now) =>
+        DecideRiskReview(RiskReviewStatus.Approved, reviewerId, note, now);
+
+    /// <summary>运营复核驳回：任务不能发布，用户仍可以自己撤销草稿。</summary>
+    public void RejectRiskReview(Guid reviewerId, string note, DateTimeOffset now) =>
+        DecideRiskReview(RiskReviewStatus.Rejected, reviewerId, note, now);
+
+    private void DecideRiskReview(RiskReviewStatus decision, Guid reviewerId, string note, DateTimeOffset now)
+    {
+        if (RiskVerdict != RiskVerdict.NeedsReview) throw new DomainException("该任务没有待处置的风险复核。");
+        if (RiskReviewStatus != RiskReviewStatus.Pending)
+        {
+            throw new DomainException($"该任务的风险复核已经处置过（{RiskReviewStatus}），不能重复处置。");
+        }
+
+        if (reviewerId == Guid.Empty) throw new DomainException("风险复核必须记录处置人。");
+
+        var trimmed = note?.Trim() ?? string.Empty;
+        if (trimmed.Length is < 1 or > MaxRiskReviewNoteLength)
+        {
+            throw new DomainException($"风险复核必须填写依据，长度不超过 {MaxRiskReviewNoteLength} 个字符。");
+        }
+
+        RiskReviewStatus = decision;
+        RiskReviewedBy = reviewerId;
+        RiskReviewedAt = UtcTimestamp.Normalize(now);
+        RiskReviewNote = trimmed;
     }
 }

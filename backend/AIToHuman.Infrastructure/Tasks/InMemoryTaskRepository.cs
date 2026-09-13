@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using AIToHuman.Application.Admin;
 using AIToHuman.Application.Tasks;
+using AIToHuman.Domain.Risk;
 using AIToHuman.Domain.Tasks;
 // System.Threading.Tasks 里也有一个 TaskStatus，这里明确用领域里的那个。
 using TaskStatus = AIToHuman.Domain.Tasks.TaskStatus;
@@ -35,6 +36,14 @@ public sealed class InMemoryTaskRepository : ITaskRepository, IAdminTaskQuery
     public IReadOnlyCollection<TaskItem> ListByApplicant(Guid workerId, int limit) => _tasks.Values
         .Where(task => task.Applications.Any(application => application.WorkerId == workerId))
         .OrderByDescending(task => task.CreatedAt)
+        .Take(limit)
+        .ToArray();
+
+    /// <summary>运营风险复核队列：待复核的任务按创建时间升序，先来先处理。</summary>
+    public IReadOnlyCollection<TaskItem> ListPendingRiskReview(int limit) => _tasks.Values
+        .Where(task => task.RiskReviewStatus == RiskReviewStatus.Pending)
+        .OrderBy(task => task.CreatedAt)
+        .ThenBy(task => task.Id)
         .Take(limit)
         .ToArray();
     public TaskItem? Get(Guid id) => _tasks.GetValueOrDefault(id);

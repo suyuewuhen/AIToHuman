@@ -27,6 +27,22 @@ export interface TaskItem {
   applicationDeadline?: string | null
   /** 是否还在接收报名，由服务端按当前时间判定；客户端不要自己算。 */
   acceptingApplications?: boolean
+  /** 确定性风险规则的结论：Allowed / NeedsReview / Blocked。 */
+  riskVerdict?: string
+  /** 命中的原因代码，例如 prohibited.exam_impersonation；放行时为空。 */
+  riskRuleCode?: string | null
+  /** 命中规则的类别名（面向人）。 */
+  riskCategory?: string | null
+  /** 可展示的说明：说清违反了哪一类规则，但不含具体命中的词。 */
+  riskSummary?: string | null
+  /** 判定时使用的规则目录版本。 */
+  riskRuleVersion?: number
+  /** 人工复核状态：NotRequired / Pending / Approved / Rejected。 */
+  riskReviewStatus?: string
+  /** 运营复核意见（仅复核过的任务有值）。 */
+  riskReviewNote?: string | null
+  /** 发布这一关是否被风险处置卡住，由服务端判定，客户端不要自己推算。 */
+  riskPublishBlocked?: boolean
 }
 
 export interface OrderItem {

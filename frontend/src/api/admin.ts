@@ -72,6 +72,58 @@ export interface AdminOrderList {
 /** 争议处置结果：强制完成 / 退回返工 / 终止订单。 */
 export type DisputeDecision = 'Approve' | 'Rework' | 'Cancel'
 
+/**
+ * 运营风险复核队列里的一条任务：命中的规则（原因代码 + 类别 + 说明 + 规则版本）与任务原文一并返回，
+ * 运营不必再跳到别处凑上下文。被禁止的类别不会进这个队列——人工无权放行。
+ */
+export interface AdminRiskReviewItem {
+  taskId: string
+  title: string
+  description: string
+  district: string
+  rewardAmount: number
+  rewardCurrency: string
+  deadline: string
+  createdAt: string
+  ownerId: string
+  ownerDisplayName: string | null
+  ownerEmail: string | null
+  verdict: string
+  ruleCode: string | null
+  category: string | null
+  summary: string | null
+  ruleVersion: number
+  assessedAt: string | null
+  reviewStatus: string
+  taskStatus: string
+  reviewedAt: string | null
+  reviewNote: string | null
+  reviewedBy: string | null
+}
+
+export interface AdminRiskReviewList {
+  items: AdminRiskReviewItem[]
+  limit: number
+}
+
+/** 风险复核结论：放行（之后可发布）或驳回（不能发布）。 */
+export type RiskReviewDecision = 'Approve' | 'Reject'
+
+/** 规则目录自述：说明现在按什么规则拦（含版本），但不返回匹配词。 */
+export interface RiskRuleItem {
+  code: string
+  category: string
+  verdict: string
+  description: string
+  keywordCount: number
+}
+
+export interface RiskRuleCatalog {
+  version: number
+  highRewardThreshold: number
+  rules: RiskRuleItem[]
+}
+
 export interface AdminAuditItem {
   id: string
   actorId: string
@@ -172,4 +224,42 @@ export async function resolveDispute(orderId: string, decision: DisputeDecision,
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify({ decision, note }),
   }))
+}
+
+/** 风险复核队列：等人工处置的任务，按创建时间升序（先来先处理）。 */
+export async function listRiskReviews(limit = 20): Promise<AdminRiskReviewList> {
+  return parseResponse<AdminRiskReviewList>(await fetch(`/api/v1/admin/risk/reviews?limit=${limit}`, { headers: authHeaders() }))
+}
+
+/** 处置风险复核：放行或驳回 + 必填依据（依据写进运营审计，并通知任务所有者）。 */
+export async function decideRiskReview(taskId: string, decision: RiskReviewDecision, note: string): Promise<AdminRiskReviewItem> {
+  return parseResponse<AdminRiskReviewItem>(await fetch(`/api/v1/admin/risk/reviews/${taskId}/decide`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ decision, note }),
+  }))
+}
+
+/** 规则目录：现在按什么规则拦、哪一版；只给匹配词数量，不给匹配词本身。 */
+export async function getRiskRules(): Promise<RiskRuleCatalog> {
+  return parseResponse<RiskRuleCatalog>(await fetch('/api/v1/admin/risk/rules', { headers: authHeaders() }))
+}
+
+export function riskVerdictLabel(verdict: string): string {
+  const labels: Record<string, string> = {
+    Allowed: '规则放行',
+    NeedsReview: '需人工复核',
+    Blocked: '平台禁止',
+  }
+  return labels[verdict] ?? verdict
+}
+
+export function riskReviewStatusLabel(status: string): string {
+  const labels: Record<string, string> = {
+    NotRequired: '无需复核',
+    Pending: '待复核',
+    Approved: '已放行',
+    Rejected: '已驳回',
+  }
+  return labels[status] ?? status
 }

@@ -76,6 +76,8 @@ GET    /api/v1/workers/{workerId}/reviews
 
 运营侧的争议处置：`GET /api/v1/admin/orders?status=&limit=`（管理员身份）返回 `AdminOrderListResponse`——省略 `status` 时默认**只返回 `Disputed`**，传 `all` 看全部；条目另含双方邮箱、提交说明、审批/驳回说明、返工次数与取消信息。`POST /api/v1/admin/orders/{id}/resolve`，body `{ decision, note }`，`decision ∈ { Approve, Rework, Cancel }`，`note` 必填、≤500 字，返回 `AdminOrderItemResponse`：`Approve` 把订单置为 `Approved`（写审批时间与说明、清空驳回原因）并把任务从 `Assigned` 推进到 `Closed`；`Rework` 退回 `InProgress`、累加返工次数、把处置依据记进驳回原因、任务保持 `Assigned`；`Cancel` 终止订单（`cancelledAt` 落库，`cancelledBy` 为空表示平台处置而不是某个参与者取消，处置依据写进取消原因），任务按“取消订单”的规则回到大厅或直接过期。三种处置都在同一事务里写运营审计（`order.dispute.approve` / `order.dispute.rework` / `order.dispute.cancel`，`targetType=order`，依据写在 `reason`）并通知双方（`order.disputeResolved`，事件键按接收者派生）。
 
+已实现的风险门禁与人工复核：任务在创建草稿与 `POST /tasks/{id}/publish` 前各判定一次确定性风险规则，结果随任务返回——`TaskResponse` 与 `TaskSummaryResponse` 都带 `riskVerdict`（`Allowed`/`NeedsReview`/`Blocked`）、`riskRuleCode`、`riskCategory`、`riskSummary`、`riskRuleVersion`、`riskReviewStatus`（`NotRequired`/`Pending`/`Approved`/`Rejected`）、`riskReviewNote` 与 `riskPublishBlocked`，`TaskResponse` 另有 `riskAssessedAt` 与 `riskReviewedAt`。**`riskPublishBlocked` 是服务端算好的结论，客户端不要自己按 `riskVerdict`/`riskReviewStatus` 推算**（禁止类别、以及需人工复核但尚未放行或已被驳回都为 `true`）；被拦的任务发布返回 `422` 与可读原因（例如“该任务属于平台禁止的类别（prohibited.exam_impersonation · 代考与冒名顶替），不能发布：…”），禁止类别人工也无权放行，草稿仍然保留，用户可以查看原因或自行撤销。运营侧三个接口都要求管理员身份（非管理员 `403`）：`GET /api/v1/admin/risk/reviews?limit=50` 返回 `AdminRiskReviewListResponse`（条目 `AdminRiskReviewItemResponse`，只列判成 `NeedsReview` 且仍为 `Pending` 的任务，按创建时间升序、先来先处理）；`POST /api/v1/admin/risk/reviews/{taskId}/decide`，body `{ decision: "Approve" | "Reject", note }`，`note` 即依据、必填且 ≤200 字，`Approve` 之后任务可以发布，`Reject` 是终态（规则之后不再命中也不会变回可发布），依据与动作名 `task.risk.approve`/`task.risk.reject` 一起写进 `admin_audit_entries`，任务所有者收到 `task.riskReviewed`（载荷含 `canPublish`）；`GET /api/v1/admin/risk/rules` 返回 `RiskRuleCatalogResponse`（`version`、`highRewardThreshold` 与规则清单，每条给 `code`/`category`/`verdict`/`description`/`keywordCount`，**不返回匹配词本身**）。非法取值返回 `422`（例如“风险复核结论 Maybe 不存在：可选值为 Approve（放行）或 Reject（驳回）。”），对没有待处置复核的任务调用返回 `422`“该任务没有待处置的风险复核。”，重复处置同样是 `422`。
+
 建议价响应至少包含建议金额、建议区间、币种、主要估价因素、数据充分度和规则/模型版本。它不修改草稿金额；用户另行编辑并确认的 `reward` 才是任务悬赏。
 
 对话最少闭环当前提供：`POST /api/v1/conversations` 创建会话（服务端写入开场白），`GET /api/v1/conversations/{id}?userId=...` 读取历史与当前草稿用于刷新恢复，`GET /api/v1/conversations?userId=...&limit=...` 列出该用户的会话。会话历史以服务端为准：`POST /api/v1/ai/plan/stream` 的请求体是 `{ conversationId, userId, message }`，服务端取出最近 29 条历史并接上本轮消息发给模型，回合完整成功后才写入用户消息与 AI 回复。会话仅所有者可读可写，越权返回 `403`；会话不存在返回 `404`；消息为空或超长返回 `422`。这三类问题在开始写 SSE 之前判定，因此仍用 HTTP 状态码表达。
@@ -217,7 +219,7 @@ GET /api/v1/tasks?category=pickup&district=chaoyang&limit=20&cursor=...
 
 ## 10. 运营配置接口
 
-运营接口都挂在 `/api/v1/admin/settings` 下，并要求管理员身份（部署配置里的 `Admin__UserIds` / `Admin__Emails`，或 `admin` 角色声明）；未配置管理员时一律 `403`。
+运营接口挂在 `/api/v1/admin` 下（配置类在 `/admin/settings`，人工兜底类在 `/admin/tasks`、`/admin/orders`、`/admin/users`、`/admin/risk`，审计在 `/admin/audits`），都要求管理员身份（部署配置里的 `Admin__UserIds` / `Admin__Emails`，或 `admin` 角色声明）；未配置管理员时一律 `403`。
 
 ```text
 GET    /api/v1/admin/settings                  列出全部可配置项（含生效值、来源、默认值、可选值）

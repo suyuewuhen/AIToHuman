@@ -1,12 +1,12 @@
 # AIToHuman 项目交接文档
 
-最后更新：2026-09-12
+最后更新：2026-09-13
 
 仓库：[suyuewuhen/AIToHuman](https://github.com/suyuewuhen/AIToHuman)
 
 当前分支：`main`
 
-最新已提交基线：`origin/main` 已包含到「通知多实例扇出」那一轮（`dd31265`），本轮的订单取消与任务过期是当前 `main` 上最新的一个提交，工作区干净。
+最新已提交基线：上一轮结束时 `main` 停在 `56a58d3`（报名撤回/报名截止时间与争议处理的前端接入与文档同步），`origin/main` 落在更早的 `dd31265`，即 `main` 领先远端若干个提交；本轮的风险拦截改动随本轮提交进入 `main`（见第 2 节）。
 
 本文面向接手开发、代码评审和本地联调人员。内容以已提交代码为准；上一版文档里“已提交基线 / 当前未提交实现”的双轨描述已经过时——所有多轮 AI、通知、会话与凭证实现都已提交。文中每条“已实现 / 未实现”的结论都对应第 11 节可复现的验证步骤。
 
@@ -29,11 +29,11 @@ AI 多轮澄清（每轮一个问题）
 → 双方评价，双方提交或 7 天后公开
 ```
 
-尚未实现：真实支付和托管、实名认证、禁止任务风险拦截、真实的病毒/内容扫描服务商（协议已接好，只差选定/部署服务）、争议的责任判定与赔付/退款、争议申诉与处理时限、精确地址访问审计、图片重新编码；运营后台的任务/用户检索、人工下架与争议处置已实现，风险规则引擎与客服工单仍未实现。
+尚未实现：真实支付和托管、实名认证、真实的病毒/内容扫描服务商（协议已接好，只差选定/部署服务）、争议的责任判定与赔付/退款、争议申诉与处理时限、误拦申诉与客服工单、精确地址访问审计、图片重新编码；运营后台的任务/用户检索、人工下架、争议处置与风险复核已实现，禁止任务拦截已由确定性规则落地（缺模型辅助分类与申诉入口）。
 
 ## 2. 当前工作区状态
 
-工作区除本轮改动外干净：上一轮的「多实例通知扇出」已经推到 `origin/main`（说明这台机器的远端凭据是可用的，`git push` 即可）。`main` 上未推送的提交是最近两轮的三块异常流程：订单取消与任务过期、报名撤回与报名截止时间（含迁移 18）、争议处理（含迁移 19）；其中前端与文档随最后一个提交一起进来。上一版交接文档描述的“多轮 AI 未提交实现”已经全部提交，本文不再区分“基线 / 未提交”两种状态。
+工作区状态：上一轮的三块异常流程（订单取消与任务过期、报名撤回与报名截止时间、争议处理，含迁移 17–19）已经提交在 `main` 上但**尚未推送**到 `origin/main`（远端凭据可用，`git push` 即可）；本轮的「风险规则与禁止任务拦截」（迁移 20）随本轮提交一起进入 `main`（`git log -1` 可见）。上一版交接文档描述的“多轮 AI 未提交实现”已经全部提交，本文不再区分“基线 / 未提交”两种状态。
 
 从上一版基线 `f196850` 到当前 `e45da76` 的主要变化：
 
@@ -103,7 +103,20 @@ docs/                             ai-planning、api/api-guidelines、architectur
 - 大厅列表按截止时间升序游标分页（`items`/`nextCursor`/`hasMore`），支持按区域、悬赏区间筛选；非法区间或非法游标返回 `400` 与可读原因。
 - 公开详情只对已发布及之后的状态开放；`ReadyToPublish` 草稿仅所有者可见，其他人（含匿名）一律 `404`，避免草稿内容泄露。
 - 精确执行地址属于订单参与者层信息：所有者始终可读，被选中的服务者在订单成立后可读，已报名但未被选中的服务者与其他人返回 `403`；大厅与公开详情只暴露 `hasExecutionAddress` 布尔值，永远不含地址本身。
-- 需求方可查看报名者和评价摘要，再选择服务者。
+- 需求方在选人前能看到服务者的公开评价摘要：报名列表本身只返回 `workerId`/备注/状态/提交时间，服务者信用要通过 `GET /api/v1/users/{workerId}/review-summary` 单独查；报名接口**不**内联评价摘要，这是当前已知的接口缺口（见第 12 节后续跟进）。
+
+### 风险规则与人工复核
+
+- 判定是**确定性规则**，不是模型自由判断：规则目录固定在 `backend/AIToHuman.Domain/Risk/RiskRuleCatalog.cs` 并带 `Version`（当前第 1 版），改规则必须同时提升版本号，否则历史任务上的判定无法回溯是哪一版规则给的。
+- 当前 10 条词表规则（6 条 `prohibited.*` 禁止类：代考与冒名顶替、违禁品与危险品、欺诈伪造与绕过身份核验、跟踪偷拍与骚扰、危害人身安全、必须由持证人员执行的医疗行为；4 条 `review.*` 转人工类：证件与重要文件、受限场所、敏感物品与照护对象、物品或用途不明）+ 2 条阈值规则：悬赏 > 5000 元（`review.high_reward`）、截止时间落在北京时间 00:00–06:00（`review.night_window`），共 12 个原因代码。
+- 匹配范围是标题、描述、验收标准与执行地址；匹配词全部 ≥ 2 个字（单字如“代”会误伤“代取/代送”，有单元测试锁死这条约束）。
+- 判定发生在两处：创建草稿（`TaskItem` 构造）与发布前（`Publish` 重新判定一次，因为悬赏与截止时间在草稿阶段会变）。被禁止的任务**仍然会创建出草稿**——用户能看到自己写的内容和原因，也可以自己撤销，只是发布这一关过不去；这比直接丢弃用户输入更好追溯。
+- 发布门禁：`prohibited.*` 一律 `422` 且**人工也无权放行**；`review.*` 进入人工队列，运营放行后才能发布，驳回则不能发布。人工驳回是终态：即使规则后来不再命中，也不会自己变回可发布。
+- 判定结果记在任务上：`RiskVerdict`、`RiskRuleCode`、`RiskCategory`、`RiskSummary`、`RiskRuleVersion`、`RiskAssessedAt`、`RiskReviewStatus`、`RiskReviewedBy`、`RiskReviewedAt`、`RiskReviewNote`。其中 `RiskSummary` 是给用户和运营看的说明，**刻意不含命中的具体词**，避免被逐字试探绕过。
+- 运营复核走既有后台：`GET /api/v1/admin/risk/reviews?limit=` 列出待复核任务（按创建时间升序，先来先处理），`POST /api/v1/admin/risk/reviews/{taskId}/decide` 放行或驳回（依据必填 ≤200 字，写进 `admin_audit_entries`，动作名 `task.risk.approve` / `task.risk.reject`），`GET /api/v1/admin/risk/rules` 说明当前按什么规则拦（版本、阈值、规则清单与匹配词数量，不返回匹配词）。非管理员一律 `403`。
+- 复核结论通知所有者：`task.riskReviewed`，载荷 `{ taskId, title, reviewStatus, verdict, ruleCode, canPublish }`，走既有 Outbox + SignalR 链路。
+- 前端：草稿预览弹窗与“我的任务”会显示被拦/待复核的原因并禁用发布按钮；顶栏“运营配置”新增“风险复核”页签。
+- 尚未实现：误拦申诉与客服工单；模型辅助分类与语义判断（现在只有字面词表匹配）；规则目录的后台编辑（改规则要发版）；追加式的决策历史表（现在只保留最新一条判定，记在任务行上）。
 
 ### 订单、通知与评价
 
@@ -115,7 +128,7 @@ docs/                             ai-planning、api/api-guidelines、architectur
 - 服务者提交时必须填写执行凭证或完成说明；需求方驳回时必须填写原因。
 - 订单批准后双方可以分别评价；双方都提交后立即公开，只有一方提交时在 7 天后公开。
 - 每方每个订单只能评价一次，重复提交由应用层判定并返回 `422`“你已经评价过该订单。”（数据库 `(OrderId, ReviewerId)` 唯一索引作为兜底，不再依赖它抛出 500）。
-- 任务大厅与公开详情读取公开评价摘要，因此服务者能看需求方信用、需求方能看服务者信用。
+- 任务大厅与公开详情读取公开评价摘要，因此服务者在报名前能看到需求方信用；服务者信用目前要由需求方另行查询 `GET /api/v1/users/{id}/review-summary`（报名列表不内联，见上一节）。
 - 通知走 Outbox：业务事务内写入 `notifications` 行，后台 `NotificationDispatcher` 每 2 秒扫描未派发记录。派发顺序是**先原子认领、再推送**：认领用一条条件更新 `UPDATE notifications SET "DispatchedAt" = @p WHERE "Id" = @id AND "DispatchedAt" IS NULL`，只有影响 1 行的实例负责推送，因此多实例同时扫到同一条记录也不会重复推送；推送失败就撤回认领、退回 Outbox 等下个周期，绝不把没推出去的通知标成已派发。
 - 取消订单：需求方在服务者提交验收前可以取消，服务者只能在开始执行前取消；必须填写原因，原因、取消人（`CancelledBy`）与时间（`CancelledAt`）落库。同一事务里把任务放回大厅（未过截止时间，本次选中报名置 `Rejected`，服务者可重新报名）或直接置为过期（已过截止时间），并通知对方参与者（`order.cancelled`）。
 - 任务撤销与过期：所有者可以撤销自己的草稿或尚未被选中的已发布任务（`POST /api/v1/tasks/{id}/cancel`，原因必填，报名中的服务者收到 `task.cancelled`）；超过截止时间仍无人被选中的已发布任务由后台 `TaskExpiryService` 每 60 秒扫描一次置为过期（记 `ExpiredAt`），`Pending` 报名一并置为 `Expired`，所有者与报名者各收到一条 `task.expired`。过期不可逆，任务不会留在“已发布”里等下一个服务者。
@@ -185,6 +198,8 @@ docs/                             ai-planning、api/api-guidelines、architectur
 13. 服务者可以撤回自己**尚未被处理**的报名：记录保留为 `Withdrawn` 便于追溯，撤回后可以重新报名，任务所有者会收到通知；一旦被选中就只能走订单取消，不能悄悄退出。
 14. 任务可以设可选的**报名截止时间**：它只关闭“新报名”，已经报过名的人仍然可以被选中；报名截止时间必须落在创建之后、任务截止时间之前，否则发布会被拒绝。
 15. 争议是双方谈不拢时的兜底，不是常规流程：需求方在服务者提交验收后（`Submitted`）发起，服务者在验收被驳回后（`Rejected`）发起；争议期间订单冻结，双方都动不了，等平台处置。
+16. 风险拦截先做确定性规则，再谈模型：禁止与转人工两档都由代码内版本化的规则目录给出，每条结论带原因代码与规则版本。禁止类别（代考、违禁品、跟踪偷拍等）**任何情况下都不能发布，人工也无权放行**；转人工类别必须由运营写明依据放行后才能发布，运营驳回是终态。
+17. 被规则拦住的草稿不会被丢掉：任务照样创建出来，用户能看到自己写的内容与原因、也可以自己撤销，只是发布这一关过不去——比直接丢弃输入更容易追溯，也更容易向用户解释。
 16. 争议只有运营能处置，且必须写明依据，三种结果都是终局动作：强制完成（订单通过并关单）、退回返工（回到执行中，返工次数累加）、终止订单（订单取消，任务回大厅或过期；这不是任何一方“取消”，因此不记录取消人）。
 
 ## 5. 技术架构与目录
@@ -418,6 +433,9 @@ netstat -ano | Select-String ':5188|:5173'
 | GET | `/api/v1/admin/tasks/{id}` | 任务详情（含报名者与订单状态） |
 | POST | `/api/v1/admin/tasks/{id}/cancel` | 人工下架（必须给原因，原因进运营审计；已分配任务返回 422） |
 | GET | `/api/v1/admin/users?keyword=&limit=` | 用户检索（邮箱/昵称）；无 PostgreSQL 时返回空列表 |
+| GET | `/api/v1/admin/risk/reviews?limit=` | 风险复核队列（判定为“需人工复核”的任务，按创建时间升序） |
+| POST | `/api/v1/admin/risk/reviews/{taskId}/decide` | 放行或驳回风险复核（`decision=Approve\|Reject`，依据必填 ≤200 字）；禁止类别不在队列里，调用返回 422 |
+| GET | `/api/v1/admin/risk/rules` | 风险规则目录自述（版本、高金额阈值、规则清单与匹配词数量，不返回匹配词） |
 | GET/WS | `/hubs/notifications` | SignalR 主动通知；推送 `notification.created` 信封 |
 
 普通 API 错误使用 Problem Details，主要映射为 `400`、`401`、`403`、`404`、`409`、`422`、`502` 和 `504`。`409` 既用于资源冲突（例如邮箱已注册），也用于乐观并发冲突。AI SSE 在响应开始后的错误使用流内 `error` 事件。
@@ -426,7 +444,7 @@ netstat -ano | Select-String ':5188|:5173'
 
 Development + PostgreSQL 启动时改为应用 EF Core 迁移（`Database.Migrate()`），不再使用 `EnsureCreated()` 和幂等建表 SQL。生产环境由部署流程执行迁移，不在应用启动时自动迁移。
 
-迁移历史（19 个）：`AddUsers` → `AddOrders` → `AddOrderEvidence` → `AddReviews` → `AddOrderRework` → `AddConversations` → `AddTaskTables` → `AddConcurrencyTokens` → `AddNotifications` → `AddOrderMessages` → `AddTaskExecutionAddress` → `AddEvidence` → `AddSystemSettings` → `AddEvidenceScanAttempts` → `AddEvidenceMetadataRemoved` → `AddAdminAudit` → `AddOrderCancellationAndTaskExpiry` → `AddApplicationDeadline` → `AddOrderDispute`。其中 `AddTaskTables` 补上了此前只由 `EnsureCreated()` 建出、从未纳入迁移的 `tasks` 与 `task_applications` 两张核心表；`AddConcurrencyTokens` 给 `tasks`/`orders` 加 `Version` 乐观并发令牌；`AddTaskExecutionAddress` 给 `tasks` 加参与者层的精确执行地址；`AddEvidence` 建 `evidence` 表；`AddSystemSettings` 建运营配置的两张表；`AddEvidenceScanAttempts` 给 `evidence` 补上扫描尝试次数、最近一次说明与尝试时间；`AddEvidenceMetadataRemoved` 补上“已移除元数据”说明与按人限速用的索引；`AddAdminAudit` 建运营操作审计表 `admin_audit_entries`（人工下架等动作只追加留痕）；`AddOrderCancellationAndTaskExpiry` 给 `orders` 加取消三列、给 `tasks` 加 `ExpiredAt`/`CancelledAt`/`CancellationReason`；`AddApplicationDeadline` 给 `tasks` 加可选的报名截止时间；`AddOrderDispute` 给 `orders` 加争议六列并补 `(Status, CreatedAt)` 索引供运营按状态检索。
+迁移历史（20 个）：`AddUsers` → `AddOrders` → `AddOrderEvidence` → `AddReviews` → `AddOrderRework` → `AddConversations` → `AddTaskTables` → `AddConcurrencyTokens` → `AddNotifications` → `AddOrderMessages` → `AddTaskExecutionAddress` → `AddEvidence` → `AddSystemSettings` → `AddEvidenceScanAttempts` → `AddEvidenceMetadataRemoved` → `AddAdminAudit` → `AddOrderCancellationAndTaskExpiry` → `AddApplicationDeadline` → `AddOrderDispute` → `AddTaskRiskAssessment`。其中 `AddTaskTables` 补上了此前只由 `EnsureCreated()` 建出、从未纳入迁移的 `tasks` 与 `task_applications` 两张核心表；`AddConcurrencyTokens` 给 `tasks`/`orders` 加 `Version` 乐观并发令牌；`AddTaskExecutionAddress` 给 `tasks` 加参与者层的精确执行地址；`AddEvidence` 建 `evidence` 表；`AddSystemSettings` 建运营配置的两张表；`AddEvidenceScanAttempts` 给 `evidence` 补上扫描尝试次数、最近一次说明与尝试时间；`AddEvidenceMetadataRemoved` 补上“已移除元数据”说明与按人限速用的索引；`AddAdminAudit` 建运营操作审计表 `admin_audit_entries`（人工下架等动作只追加留痕）；`AddOrderCancellationAndTaskExpiry` 给 `orders` 加取消三列、给 `tasks` 加 `ExpiredAt`/`CancelledAt`/`CancellationReason`；`AddApplicationDeadline` 给 `tasks` 加可选的报名截止时间；`AddOrderDispute` 给 `orders` 加争议六列并补 `(Status, CreatedAt)` 索引供运营按状态检索；`AddTaskRiskAssessment` 给 `tasks` 加风险判定的 10 列并补 `(RiskReviewStatus, CreatedAt)` 索引供复核队列扫描——存量行用数据库默认值 `Allowed`/`NotRequired` 回填，读取时对未知取值也做防御性解析（历史行不会因为枚举名不认识而读不出来）。
 
 早期 `EnsureCreated()` 建出的本地库没有迁移历史记录。启动逻辑会检测这种情况：先用模型对比物理表的「表名.列名」，只有结构完全对得上时，才把当时已有的迁移整体标记为已应用并打警告日志；一旦缺表或缺列就直接报错说明缺了什么，提示删除重建，避免在错误的 schema 上继续运行。基线化之后新增的迁移会正常应用——例如 `AddConcurrencyTokens` 就是在基线化之后自动补上的 `Version` 列。目标库不存在时由 `Migrate()` 负责建库。
 
@@ -464,15 +482,15 @@ Development + PostgreSQL 启动时改为应用 EF Core 迁移（`Database.Migrat
 
 ```text
 Task:  ReadyToPublish → Published → Assigned → Closed
-                         └→ Expired / Cancelled（领域枚举存在，流程未完整接入）
+                         └→ Expired / Cancelled（到期自动过期、所有者撤销与运营下架都已接入）
 
 Order: Accepted → InProgress → Submitted → Approved
                       ↑              │
                       └── Rejected ←─┘   （POST /orders/{id}/resume 返工）
-                         └→ Disputed / Cancelled（枚举存在，接口未实现）
+                         └→ Disputed（争议发起与运营处置已接入）/ Cancelled（双方按阶段取消已接入）
 ```
 
-当前限制：返工期间任务保持 `Assigned`，不会重新出现在大厅；订单 `Approved` 后任务自动 `Closed`，但返工次数没有上限。取消与“到期自动过期”已经可用（规则见第 4 节，实现见第 3 节）；争议流程仍没有实现——`OrderStatus.Disputed` 只是枚举值，双方对履约结果有分歧时目前只能走驳回/返工，或者由需求方取消后把任务放回大厅（已产生的凭证与消息都保留）。
+当前限制：返工期间任务保持 `Assigned`，不会重新出现在大厅；订单 `Approved` 后任务自动 `Closed`，但返工次数没有上限。取消、到期自动过期与争议处置都已经可用（规则见第 4 节，实现见第 3 节）。风险门禁是任务侧的最后一道闸：被规则判为禁止类别的任务永远进不了大厅，判为需人工复核的任务要等运营放行。
 
 ## 11. 验证结果与命令
 
@@ -487,7 +505,7 @@ Order: Accepted → InProgress → Submitted → Approved
 - 执行凭证端到端（真实 PostgreSQL + 本机存储目录，multipart 上传 67 字节 PNG）：上传 `200`（`scanStatus=Clean`、SHA-256 摘要、`isDownloadable=true`）→ 需求方列表 1 条 → 下载 `200`、字节完全一致、`Content-Type: image/png`、`X-Content-Type-Options: nosniff`、`Content-Disposition` 为系统生成的 `evidence-<id>.png`；无关用户列表与下载均 `403`；需求方上传 `403`；`text/plain` 与伪造 PNG 各返回 `422` 与对应原因；5 MB + 1 字节返回 `413`；落盘路径为 `<根目录>/<orderId>/<evidenceId>.png`，不含任何用户输入。
 - `npm run typecheck`：通过。
 - Vite 生产构建：通过；若默认 `frontend/dist` 被运行中的进程占用，先停止该进程或输出到临时目录。
-- EF Core 迁移：当前共 14 个（清单见第 10 节）；本轮新增 `AddOrderRework`（`orders` 两列）、`AddConversations`（会话两表）、`AddTaskTables`（补上此前缺失的 `tasks`、`task_applications`）、`AddConcurrencyTokens`（`Version` 列）、`AddNotifications`、`AddOrderMessages`、`AddTaskExecutionAddress`、`AddEvidence`、`AddSystemSettings`、`AddEvidenceScanAttempts`（扫描尝试次数与说明）。
+- EF Core 迁移（本条写于当时）：那时共 14 个（当前为 20 个，清单见第 10 节）；当时新增 `AddOrderRework`（`orders` 两列）、`AddConversations`（会话两表）、`AddTaskTables`（补上此前缺失的 `tasks`、`task_applications`）、`AddConcurrencyTokens`（`Version` 列）、`AddNotifications`、`AddOrderMessages`、`AddTaskExecutionAddress`、`AddEvidence`、`AddSystemSettings`、`AddEvidenceScanAttempts`（扫描尝试次数与说明）。
 - 全新数据库路径（当时含全部 14 个迁移）：另起空库 `aitohuman_evidence_check` 启动 API，`Migrate()` 从零建库并应用全部 14 个迁移，随后在该库上完成下面的凭证扫描闭环用例。
 - 全新数据库路径（2026-09-12，含 `AddSystemSettings`）：空库 `aitohuman_settings_check2` 启动 API，直接查 `__EFMigrationsHistory` 得到 `migrations_applied=13`，最后一条是 `20260912083117_AddSystemSettings`；随后在同一库上完成运营配置端到端用例。
 - 全新数据库路径（2026-09-12 复核，当时 12 个迁移）：空库 `aitohuman_migration_check_v2` 启动 API，日志按顺序打印 12 条 `Applying migration '...'`，`/health` 返回 `healthy`。
@@ -610,6 +628,20 @@ npm run build
 - 数据库侧可见的原子认领：实例日志里出现条件更新 `UPDATE notifications AS n SET "DispatchedAt" = @p WHERE n."Id" = @id AND n."DispatchedAt" IS NULL`——“推送成功后才标记”的旧写法已从代码里删除。
 - 降级路径：把 `ConnectionStrings__Redis` 指向不可达端口（127.0.0.1:6399）并打开开关后启动，日志出现“通知扇出订阅失败，5 秒后重试”与“通知扇出广播失败，改为只推本实例在线客户端。”；连在该实例上的客户端仍然实时收到 `order.messageCreated`（`preview` 与发送内容一致），收件箱从 2 条变 3 条——即 Redis 不通只影响跨实例实时性，不影响本实例投递与落库。
 
+本轮（风险规则与禁止任务拦截）新增验证：
+
+- 编译与测试：`dotnet build AIToHuman.sln --no-restore` 0 警告 0 错误；领域 217 + 集成 252 = 469 个用例全通过（`dotnet test AIToHuman.sln --no-build --no-restore`）。此前 406 个用例在本轮改动后全部保持通过——这一点尤其重要，因为新规则会命中任务正文，若不慎放宽匹配词就会把既有用例（例如“代取文件”）判成禁止。
+- 规则目录自述（真实 PostgreSQL + 管理员 JWT）：`GET /api/v1/admin/risk/rules` 返回 `version=1`、`highRewardThreshold=5000`、`rules=10`，其中 `Blocked` 6 条；响应里只有匹配词**数量**，没有任何匹配词本身；非管理员访问队列 `403`。
+- 禁止类别端到端（空库启动，`Migrate()` 一次应用全部 20 个迁移）：创建 `帮我代考英语四级` → 草稿 `status=ReadyToPublish`、`riskVerdict=Blocked`、`riskRuleCode=prohibited.exam_impersonation`、`riskPublishBlocked=true`；`POST /tasks/{id}/publish` 返回 `422` 与“该任务属于平台禁止的类别（prohibited.exam_impersonation · 代考与冒名顶替），不能发布：……一句完整说明”；大厅列表里查不到这条任务；对它调用运营复核接口返回 `422`“该任务没有待处置的风险复核。”（人工无权放行禁止类别）。
+- 转人工端到端：创建 `帮我把身份证从家里送到公司` → `riskVerdict=NeedsReview`、`riskRuleCode=review.identity_documents`、`riskReviewStatus=Pending`，发布 `422`“该任务需要人工复核（review.identity_documents · 证件与重要文件），复核通过后才能发布：……”；它在 `GET /api/v1/admin/risk/reviews` 里出现，并被判为“没有待处置的禁止类别”之外的可处置项。
+- 放行路径：`帮我把营业执照原件送到银行` 由运营 `Approve`（依据“已核实营业执照用途与收件人”，操作人 id 落库）后，同一任务发布 `200`、状态 `Published`、大厅里能查到。
+- 驳回路径：`帮我把身份证送到酒店前台` 由运营 `Reject`（依据“无法核实证件用途，请改为自行递送”）后发布 `422`“该任务未通过人工复核，不能发布：无法核实证件用途，请改为自行递送”。
+- 复核队列与审计：`GET /api/v1/admin/risk/reviews` 按创建时间升序返回待复核任务（本轮实测一次列出 3 条、处置两条后剩 2 条，先来先处理）；`GET /api/v1/admin/audits` 出现 `task.risk.approve[已核实营业执照用途与收件人]` 与 `task.risk.reject[无法核实营业执照用途，请改为自行递送]`；重复处置返回 `422`“该任务的风险复核已经处置过”，非法取值返回 `422`“风险复核结论 Maybe 不存在：可选值为 Approve（放行）或 Reject（驳回）。”，且失败的操作不留审计行。
+- 通知：需求方收件箱收到 2 条 `task.riskReviewed`，载荷分别是 `{"reviewStatus":"Approved","canPublish":true,...}` 与 `{"reviewStatus":"Rejected","canPublish":false,...}`（含 `taskId`/`title`/`verdict`/`ruleCode`），未读数同步。
+- 草稿可见性与状态：`GET /api/v1/tasks/mine` 同时显示 `帮我代考执业资格考试:ReadyToPublish/Blocked/NotRequired`、`帮我把身份证送到酒店前台:ReadyToPublish/NeedsReview/Rejected`、`帮我把营业执照原件送到银行:Published/NeedsReview/Approved`，被拦的草稿对所有者可见、对大厅不可见。
+- 前端：`npm run typecheck`（strict + `noUncheckedIndexedAccess`）与 `npm run build`（产物 `dist/assets/index-*.js` 210 kB）均通过；草稿预览弹窗与“我的任务”显示风险原因并禁用发布按钮，运营配置新增“风险复核”页签。
+- 存量数据兼容：新列对既有行用数据库默认值回填（`RiskVerdict='Allowed'`、`RiskReviewStatus='NotRequired'`），EF 读取侧对空值/未知枚举名做防御性解析；`TaskDbContextModelTests` 仍锁定并发令牌与唯一索引不被改坏。
+
 ## 12. 完成状态与后续顺序
 
 ### P0
@@ -645,7 +677,7 @@ npm run build
 - S3 兼容对象存储：新增 `S3FileStorage`（自研 AWS SigV4，不依赖厂商 SDK），按 `storage.s3.*` 做上传/下载/存在性/删除；`SettingsFileStorage` 按 `storage.provider` 分派 local 与 s3；配置不全、Bucket 不存在、密钥无权限都会翻译成可行动的说明；已用本机 MinIO 加独立客户端 `mc` 端到端验证（见第 11 节）。
 - 短时直连下载地址：`S3FileStorage` 实现可选的 `IPresignedFileStorage`（SigV4 查询串签名，含对象路径、有效期与附件名），新增 `GET /api/v1/evidence/{id}/download-url` 与 `evidence.downloadUrlLifetimeSeconds`（5 至 900 秒，默认 120），前端在支持时直接跳转签名地址、否则回退流式下载；篡改与过期都由对象存储自己拒绝（403），已用真实 MinIO 验证。
 - 元数据剥离与按人限速：`EvidenceContentSanitizer`（领域层，纯字节解析）处理 JPEG/PNG/WebP 的元数据段，`evidence.stripMetadata` 控制开关、剥离结果落库到 `evidence.MetadataRemoved`（迁移 `AddEvidenceMetadataRemoved`）并在接口与页面展示；`evidence.uploadsPerUserPerHour`（默认 60）按上传者限速，计数走数据库并配了 `(UploadedBy, CreatedAt)` 索引，多实例一致。
-- 运营后台（人工兜底，后端与页面都已完成）：跨所有者检索任务与用户、查看任务详情、把**尚未分配**的任务下架并强制填写原因（原因写进 `admin_audit_entries`，`GET /api/v1/admin/audits` 可查）；已产生订单的任务会被领域规则拦住（`422`，提示先处理订单）。顶栏“运营配置”弹窗现在有四个页签：配置项 / 变更记录（配置审计 + 运营审计）/ 任务检索（含下架）/ 用户检索。风险规则引擎仍未实现，所以这里**没有任何自动判定**，纯粹是人工介入入口。
+- 运营后台（人工兜底，后端与页面都已完成）：跨所有者检索任务与用户、查看任务详情、把**尚未分配**的任务下架并强制填写原因（原因写进 `admin_audit_entries`，`GET /api/v1/admin/audits` 可查）；已产生订单的任务会被领域规则拦住（`422`，提示先处理订单）。顶栏“运营配置”弹窗现在有五个页签：配置项 / 变更记录（配置审计 + 运营审计）/ 任务检索（含下架）/ 用户检索 / 风险复核（见本轮追加）。
 - 已知线索（下轮排查）：运营联调时“服务者报名 → 需求方选人”这一步返回 `422 报名不存在。`，而报名接口当时返回了 `200` 与报名 id。**2026-09-12 复核**：同样的“创建 → 发布 → 报名 → 选人”流程在真实 PostgreSQL 上跑通（`task.status=Assigned`、`order.status=Accepted`、报名列表 1 条），因此这条线索更可能是当轮联调里任务/报名的状态问题或脚本取错 ID，而不是持久化缺陷；若再次出现，按“写一个针对性的仓储测试定位 EF 导航集合是否刷新”的方向排查。
 
 本轮追加（多实例通知扇出）：
@@ -668,15 +700,25 @@ npm run build
 - 争议：`Order.OpenDispute`（需求方 `Submitted`、服务者 `Rejected`）与 `Order.ResolveDispute(DisputeResolution)`（`Approve`/`Rework`/`Cancel`，依据必填），新增枚举 `DisputeResolution` 与六个落库字段（迁移 19）；`TaskService.OpenDispute`、`AdminConsoleService.ResolveDispute`/`SearchOrders`、新查询接口 `IAdminOrderQuery`（EF 与内存两套实现，并把内存模式下“普通仓储与运营检索共用同一实例”的注册修对）；端点 `POST /orders/{id}/dispute`、`GET /admin/orders`、`POST /admin/orders/{id}/resolve`；通知 `order.disputed`、`order.disputeResolved`（按接收者派生事件键）；运营处置写审计 `order.dispute.{approve|rework|cancel}`。
 - 前端：大厅显示报名截止与“报名已截止”、新增“我的报名”列表与撤回入口、订单行新增“申请平台介入”与争议原因/处置结果展示、运营弹窗新增“争议处置”页签（三条处置动作 + 必填依据）。
 
+本轮追加（风险规则与禁止任务拦截）：
+
+- 领域规则目录：`backend/AIToHuman.Domain/Risk/` 新增 `RiskVerdict`、`RiskReviewStatus`、`RiskRule`、`RiskAssessment`、`RiskRuleCatalog`（版本 1）。10 条词表规则（6 条 `prohibited.*` 禁止 + 4 条 `review.*` 转人工）加 2 条阈值规则（悬赏 > 5000 元、北京时间 00:00–06:00 截止），共 12 个原因代码；匹配词全部 ≥ 2 字，并有单元测试锁死（单字会误伤“代取/代送”这类正常任务）。
+- 门禁与状态：`TaskItem` 构造时判定一次、`Publish` 前重新判定一次；新增 `IsRiskBlocked`/`AwaitingRiskReview`/`IsPublishBlockedByRisk` 与 `ApproveRiskReview`/`RejectRiskReview`（依据必填 ≤200 字）。禁止类别一律 `422` 且人工不能放行；人工驳回是终态，规则不再命中也不会变回可发布。风险判定复用任务行，**没有新增决策表**（只保留最新一条判定，追加式历史留作后续）。
+- 迁移 20 `AddTaskRiskAssessment`：`tasks` 加 10 列（判定结论、原因代码、类别、说明、规则版本、判定时刻、复核状态、复核人、复核时刻、复核依据）与 `(RiskReviewStatus, CreatedAt)` 索引；存量行用数据库默认值 `Allowed`/`NotRequired` 回填，EF 读取侧对空值与未知枚举名做防御性解析。
+- 应用层与契约：`ITaskRepository.ListPendingRiskReview`（EF 侧保持跟踪以便复用乐观并发令牌，内存侧同步实现）、`AdminConsoleService.ListRiskReviews`/`DecideRiskReview`/`DescribeRiskRules`；`TaskResponse`/`TaskSummaryResponse` 补 `riskVerdict`/`riskRuleCode`/`riskCategory`/`riskSummary`/`riskRuleVersion`/`riskAssessedAt`/`riskReviewStatus`/`riskReviewedAt`/`riskReviewNote`/`riskPublishBlocked`。
+- 接口与通知：`GET /admin/risk/reviews`、`POST /admin/risk/reviews/{taskId}/decide`、`GET /admin/risk/rules`；新事件 `task.riskReviewed`（载荷含 `canPublish`），审计动作 `task.risk.approve` / `task.risk.reject`。
+- 前端：草稿预览与“我的任务”显示被拦/待复核原因并禁用发布按钮；运营弹窗新增“风险复核”页签（队列 + 放行/驳回 + 必填依据 + 规则目录版本说明）；`api/admin.ts` 与 `api/tasks.ts` 补对应类型与客户端。
+
 ### 后续跟进（原 P1 的延伸项）
 
 - 对象存储的短时签名 URL 已实现（见第 3、11 节）；如果以后要让前端完全绕开后端，需要补 CORS 配置与审计补偿。
 - 选定病毒/内容扫描服务后把 `evidence.scanner.provider` 切成 `http` + `failMode=closed`（重扫闭环已经就绪，只差真实服务商）。
-- 运营后台的其余部分：风险记录与高风险任务人工复核、争议的责任判定与赔付/退款、争议申诉与处理时限、客服工单。上传大小与份数上限已经进了设置目录；凭证类型白名单**故意不进**（放开等于允许上传可执行内容）。
+- 运营后台的其余部分：误拦申诉与客服工单、争议的责任判定与赔付/退款、争议申诉与处理时限。风险复核队列与人工下架都已实现；风险规则目录本身还不能后台编辑（改规则要发版并提升版本号）。上传大小与份数上限已经进了设置目录；凭证类型白名单**故意不进**（放开等于允许上传可执行内容）。
+- 风险判定的增强：模型辅助分类（现在只有字面词表匹配，语义变体容易漏）、追加式决策历史表（现在只保留最新一条判定）、误拦与漏拦的回归测试集扩充（当前是 17 条禁止 + 6 条转人工 + 8 条正常用例）。
 - 通知的更多事件类型（任务发布、加价、评价公开）与推送渠道（短信、邮件）。
 - 会话消息的分页与历史截断、消息撤回与编辑。
 - 大厅排序选项（悬赏、距离）、任务分类筛选，以及精确地址的访问审计。
-- 图片像素级重新编码、凭证与验收项关联，以及运营后台的任务/用户检索与风险复核。
+- 图片像素级重新编码、凭证与验收项关联，以及运营后台的申诉工单。
 
 ### P2
 
@@ -723,6 +765,9 @@ npm run build
 - [ ] 到期过期：把任务的截止时间设成 1 分钟后并发布（不要选人），一分钟左右刷新“我的任务”，状态应变成“已过期”，报名过的服务者应收到 `task.expired`；已分配的任务即使过了截止时间也不应变成过期。
 - [ ] 报名撤回与报名截止：以服务者身份报名后到“我的报名”里撤回，应看到“已撤回”且可以再次报名；创建一个带报名截止时间的任务，到点后大厅应显示“报名已截止”，但此前报名的人仍能被选中。
 - [ ] 争议：服务者提交后由需求方发起争议，双方应看到订单冻结（按钮消失或接口返回 `422`）；以管理员打开“争议处置”页签，分别验证“退回返工 / 强制完成 / 终止订单”三条路径对订单、任务与双方通知的影响，并确认审计里出现 `order.dispute.*`。
+- [ ] 用一条禁止类任务（例如“帮我代考××考试”）走完创建与发布：草稿能建出来但 `riskVerdict=Blocked`，发布返回 `422` 且大厅里查不到；对同一条任务调用运营复核接口应返回 `422`（人工无权放行禁止类别）。
+- [ ] 用一条敏感任务（例如“帮我把身份证送到××”）走完复核：`riskReviewStatus=Pending`、发布 `422`；运营在“风险复核”页签写依据放行后可以发布；驳回后发布 `422` 并显示驳回依据；需求方收件箱出现 `task.riskReviewed`。
+- [ ] `GET /api/v1/admin/risk/rules` 返回规则版本与规则清单，但**只有匹配词数量、没有匹配词本身**；非管理员访问返回 `403`。
 - [ ] 新功能先补 Contract、领域规则和测试，再扩展页面。
 
 ## 14. 相关文档

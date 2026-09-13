@@ -74,7 +74,6 @@ public sealed record AdminOrderListResponse(IReadOnlyList<AdminOrderItemResponse
 public sealed record AdminResolveDisputeRequest(string Decision, string Note);
 
 public sealed record AdminUserResponse(Guid Id, string Email, string DisplayName, string Role, DateTimeOffset CreatedAt);
-
 public sealed record AdminUserListResponse(IReadOnlyList<AdminUserResponse> Items, int Limit);
 
 public sealed record AdminAuditResponse(
@@ -85,3 +84,44 @@ public sealed record AdminAuditResponse(
     Guid TargetId,
     string Reason,
     DateTimeOffset OccurredAt);
+
+/// <summary>
+/// 运营风险复核队列里的一条任务：命中的规则（原因代码 + 类别 + 说明 + 规则版本）与任务原文一并返回，
+/// 运营不必再跳到别处去凑上下文。
+/// </summary>
+public sealed record AdminRiskReviewItemResponse(
+    Guid TaskId,
+    string Title,
+    string Description,
+    string District,
+    decimal RewardAmount,
+    string RewardCurrency,
+    DateTimeOffset Deadline,
+    DateTimeOffset CreatedAt,
+    Guid OwnerId,
+    string? OwnerDisplayName,
+    string? OwnerEmail,
+    string Verdict,
+    string? RuleCode,
+    string? Category,
+    string? Summary,
+    int RuleVersion,
+    DateTimeOffset? AssessedAt,
+    string ReviewStatus,
+    string TaskStatus,
+    DateTimeOffset? ReviewedAt,
+    string? ReviewNote,
+    Guid? ReviewedBy);
+
+public sealed record AdminRiskReviewListResponse(IReadOnlyList<AdminRiskReviewItemResponse> Items, int Limit);
+
+/// <summary>
+/// 处置风险复核：<c>decision</c> 取 <c>Approve</c>（放行，之后可发布）或 <c>Reject</c>（驳回，不能发布），依据必填。
+/// 被禁止的类别不会进这个队列，人工也无权放行。
+/// </summary>
+public sealed record AdminRiskReviewDecisionRequest(string Decision, string Note);
+
+/// <summary>风险规则目录的自述：版本、规则条数与规则清单，供运营后台说明“现在按什么规则拦”。</summary>
+public sealed record RiskRuleResponse(string Code, string Category, string Verdict, string Description, int KeywordCount);
+
+public sealed record RiskRuleCatalogResponse(int Version, decimal HighRewardThreshold, IReadOnlyList<RiskRuleResponse> Rules);

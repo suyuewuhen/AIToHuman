@@ -1,6 +1,6 @@
 # 领域模型与状态机
 
-> **实现现状标注**（对齐 2026-09-13 已提交代码）
+> **实现现状标注**（对齐 2026-09-13 代码，含当轮的风险规则改动）
 >
 > 本文描述设计目标，不表示当前代码已具备全部能力。正文使用以下标记区分：
 >
@@ -20,6 +20,7 @@
 | `Task` | ✅ | `TaskItem` 已实现，含所有者、截止时间、公开区域和验收标准校验；可选的报名截止时间 `ApplicationDeadline` 到点后只关闭新报名；`Expired`（后台扫描超期未分配任务）与 `Cancelled`（所有者撤销、运营下架）都有落库时间戳与原因 |
 | `Application` | ⚠️ | `TaskApplication` 已实现；服务者可撤回自己仍处于 `Pending` 的报名（`Withdrawn`，之后可重新报名），订单取消把选中的报名置为 `Rejected`、任务过期把 `Pending` 置为 `Expired`；仍无预计到达时间，也没有选人时固化的报名快照 |
 | `Order` | ✅ | `Order` 已实现，含参与者校验、状态机、取消（`Cancelled` + 取消人、取消时间、取消原因）与争议（`Disputed` + 发起人、原因、发起时间、处置结果、处置依据与处置时间） |
+| 风险模型（`RiskRule`/`RiskAssessment`） | ⚠️ | 代码内版本化规则目录（`RiskRuleCatalog`，版本 1、12 个原因代码）已实现，并接入创建草稿与发布两个门禁，`RiskReviewStatus` 记录人工复核结论；缺模型辅助分类、误拦申诉与追加式决策历史，见第 10 节 |
 | `Evidence` | ⚠️ | `OrderEvidence` + `evidence` 表已实现：类型白名单与文件签名校验、扫描状态机与退避重扫、上传时元数据剥离、按人小时配额，存储走 `IFileStorage`（本机目录或 S3 兼容对象存储，支持短时直连下载地址）；订单上的 `EvidenceNote` 仍作为“完成说明”文本框与凭证文件并存。仍缺图片像素级重编码与“凭证关联到具体验收项” |
 | `Review` | ⚠️ | `Review` 已实现；无状态字段（盲期按时间动态判定），单一评分维度 |
 | `Dispute` | ✅ | 已接入但不单独建表：争议状态与处置信息记在 `orders` 上（`DisputeReason`/`DisputeOpenedBy`/`DisputeOpenedAt`/`DisputeResolution`/`DisputeResolutionNote`/`DisputeResolvedAt`）；参与者按阶段发起，运营三种处置，见第 4 节 |
@@ -56,7 +57,7 @@ AI 与用户共同编辑的临时结构。保存字段完整性、风险检查�
 
 用户公开发布的需求，包含公开信息、私密执行信息、步骤、验收条件、单一固定悬赏和截止时间。建议价格区间只属于草稿辅助信息，不进入已发布任务的交易条件。
 
-> 实现现状（✅）：`TaskItem` 已实现标题（≤80 字）、描述、`District`、截止时间、`Money` 悬赏和验收标准集合，并校验所有者非空、截止时间晚于创建时间、至少一项验收标准。精确执行地址也已实现：`tasks.ExecutionAddress` 由 `ExecutionAddressFor(viewer)` 决定是否披露，只给所有者与**被选中**的服务者，订单取消把选中报名置为 `Rejected` 后立即收回；接口是 `GET /api/v1/tasks/{id}/execution-address`，大厅与公开详情只暴露 `hasExecutionAddress`。尚无：联系方式、任务步骤、分类、隐私等级、取消条件、风险决策版本（`tasks` 的 `Version` 乐观并发令牌已存在，见第 5 节）。
+> 实现现状（✅）：`TaskItem` 已实现标题（≤80 字）、描述、`District`、截止时间、`Money` 悬赏和验收标准集合，并校验所有者非空、截止时间晚于创建时间、至少一项验收标准。精确执行地址也已实现：`tasks.ExecutionAddress` 由 `ExecutionAddressFor(viewer)` 决定是否披露，只给所有者与**被选中**的服务者，订单取消把选中报名置为 `Rejected` 后立即收回；接口是 `GET /api/v1/tasks/{id}/execution-address`，大厅与公开详情只暴露 `hasExecutionAddress`。风险判定也已落地：`tasks` 上保存 `RiskVerdict`/`RiskRuleCode`/`RiskCategory`/`RiskSummary`/`RiskRuleVersion`/`RiskAssessedAt`/`RiskReviewStatus`/`RiskReviewedBy`/`RiskReviewedAt`/`RiskReviewNote` 十个字段，创建草稿与发布前各判定一次（见第 10 节）。尚无：联系方式、任务步骤、分类、隐私等级、取消条件。
 
 ### Application
 
@@ -122,7 +123,7 @@ Assigned
 > - `Cancelled` 已接入：所有者在被选中前可用 `POST /api/v1/tasks/{id}/cancel`（`ownerId` + 必填 `reason`，≤200 字）撤销，记 `CancelledAt`/`CancellationReason` 并通知报名者；运营下架走 `POST /api/v1/admin/tasks/{id}/cancel`，原因除写 `admin_audit_entries` 外同样记在任务上。
 > - `ReadyToPublish` 草稿不进入大厅，公开详情也只对所有者可见，其他人拿到 `404`。
 > - 报名截止时间（可选）：`ApplicationDeadline` 必须晚于创建时间且不晚于任务截止时间；到点后 `AcceptingApplications(now)` 为 false，但任务仍留在 `Published`——否则已有的报名就没人能选中了——只是不再接受新报名。若报名截止时间已过还去发布，`Publish` 直接拒绝（“报名截止时间已过，任务不能发布：请撤销后重新创建，或先调整报名截止时间。”）。
-> - 发布时不重新校验风险决策，因为风险决策尚未实现。
+> - 发布前会重新判定风险（悬赏与截止时间在草稿阶段都可能被改），命中禁止类别、或判成需人工复核但尚未被放行的任务一律 `422` 不能发布；被拦的草稿仍然保留，用户能看到原因并自行撤销（见第 10 节）。
 
 ## 3. 报名状态
 
@@ -183,7 +184,7 @@ Disputed
 
 - ✅ Task 必须有所有者、截止时间、地点范围和至少一项验收标准。`TaskItem` 构造函数已校验；但“地点范围”目前只是 `District` 字符串，没有坐标、范围或披露策略模型。
 - ✅ 报名截止时间（可选）必须晚于创建时间且不晚于任务截止时间。`TaskItem` 构造函数已校验；到点只关闭新报名（`AcceptingApplications(now)` 为 false），已有报名仍可被选中，因此任务仍停留在 `Published`；报名截止时间已过的任务不能发布。
-- ⚠️ Published Task 必须具有通过的风险决策版本。风险决策实体与版本尚未实现，发布时只校验截止时间是否已过，`ReadyToPublish` 任务也只有所有者可以发布。
+- ⚠️ Published Task 必须具有通过的风险决策版本。已实现的是：创建草稿与每次发布都用当前规则目录判定一次，任务上保存结论、原因代码与 `RiskRuleVersion`，禁止类别不能发布（人工也无权放行），判成需人工复核的必须先被运营放行；仍没有独立的“风险决策”实体与版本表，任务行上只保留最新一条结论（见第 10 节）。`ReadyToPublish` 任务仍只有所有者可以发布。
 - ⚠️ 同一 Task 最多一个非终态 Order。现在由任务行的乐观并发令牌（并发的第二个选人会拿到 `409`）、`orders.TaskId` 唯一索引和“任务进入 `Assigned` 后不再接受报名”共同保证；仍没有按“非终态订单”查询的显式校验。
 - ✅ Application 的服务者不能是 Task 所有者，报名中不得包含价格。领域层已校验，`ApplyForTaskRequest` 没有价格字段。
 - ⚠️ 已发布 Task 的悬赏只能在分配前提高。`IncreaseReward` 已校验“仅 `Published` 状态、同币种、金额只能提高”，并受任务行并发令牌保护；`TaskRewardIncreased` 事件仍未实现，加价也不通知已报名者。
@@ -211,7 +212,7 @@ Disputed
 
 > 实现现状（⚠️）：领域层仍然没有事件类型，也没有事件存储；但通知已经具备可靠投递链路：`Notification` 实体 + `notifications` 表（`EventId` 唯一索引做幂等），应用层在业务事务内写入通知（兼作 Outbox），`NotificationDispatcher` 后台任务扫描未派发记录并通过 SignalR 推送 `notification.created` 信封（`eventId`/`type`/`version`/`occurredAt`/`payload`）。派发前先用条件 UPDATE 原子认领（`WHERE DispatchedAt IS NULL`），失败则撤回认领退回 Outbox 等下一轮，因此多实例不会重复推送；多实例经 Redis 扇出转发到各实例的在线客户端，未启用扇出时只推本实例。
 >
-> 已接入的事件类型：`order.created`（选人后通知服务者）、`order.statusChanged`（开始、提交、验收、驳回、返工时通知对方参与者）、`order.cancelled`（取消订单时通知对方参与者）、`order.disputed`（参与者发起争议时通知对方参与者）、`order.disputeResolved`（运营处置后通知双方，事件键按接收者派生）、`task.expired`（任务过期时通知所有者与每个被作废的报名者）、`task.cancelled`（所有者撤销或运营下架任务时通知报名者）、`task.applicationWithdrawn`（服务者撤回报名时通知任务所有者，载荷含 `taskId`/`applicationId`/`workerId`/`title`）。订单类载荷是 `OrderNotificationPayload(orderId, status, title)`，任务类载荷是 `TaskNotificationPayload(taskId, status, title)`。`TaskPublished`、`TaskRewardIncreased`、`ReviewPublished` 等仍未实现；`EvidenceUploaded`、`RiskReviewRequested` 依赖尚未实现的功能。
+> 已接入的事件类型：`order.created`（选人后通知服务者）、`order.statusChanged`（开始、提交、验收、驳回、返工时通知对方参与者）、`order.cancelled`（取消订单时通知对方参与者）、`order.disputed`（参与者发起争议时通知对方参与者）、`order.disputeResolved`（运营处置后通知双方，事件键按接收者派生）、`task.expired`（任务过期时通知所有者与每个被作废的报名者）、`task.cancelled`（所有者撤销或运营下架任务时通知报名者）、`task.applicationWithdrawn`（服务者撤回报名时通知任务所有者，载荷含 `taskId`/`applicationId`/`workerId`/`title`）、`task.riskReviewed`（运营放行或驳回风险复核后通知任务所有者，载荷 `{ taskId, title, reviewStatus, verdict, ruleCode, canPublish }`）。订单类载荷是 `OrderNotificationPayload(orderId, status, title)`，任务类载荷是 `TaskNotificationPayload(taskId, status, title)`。`TaskPublished`、`TaskRewardIncreased`、`ReviewPublished` 等仍未实现；`EvidenceUploaded` 依赖尚未实现的功能，`RiskReviewRequested` 作为领域事件也仍未实现（通知侧已有 `task.riskReviewed`）。
 
 ## 7. 位置与隐私建模
 
@@ -260,3 +261,17 @@ Money(amount, currency)
 > - 每方每个订单只能评价一次：应用层先查 `GetByReviewer` 并返回 `422`，数据库 `(OrderId, ReviewerId)` 唯一索引仅作兜底。
 > - 公开摘要返回平均分与评价数量，已满足“显示样本量”要求。
 > - `HiddenByModeration`、举报处理、公开后不可修改/删除的约束都未实现（当前也没有修改或删除接口）。
+
+## 10. 风险规则与人工复核
+
+平台禁止的类别必须由确定性规则判定，不能只依赖模型自由文本：规则目录固定在代码里，任何一次拦截都要能回答“用的是哪条规则、哪一版”，因此原因代码一旦上线就保持稳定，规则改动必须提升目录版本号。规则只有两种结论——`Blocked`（一律不能发布）与 `NeedsReview`（进人工队列，等运营放行）。
+
+> 实现现状（⚠️）：领域层已实现 `RiskVerdict`（`Allowed`/`NeedsReview`/`Blocked`）、`RiskReviewStatus`（`NotRequired`/`Pending`/`Approved`/`Rejected`）、`RiskRule`、`RiskAssessment` 与 `RiskRuleCatalog`（`Version = 1`）。
+>
+> - 规则目录：10 条词表规则（6 条 `prohibited.*` + 4 条 `review.*`）加 2 条阈值规则（`review.high_reward`：悬赏 > 5000 元；`review.night_window`：截止时间落在北京时间 00:00–06:00），共 12 个原因代码；匹配词表里刻意不用单字，避免“代取”“代送”这类正常跑腿任务被误伤。
+> - 判定输入只有用户填写的字段（标题、描述、验收标准、执行地址）；顺序是先禁止类、再转人工类、最后两条阈值规则，都不命中才是 `Allowed`。说明文本（`RiskSummary`）刻意不含命中的具体词，避免被逐字试探绕过。
+> - 门禁位置：`TaskItem` 构造（创建草稿）时判定一次，`Publish` 前再判定一次（悬赏与截止时间在草稿阶段会变）。禁止类别一律 `422` 且人工无权放行；判成 `NeedsReview` 的任务进入队列，运营 `Approve` 后才能发布，`Reject` 是终态（规则之后不再命中也不会变回可发布）。
+> - 落库字段：`RiskVerdict`、`RiskRuleCode`、`RiskCategory`、`RiskSummary`、`RiskRuleVersion`、`RiskAssessedAt`、`RiskReviewStatus`、`RiskReviewedBy`、`RiskReviewedAt`、`RiskReviewNote`（复核依据必填、≤200 字）。
+> - 人工复核走管理员接口：队列 `GET /api/v1/admin/risk/reviews` 按创建时间升序（先来先处理），`POST /api/v1/admin/risk/reviews/{taskId}/decide` 放行或驳回并把依据写进 `admin_audit_entries`（动作 `task.risk.approve`/`task.risk.reject`），`GET /api/v1/admin/risk/rules` 是规则目录自述（版本、阈值、规则清单与匹配词数量，不返回词本身）；非管理员 `403`。
+> - 通知：复核结论通过 `task.riskReviewed` 走既有 Outbox + SignalR 链路；任务响应里的 `riskPublishBlocked` 由服务端判定，客户端不要自己按 `riskVerdict`/`riskReviewStatus` 推算。
+> - 缺失：模型辅助分类与语义判断（现在只有字面词表匹配，改写过的表述可能漏过）；误拦申诉与客服工单——被拦用户没有申诉入口；规则目录不能后台编辑（改规则要发版并提升 `Version`）；决策只保留最新一条（记在任务行上），没有追加式的决策历史表，也没有独立的风险事件流。

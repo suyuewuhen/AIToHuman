@@ -506,6 +506,19 @@ adminConsole.MapPost("/orders/{id:guid}/resolve", (Guid id, AdminResolveDisputeR
     return Results.Ok(resolved);
 });
 adminConsole.MapGet("/audits", (int? limit, AdminConsoleService service) => Results.Ok(service.ListAudits(limit)));
+// 风险复核：确定性规则判成“需要人工复核”的任务排在这里，运营只能放行或驳回，依据必填并进审计。
+// 被禁止的类别不会出现在队列里——它们由领域规则直接锁死，人工无权放行。
+adminConsole.MapGet("/risk/reviews", (int? limit, AdminConsoleService service) =>
+    Results.Ok(service.ListRiskReviews(limit)));
+adminConsole.MapPost("/risk/reviews/{taskId:guid}/decide", (Guid taskId, AdminRiskReviewDecisionRequest request, ClaimsPrincipal user, AdminConsoleService service) =>
+{
+    var actorId = ResolveAdminId(user);
+    var reviewed = service.DecideRiskReview(taskId, request.Decision, request.Note, actorId);
+    app.Logger.LogInformation("运营 {ActorId} 处置了任务 {TaskId} 的风险复核：{Decision}", actorId, reviewed.TaskId, request.Decision);
+    return Results.Ok(reviewed);
+});
+// 规则目录自述：说明现在按什么规则拦（含版本），但不返回匹配词，避免被逐字试探绕过。
+adminConsole.MapGet("/risk/rules", () => Results.Ok(AdminConsoleService.DescribeRiskRules()));
 
 app.Run();
 
