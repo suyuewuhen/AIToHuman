@@ -33,7 +33,7 @@ AI 多轮澄清（每轮一个问题）
 
 ## 2. 当前工作区状态
 
-工作区状态：`main` 已经推送到 `origin/main`（`59e998d` 之前的三块异常流程与风险拦截都已同步到远端）；本轮的「草稿字段编辑」随本轮提交一起进入 `main`（`git log -1` 可见）。上一版交接文档描述的“多轮 AI 未提交实现”已经全部提交，本文不再区分“基线 / 未提交”两种状态。
+工作区状态：`main` 与 `origin/main` 同步（草稿字段编辑已推送）；本轮的「真实 PostgreSQL 回归测试基建」随本轮提交一起进入 `main`（`git log -1` 可见）。上一版交接文档描述的“多轮 AI 未提交实现”已经全部提交，本文不再区分“基线 / 未提交”两种状态。
 
 从上一版基线 `f196850` 到当前 `e45da76` 的主要变化：
 
@@ -322,6 +322,22 @@ Password=123456
 ```
 
 连接串存放在被 Git 忽略的 `backend/AIToHuman.Api/appsettings.Development.json`，严禁提交。其他环境通过 `ConnectionStrings__Postgres` 覆盖。
+
+### 真实数据库回归测试
+
+`backend/tests/AIToHuman.IntegrationTests/Postgres/` 下有一组跑在真实 PostgreSQL 上的回归用例（并发、EF 变更跟踪、迁移、争议冻结、风险门禁）。它自己建库、跑迁移、用完删库，不需要手工准备：
+
+```powershell
+dotnet test AIToHuman.sln --no-build --no-restore                    # 本机装了 PostgreSQL 就会跑，约 2 秒
+$env:AITOHUMAN_TEST_POSTGRES = "Host=localhost;Port=5432;Database=postgres;Username=postgres;Password=123456"
+dotnet test AIToHuman.sln --no-build --no-restore                    # 指定别的库来跑
+```
+
+- 连接串来源顺序：环境变量 `AITOHUMAN_TEST_POSTGRES` → `backend/AIToHuman.Api/appsettings.Development.json`（该文件不进 Git，凭据不会写进代码）。
+- **连不上数据库时这组用例会标记为“跳过”而不是失败**，所以没装 PostgreSQL 的机器、以及默认 CI 都能跑完其余测试；跳过信息里会写清原因。
+- 测试库名带随机后缀（`aitohuman_regression_<随机>`），不会碰开发库；同一个库在一次运行内共享，每个用例开始前清表。
+- CI 里已经加了 `postgres:16` 服务并注入 `AITOHUMAN_TEST_POSTGRES`，所以这组用例在流水线里是真跑的（见 `.github/workflows/ci.yml`）。
+
 
 ### 启动后端
 
@@ -658,6 +674,16 @@ npm run build
 - **顺带修掉一个只有真机才暴露的缺陷**：`EfTaskRepository.Save` 原本逐列手写复制，写它的时候草稿正文不可变，因此它**不复制** `Title`/`Description`/`District`/`Deadline`/`AcceptanceCriteriaJson`/`ExecutionAddress`。草稿编辑上线后表现为“接口返回了新内容、库里没落库、发布时仍按旧文本判风险”——内存仓储保存的是同一个对象引用，所以 492 个内存用例全都看不出来。现已改为 `db.Entry(record).CurrentValues.SetValues(ToRecord(task))` 整体覆盖（`Version` 单独自增以保住并发令牌），以后给 `tasks` 加列只要 `ToRecord` 填了值就会自动带上。
 - 前端：“我的任务”草稿行新增“编辑草稿”与内联表单，保存后刷新列表并提示是否仍被风险规则拦住；执行地址不随任务载荷下发，编辑时由所有者单独读 `GET /tasks/{id}/execution-address` 预填。
 
+本轮（真实 PostgreSQL 回归测试基建）新增验证：
+
+- 编译与测试：`dotnet build AIToHuman.sln --no-restore` 0 警告 0 错误；领域 233 + 集成 **267** = **500** 个用例全通过，其中 8 个是新增的在真实 PostgreSQL 上跑的回归用例（单独跑约 2 秒）。
+- 新增文件：`backend/tests/AIToHuman.IntegrationTests/Postgres/PostgresTestEnvironment.cs`（连接串解析 + 可用性探测 + `[PostgresFact]` 跳过语义）、`PostgresRegressionFixture.cs`（共享测试库 + 清表 + `PostgresWorld` 请求作用域）、`PostgresRegressionTests.cs`（8 个用例）。
+- 覆盖的场景（全部是内存替身测不出来的类型）：空库 `Migrate()` 全量应用且无待执行；**草稿编辑后每一列都真的落库**（上一轮 `Save` 漏列缺陷的回归）；两个作用域读同一版本、后写入者拿到 `DbUpdateConcurrencyException`（乐观并发令牌真的生效）；12 路并发选人只产生 1 个订单 / 1 条 `Selected` 报名 / 任务进入 `Assigned`；取消订单的连带效果落到 tasks、task_applications、orders 三张表且任务回到大厅；争议冻结在库里生效（状态、发起人、时间落库，验收与提交都被拒）；风险复核队列按状态过滤且“放行 → 编辑 → 重新排队 → 再放行”成立；`+08:00` 偏移归一化为 UTC、中文文本原样往返。
+- 跳过语义已实测：把 `AITOHUMAN_TEST_POSTGRES` 指向不可达端口后，这 8 个用例全部标记为“已跳过”、0 失败——没有数据库的机器与默认 CI 不会被它们拖红。
+- 测试库隔离：每次运行用 `aitohuman_regression_<随机>` 建库、共享、逐个用例清表、结束删库；连接串只来自环境变量或本机 `appsettings.Development.json`，**凭据不写进仓库**。
+- CI：`.github/workflows/ci.yml` 的 backend job 增加 `postgres:16` 服务（带 healthcheck）并把 `AITOHUMAN_TEST_POSTGRES` 注入 `dotnet test`，因此这组用例在流水线里是真跑的；frontend job 补上 `npm run typecheck`。
+- 顺带说明：这组用例第一次跑就抓到了我自己测试代码里的一个错误假设（12 个服务者报名后不应只存在一条 `Pending` 报名），也算验证了它确实在跑真库。
+
 ## 12. 完成状态与后续顺序
 
 ### P0
@@ -732,6 +758,12 @@ npm run build
 - 基础设施修复：`EfTaskRepository.Save` 改为 `db.Entry(record).CurrentValues.SetValues(ToRecord(task))` 整体覆盖，`Version` 单独自增。原实现逐列手写复制，漏掉了草稿正文那几列——这个缺陷只有真实 PostgreSQL 端到端能暴露（内存仓储保存的是同一个对象引用），详见第 11 节。
 - 前端：`api/tasks.ts` 新增 `updateTaskDraft`、`TaskItem` 补 `draftEditable`；“我的任务”草稿行新增“编辑草稿”与内联表单（`styles.css` 的 `.draft-edit*`），保存后刷新并提示是否仍被风险规则拦住。
 
+本轮追加（真实 PostgreSQL 回归测试基建）：
+
+- 测试基建：`PostgresTestEnvironment`（连接串解析与探测、`[PostgresFact]` 跳过语义）、`PostgresRegressionFixture`（随机命名测试库、`Migrate()` 建库、逐用例清表、结束删库）、`PostgresWorld`（按 API 注册方式搭 EF 仓储与应用服务，`NewScope()` 模拟并发请求）。放在 `backend/tests/AIToHuman.IntegrationTests/Postgres/`。
+- 8 个真库用例：见第 11 节本轮条目。重点是把“内存替身测不出来”的缺陷类型固定在回归里：并发写入与乐观并发令牌、EF 变更跟踪（`Save` 是否真的写了所有列）、迁移与真实 SQL 语义。
+- CI 接线：backend job 起 `postgres:16` 服务并注入 `AITOHUMAN_TEST_POSTGRES`；frontend job 补 `npm run typecheck`。
+
 ### 后续跟进（原 P1 的延伸项）
 
 - 对象存储的短时签名 URL 已实现（见第 3、11 节）；如果以后要让前端完全绕开后端，需要补 CORS 配置与审计补偿。
@@ -739,7 +771,7 @@ npm run build
 - 运营后台的其余部分：误拦申诉与客服工单、争议的责任判定与赔付/退款、争议申诉与处理时限。风险复核队列与人工下架都已实现；风险规则目录本身还不能后台编辑（改规则要发版并提升版本号）。上传大小与份数上限已经进了设置目录；凭证类型白名单**故意不进**（放开等于允许上传可执行内容）。
 - 风险判定的增强：模型辅助分类（现在只有字面词表匹配，语义变体容易漏）、追加式决策历史表（现在只保留最新一条判定）、误拦与漏拦的回归测试集扩充（当前是 17 条禁止 + 6 条转人工 + 8 条正常用例）。
 - 草稿的版本与历史：现在没有 `TaskDraft` 实体、没有版本号，编辑是直接改 `TaskItem`，旧版本与“谁改了什么”都不留痕；需要审计或对账时得先补上草稿历史表。
-- 真实基础设施的自动化回归测试（**优先**）：本仓库已经出现过三类只有真机才暴露的缺陷——乐观并发令牌形同虚设、EF 导航集合触发并发异常、`EfTaskRepository.Save` 漏更新草稿正文列；而现在 492 个用例全跑在内存替身上。补一个 xunit fixture + 本机 PostgreSQL 独立库（跑 `Migrate()`，覆盖并发选人、编辑后落库、取消后任务去向、争议冻结、风险门禁）就能把这类问题挡在提交之前，不需要 `Microsoft.AspNetCore.Mvc.Testing`（那个包只挡主机级 E2E，本机离线也还原不到）。
+- 真实基础设施的自动化回归测试：真实 PostgreSQL 已完成（见第 11 节本轮条目与第 7 节）；还剩 **Redis 扇出**与 **S3/MinIO 对象存储**两块的自动化——它们目前仍靠手工端到端验证。主机级 E2E（`WebApplicationFactory`）仍缺，因为本机离线还原不到 `Microsoft.AspNetCore.Mvc.Testing`。
 - 通知的更多事件类型（任务发布、加价、评价公开）与推送渠道（短信、邮件）。
 - 会话消息的分页与历史截断、消息撤回与编辑。
 - 大厅排序选项（悬赏、距离）、任务分类筛选，以及精确地址的访问审计。
@@ -795,6 +827,7 @@ npm run build
 - [ ] `GET /api/v1/admin/risk/rules` 返回规则版本与规则清单，但**只有匹配词数量、没有匹配词本身**；非管理员访问返回 `403`。
 - [ ] 编辑一条草稿（改标题、悬赏、验收标准与截止时间后保存）：`GET /api/v1/tasks/{id}` 返回的字段应与提交一致，随后能发布；编辑已发布的任务应返回 `422`。
 - [ ] 用敏感草稿验证防绕过：先由运营放行 → 再编辑草稿 → 复核状态应回到“待复核”、复核人与依据清空、重新出现在“风险复核”队列、发布被 `422` 拦住；再次放行后可以发布。
+- [ ] 跑一次 `dotnet test AIToHuman.sln --no-build --no-restore`：确认 `PostgresRegressionTests` 是**通过**而不是**跳过**（跳过说明本机没连上测试库，见第 7 节“真实数据库回归测试”）；再把 `AITOHUMAN_TEST_POSTGRES` 指向不可达端口确认它们变成跳过而不是失败。
 - [ ] 新功能先补 Contract、领域规则和测试，再扩展页面。
 
 ## 14. 相关文档

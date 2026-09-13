@@ -9,6 +9,22 @@ on:
 jobs:
   backend:
     runs-on: ubuntu-latest
+    # 真实 PostgreSQL：让 PostgresRegressionTests 在 CI 里也跑起来（并发、EF 跟踪、迁移这些只有真库才测得准）。
+    # 拿不到数据库时这组用例会标记为跳过而不是失败，所以本地没装数据库也能跑完整套。
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -16,7 +32,10 @@ jobs:
           dotnet-version: 10.0.x
       - run: dotnet restore AIToHuman.sln --configfile NuGet.Config
       - run: dotnet build AIToHuman.sln --no-restore --configuration Release
-      - run: dotnet test AIToHuman.sln --no-build --configuration Release
+      - name: Run tests (includes real PostgreSQL regression suite)
+        run: dotnet test AIToHuman.sln --no-build --configuration Release
+        env:
+          AITOHUMAN_TEST_POSTGRES: Host=localhost;Port=5432;Database=postgres;Username=postgres;Password=postgres
 
   frontend:
     runs-on: ubuntu-latest
@@ -31,4 +50,5 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
+      - run: npm run typecheck
       - run: npm run build

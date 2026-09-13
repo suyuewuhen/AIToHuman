@@ -23,7 +23,7 @@
 - 数据库结构只通过 EF Core Migration 演进。
 - 早期 `EnsureCreated()` 生成的本地开发库没有迁移历史；Development 启动时会检测并按情况处理：表与当前模型一致时把已有迁移整体标记为已应用（打警告日志），表不齐时直接报错并提示重建，避免在错误的 schema 上运行。
 - 示例数据必须为合成数据。
-- 一条命令应能启动依赖，一条命令应能执行全部必要检查。
+- 一条命令应能启动依赖，一条命令应能执行全部必要检查；真实数据库回归用例在没有 PostgreSQL 的机器上会自动跳过，不会挡住本地或 CI 的其余检查。
 
 ## 3. 代码约定
 
@@ -47,7 +47,12 @@
 ## 4. 测试策略
 
 - 单元测试：领域状态机、风险规则、金额和权限决策（`backend/tests/AIToHuman.Domain.Tests`）。
-- 集成测试：应用用例、事务边界与 AI 协议（`backend/tests/AIToHuman.IntegrationTests`）。当前这批用例走上游替身与内存仓储，不需要数据库；**真实 PostgreSQL、Redis 与对象存储兼容服务下的 API/持久化自动化测试尚未建立**，真实数据库目前依靠 `handoff.md` 第 11 节列出的手工端到端验证；通知的 Redis 扇出已按同一方式手工端到端验证过（本机 Redis + 双 API 实例，用 `redis-cli monitor` 观察发布、由连在另一实例上的客户端确认收到），但仍未进入自动化测试。
+- 集成测试：应用用例、事务边界与 AI 协议（`backend/tests/AIToHuman.IntegrationTests`）。大多数用例走上游替身与内存仓储，不需要数据库；**真实 PostgreSQL 的回归测试已经建立**，位于 `backend/tests/AIToHuman.IntegrationTests/Postgres/`：
+  - `PostgresTestEnvironment` 负责解析测试库连接串，顺序是环境变量 `AITOHUMAN_TEST_POSTGRES` → 本机 `backend/AIToHuman.Api/appsettings.Development.json` 的 `ConnectionStrings:Postgres`（该文件被 Git 忽略，凭据不进仓库），启动时用 3 秒超时探测一次连通性；连不上或没配置就判定为不可用。
+  - 用例用 `[PostgresFact]` 标注：数据库不可用时**标记为跳过而不是失败**，所以没装数据库的机器和默认 CI 仍能跑完其余测试。
+  - `PostgresRegressionFixture` 在一次测试运行里共用一个随机命名的空库（`aitohuman_regression_<随机>`），用 `Database.Migrate()` 从零建库并应用全部迁移（顺带验证“空库能不能起来”），每个用例前 `TRUNCATE` 所有表，运行结束尽力删库；`PostgresWorld` 按 API 的注册方式搭一套 EF 仓储 + 应用服务，代表“一次请求作用域”，`NewScope()` 用来模拟并发请求（共用一个 `DbContext` 是测不出并发问题的）。
+  - 这组用例专门覆盖**内存替身测不出来**的缺陷类型：空库迁移、草稿编辑后每一列真的落库、乐观并发令牌真的生效（后写入者拿到 `DbUpdateConcurrencyException`）、12 路并发选人只产生一个订单、取消订单在 `orders`/`tasks`/`task_applications` 三张表上的连带效果、争议冻结落库、风险复核队列与“放行→编辑→重新排队”的防绕过链路、带 `+08:00` 偏移的截止时间归一化为 UTC。
+  - 仍**未**自动化的是真实 **Redis**（通知扇出）与 **S3/MinIO**（对象存储）：两者目前依靠手工端到端验证（本机 Redis + 双 API 实例用 `redis-cli monitor` 观察发布、由连在另一实例上的客户端确认收到；MinIO 用 `mc` 交叉核对对象与哈希），其余关键路径仍靠 `handoff.md` 第 11 节列出的手工步骤。
 - AI 协议集成测试：`backend/tests/AIToHuman.IntegrationTests` 用替身上游覆盖 SSE 分片、转义、缺少结束标记、超时与上游错误，不联网也不依赖数据库。
 - 契约测试：OpenAPI、生成客户端和 Problem Details。
 - 端到端测试：AI 草稿到任务完成的关键路径。
@@ -121,6 +126,8 @@ Pull Request 至少执行：
 - 前端安装、类型检查、Lint、单元测试和构建。
 - OpenAPI 兼容性检查。
 - 依赖和密钥扫描。
+
+现状（2026-09-13）：`.github/workflows/ci.yml` 的后端 job 已经起一个 `postgres:16` 服务（带 healthcheck）并把连接串注入 `dotnet test`，所以真实 PostgreSQL 回归用例在 CI 里会真正运行——同一批用例在本机没装数据库时是跳过而不是失败；前端 job 已经执行 `npm ci`、`npm run typecheck` 与 `npm run build`。上面清单里仍缺的是 Markdown 与格式检查、Lint、OpenAPI 兼容性检查，以及依赖与密钥扫描。
 
 ## 9. Definition of Done
 

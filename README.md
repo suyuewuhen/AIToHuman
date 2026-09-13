@@ -115,6 +115,8 @@ dotnet run --project backend/AIToHuman.Api --urls http://127.0.0.1:5188
 
 如果本机没有 PostgreSQL，也可以使用 `docker compose up -d postgres` 启动仓库定义的隔离开发数据库；此时请用环境变量覆盖连接串。
 
+跑 `dotnet test` 时，真实数据库回归用例（`backend/tests/AIToHuman.IntegrationTests/Postgres/`）会用同一个连接串建一个临时测试库、跑完全部迁移，用完后尽力删掉（删不掉不影响下次运行，每次都用新的随机库名）；本机没装 PostgreSQL 或连不上时，这批用例自动跳过，不影响其余测试。连接串默认取自 `backend/AIToHuman.Api/appsettings.Development.json`，也可以用环境变量 `AITOHUMAN_TEST_POSTGRES` 单独指定。
+
 另开一个终端：
 
 ```powershell
