@@ -54,7 +54,7 @@ GET    /api/v1/workers/{workerId}/reviews
 
 命令型子资源表达业务动作，避免允许客户端通过通用 PATCH 任意设置状态。
 
-> 上面这份清单表达的是**设计意图**，不等于当前已实现的能力：`POST /api/v1/auth/refresh`、`/api/v1/conversations/{id}/messages`、`/api/v1/task-drafts/*`、`/api/v1/orders/{orderId}/start-travel`、`/api/v1/orders/{orderId}/disputes`、`/api/v1/applications/{applicationId}/withdraw`、`/api/v1/users/{userId}/reviews`、`/api/v1/workers/{workerId}/reviews` 等条目**尚未实现**；其中**争议（`disputes`）与撤回报名（`withdraw`）是当前明确未实现的能力**——`OrderStatus.Disputed` 只有枚举值、`TaskApplicationStatus.Withdrawn` 没有写入路径，不要把它们当成已有接口。真正已实现的端点以 [交接文档](../development/handoff.md) 第 9 节的清单为准，本节下文只描述已实现的部分。
+> 上面这份清单表达的是**设计意图**，实际路径与实现进度以下文与 [交接文档](../development/handoff.md) 第 9 节为准。其中仍**尚未实现**的有：`POST /api/v1/auth/refresh`、`GET /api/v1/orders/{orderId}`、`/api/v1/conversations/{id}/messages`、`/api/v1/task-drafts/*`、`/api/v1/orders/{orderId}/start-travel`、`/api/v1/users/{userId}/reviews`、`/api/v1/workers/{workerId}/reviews`。已经实现但路径与清单写法不同的两处：撤回报名是 `POST /api/v1/tasks/{taskId}/applications/{applicationId}/withdraw`（清单里写成了 `/api/v1/applications/{applicationId}/withdraw`），发起争议是 `POST /api/v1/orders/{orderId}/dispute`（清单里写成了复数 `/disputes`，且不需要额外资源 id）。本节下文只描述已实现的部分。
 
 认证最小闭环当前提供：`POST /api/v1/auth/register` 注册并返回短时 Access Token，`POST /api/v1/auth/login` 登录，`POST /api/v1/auth/switch-role` 在 `owner`/`worker` 间切换当前操作角色，`GET /api/v1/auth/me` 需要 `Authorization: Bearer <token>`。一个账户只有一个用户 ID，角色切换只重新签发带不同 role claim 的 JWT，不复制账户。任务写操作从 JWT 的用户 ID 与角色读取身份；Development 环境为兼容旧演示数据保留显式 ID 回退，生产环境必须配置 `Authentication__SigningKey` 并使用 JWT。
 
@@ -67,6 +67,14 @@ GET    /api/v1/workers/{workerId}/reviews
 已实现的任务撤销：`POST /api/v1/tasks/{id}/cancel`，body `{ ownerId, reason }`，返回 `TaskResponse`。这是**所有者自己撤销**尚未被选中的任务，`reason` 必填且 ≤200 字；被选中之后（`Assigned`）由订单流程接管，撤销会被状态机拦下并返回 `422`。运营下架仍走 `POST /api/v1/admin/tasks/{id}/cancel`：原因照旧写入 `admin_audit_entries`，现在也同时记在任务上（`cancelledAt` / `cancellationReason`）。已过截止时间的任务由后台每 60 秒扫描并置为 `Expired`：`Published` 且 `Deadline` 已过的会被处理，同时作废 `Pending` 报名并通知所有者与报名者；**已分配的（`Assigned`）任务不参与扫描**，它归订单流程管。过期是幂等的，同一任务不会重复处理。
 
 已实现的订单取消：`POST /api/v1/orders/{id}/cancel`，body `{ actorId, note }`（`note` 即取消原因，必填、≤200 字），返回 `OrderResponse`。阶段与角色规则由领域层强制，违反一律 `422` 加可读中文原因：服务者只能在 `Accepted`（还没开始执行）时取消，开工后要终止必须由需求方发起；需求方在 `Submitted` 之前都可取消；服务者提交验收之后双方都不能取消（先验收或驳回）；`Approved`/`Cancelled` 不能再取消，非参与者返回“只有订单参与者可以取消订单。”。同一事务内连带改变任务：未过截止时间则任务退回 `Published` 重新招募、本次选中的报名置为 `Rejected`（服务者可重新报名；顺带收回执行地址的披露资格），已过截止时间则直接把任务置为 `Expired`（记 `expiredAt`，取消者不是需求方时需求方还会收到 `task.expired`）；双方参与者收到 `order.cancelled`。响应里新增 `cancelledAt` / `cancelledBy` / `cancellationReason`；`TaskResponse` 新增 `expiredAt` / `cancelledAt` / `cancellationReason`，而大厅列表的 `TaskSummaryResponse` 不含这些字段，仍按状态展示。
+
+已实现的报名撤回与报名截止时间：`POST /api/v1/tasks/{taskId}/applications/{applicationId}/withdraw`，body `{ workerId }`（role `worker`），返回 `TaskResponse`。只允许撤回**自己的**、状态为 `Pending` 的报名：撤回后状态变 `Withdrawn`、记录保留、**服务者可以重新报名**（同一服务者的重复报名仍被 `422` 拦下）；已经被选中（`Selected`）之后要退出只能走订单取消，撤回会被状态机拒绝。撤回后任务所有者收到 `task.applicationWithdrawn`（载荷含 `taskId` / `applicationId` / `workerId` / `title`）。任务新增可选字段 `applicationDeadline`（创建时由所有者给出）：必须晚于创建时间、且不晚于任务截止时间；到点后不再接受**新**报名（`422`“该任务的报名已经截止，不能再报名。”），但**已有报名仍可被选中**；若报名截止时间已过还去发布，`POST /tasks/{id}/publish` 会被拒绝（“报名截止时间已过，任务不能发布：请撤销后重新创建，或先调整报名截止时间。”）。`TaskResponse` 与 `TaskSummaryResponse` 都带 `applicationDeadline` 与 `acceptingApplications`（服务端按当前时间算：已发布且报名窗口未过）。
+
+服务者视角的报名列表：`GET /api/v1/tasks/applications/mine?workerId=&limit=`（role `worker`）返回 `MyApplicationListResponse`（`{ items: MyApplicationResponse[] }`），每条含 `applicationId`、`taskId`、`title`、`district`、`reward`、`currency`、`deadline`、`applicationDeadline`、`taskStatus`、`applicationStatus`、`submittedAt` 与 `canWithdraw`（由服务端判定：只有仍处于 `Pending` 的报名为 `true`，客户端不需要自己推算状态）。
+
+已实现的争议处理：`POST /api/v1/orders/{orderId}/dispute`，body `{ actorId, note }`（复用 `OrderActionRequest`，`note` 即争议原因，必填、≤500 字），返回 `OrderResponse`。谁能发起、从哪个阶段发起由领域层强制，违反一律 `422` 加可读中文原因：需求方只能在 `Submitted`（服务者已提交验收）发起，服务者只能在 `Rejected`（验收被驳回）发起，非参与者返回“只有订单参与者可以发起争议。”。争议期间订单冻结：提交、验收、驳回、返工与取消全部 `422`，任务保持 `Assigned`、不会回到大厅。`OrderResponse` 新增 `disputeReason` / `disputeOpenedBy` / `disputeOpenedAt` / `disputeResult` / `disputeResolutionNote` / `disputeResolvedAt`；发起时对方参与者收到 `order.disputed`。
+
+运营侧的争议处置：`GET /api/v1/admin/orders?status=&limit=`（管理员身份）返回 `AdminOrderListResponse`——省略 `status` 时默认**只返回 `Disputed`**，传 `all` 看全部；条目另含双方邮箱、提交说明、审批/驳回说明、返工次数与取消信息。`POST /api/v1/admin/orders/{id}/resolve`，body `{ decision, note }`，`decision ∈ { Approve, Rework, Cancel }`，`note` 必填、≤500 字，返回 `AdminOrderItemResponse`：`Approve` 把订单置为 `Approved`（写审批时间与说明、清空驳回原因）并把任务从 `Assigned` 推进到 `Closed`；`Rework` 退回 `InProgress`、累加返工次数、把处置依据记进驳回原因、任务保持 `Assigned`；`Cancel` 终止订单（`cancelledAt` 落库，`cancelledBy` 为空表示平台处置而不是某个参与者取消，处置依据写进取消原因），任务按“取消订单”的规则回到大厅或直接过期。三种处置都在同一事务里写运营审计（`order.dispute.approve` / `order.dispute.rework` / `order.dispute.cancel`，`targetType=order`，依据写在 `reason`）并通知双方（`order.disputeResolved`，事件键按接收者派生）。
 
 建议价响应至少包含建议金额、建议区间、币种、主要估价因素、数据充分度和规则/模型版本。它不修改草稿金额；用户另行编辑并确认的 `reward` 才是任务悬赏。
 
@@ -111,7 +119,7 @@ GET    /api/v1/workers/{workerId}/reviews
 - `403` 已认证但无权限。
 - `404` 资源不存在，必要时也用于避免泄露资源存在性。
 - `409` 状态冲突、并发冲突或幂等键冲突。
-- `422` 请求语法正确但不符合业务规则；状态机不允许的操作走这里并返回可读中文原因，例如“只有订单参与者可以取消订单。”“服务者只能在开始执行前取消订单，当前状态 InProgress 请与需求方协商后由需求方处理。”“服务者已经提交验收，请先验收或驳回，不要直接取消。”“任务已经分配并产生订单，不能直接撤销：请先处理订单（验收、驳回或取消订单）。”“取消订单必须填写原因，长度不超过 200 个字符。”
+- `422` 请求语法正确但不符合业务规则；状态机不允许的操作走这里并返回可读中文原因，例如“只有订单参与者可以取消订单。”“服务者只能在开始执行前取消订单，当前状态 InProgress 请与需求方协商后由需求方处理。”“服务者已经提交验收，请先验收或驳回，不要直接取消。”“任务已经分配并产生订单，不能直接撤销：请先处理订单（验收、驳回或取消订单）。”“取消订单必须填写原因，长度不超过 200 个字符。”“该任务的报名已经截止，不能再报名。”“报名截止时间已过，任务不能发布：请撤销后重新创建，或先调整报名截止时间。”“只有订单参与者可以发起争议。”
 - `429` 超过速率限制。
 
 ## 5. 分页和过滤
@@ -199,7 +207,7 @@ GET /api/v1/tasks?category=pickup&district=chaoyang&limit=20&cursor=...
 ```
 
 - `eventId` 是幂等键，客户端可据此去重；订单创建用订单 ID，状态变化由订单 ID 与状态推导，重放同一状态不会产生第二条。任务过期与撤销的通知事件键按接收者派生，因此同一轮里多个接收者各自收到一条。
-- 已接入的事件类型：`order.created`、`order.statusChanged`、`order.messageCreated`、`order.cancelled`、`task.expired`、`task.cancelled`；订单类载荷为 `{ orderId, status, title }`，任务类载荷为 `{ taskId, status, title }`。
+- 已接入的事件类型：`order.created`、`order.statusChanged`、`order.messageCreated`、`order.cancelled`、`order.disputed`、`order.disputeResolved`、`task.expired`、`task.cancelled`、`task.applicationWithdrawn`；订单类载荷为 `{ orderId, status, title }`，任务类载荷为 `{ taskId, status, title }`，撤回报名的载荷另含 `{ applicationId, workerId }`。争议发起只通知对方参与者，处置结果通知双方（事件键按接收者派生）。
 - `version` 是信封版本，客户端应忽略高于自身支持版本的推送，并改用 REST 刷新。
 - 推送前通知已经落库，`GET /api/v1/notifications` 能拿到同一批数据；`POST /api/v1/notifications/read` 标记已读并返回最新未读数。
 - 服务端不等待推送结果：写库成功即视为该业务事件成立，派发失败由后台任务重试。

@@ -14,6 +14,20 @@ export interface TaskNotificationPayload {
   title: string
 }
 
+/**
+ * 服务端已接入的通知事件类型（与后端 `NotificationTypes` 对齐）。
+ * 载荷只有两种形状：订单类是 {@link OrderNotificationPayload}，任务类是 {@link TaskNotificationPayload}。
+ */
+export type NotificationEventType =
+  | 'order.created'
+  | 'order.statusChanged'
+  | 'order.messageCreated'
+  | 'order.cancelled'
+  | 'order.disputed'
+  | 'order.disputeResolved'
+  | 'task.expired'
+  | 'task.cancelled'
+
 /** 事件信封：带事件 ID 与版本，客户端据此去重并判断能否解析。 */
 export interface NotificationEnvelope {
   eventId: string

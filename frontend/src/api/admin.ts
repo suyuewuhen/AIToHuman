@@ -32,6 +32,46 @@ export interface AdminUserItem {
   createdAt: string
 }
 
+/**
+ * 运营看到的订单（含争议信息）。`disputeResolution` 为空表示还没处置；
+ * 提交说明与凭证说明一并返回，方便运营在处置前看清双方交了什么。
+ */
+export interface AdminOrderItem {
+  id: string
+  taskId: string
+  title: string
+  status: string
+  ownerId: string
+  ownerEmail: string | null
+  workerId: string
+  workerEmail: string | null
+  rewardAmount: number
+  rewardCurrency: string
+  createdAt: string
+  submittedAt: string | null
+  evidenceNote: string | null
+  reviewNote: string | null
+  rejectionNote: string | null
+  reworkCount: number
+  cancelledAt: string | null
+  cancelledBy: string | null
+  cancellationReason: string | null
+  disputeReason: string | null
+  disputeOpenedBy: string | null
+  disputeOpenedAt: string | null
+  disputeResolution: string | null
+  disputeResolutionNote: string | null
+  disputeResolvedAt: string | null
+}
+
+export interface AdminOrderList {
+  items: AdminOrderItem[]
+  limit: number
+}
+
+/** 争议处置结果：强制完成 / 退回返工 / 终止订单。 */
+export type DisputeDecision = 'Approve' | 'Rework' | 'Cancel'
+
 export interface AdminAuditItem {
   id: string
   actorId: string
@@ -90,4 +130,46 @@ export function adminTaskStatusLabel(status: string): string {
     Cancelled: '已下架',
   }
   return labels[status] ?? status
+}
+
+/** 订单状态中文（运营视角与用户侧文案保持一致）。 */
+export function adminOrderStatusLabel(status: string): string {
+  const labels: Record<string, string> = {
+    Accepted: '待执行',
+    InProgress: '执行中',
+    Submitted: '待验收',
+    Rejected: '需补充执行',
+    Disputed: '争议中',
+    Approved: '已完成',
+    Cancelled: '已取消',
+  }
+  return labels[status] ?? status
+}
+
+/** 争议处置结果中文。 */
+export function disputeResolutionLabel(resolution: string): string {
+  const labels: Record<string, string> = {
+    Approve: '强制完成',
+    Rework: '退回返工',
+    Cancel: '终止订单',
+  }
+  return labels[resolution] ?? resolution
+}
+
+/**
+ * 争议订单列表：`status` 省略时后端只返回待处置的争议（`Disputed`），传 `all` 返回全部历史。
+ */
+export async function listDisputedOrders(status = '', limit = 20): Promise<AdminOrderList> {
+  const query = new URLSearchParams({ limit: String(limit) })
+  if (status.trim()) query.set('status', status.trim())
+  return parseResponse<AdminOrderList>(await fetch(`/api/v1/admin/orders?${query.toString()}`, { headers: authHeaders() }))
+}
+
+/** 处置争议：三选一 + 必填依据（依据会写进运营审计，并通知订单双方）。 */
+export async function resolveDispute(orderId: string, decision: DisputeDecision, note: string): Promise<AdminOrderItem> {
+  return parseResponse<AdminOrderItem>(await fetch(`/api/v1/admin/orders/${orderId}/resolve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ decision, note }),
+  }))
 }

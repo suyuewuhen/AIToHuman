@@ -23,6 +23,10 @@ export interface TaskItem {
   expiredAt?: string | null
   cancelledAt?: string | null
   cancellationReason?: string | null
+  /** 报名截止时间；为空表示只能报到大厅里的任务截止时间。 */
+  applicationDeadline?: string | null
+  /** 是否还在接收报名，由服务端按当前时间判定；客户端不要自己算。 */
+  acceptingApplications?: boolean
 }
 
 export interface OrderItem {
@@ -45,6 +49,30 @@ export interface OrderItem {
   cancelledAt?: string | null
   cancelledBy?: string | null
   cancellationReason?: string | null
+  /** 争议：原因与发起人在发起时写入，处置结果与依据由运营填写。 */
+  disputeReason?: string | null
+  disputeOpenedBy?: string | null
+  disputeOpenedAt?: string | null
+  /** `Approve`（强制完成）/ `Rework`（退回返工）/ `Cancel`（终止订单）；为空表示还没处置。 */
+  disputeResult?: string | null
+  disputeResolutionNote?: string | null
+  disputeResolvedAt?: string | null
+}
+
+/** 服务者视角的一条报名：`canWithdraw` 由服务端判定，客户端不要自己推算。 */
+export interface MyApplicationItem {
+  applicationId: string
+  taskId: string
+  title: string
+  district: string
+  reward: number
+  currency: string
+  deadline: string
+  applicationDeadline: string | null
+  taskStatus: string
+  applicationStatus: string
+  submittedAt: string
+  canWithdraw: boolean
 }
 
 export interface ReviewItem {
@@ -78,6 +106,8 @@ export interface CreateTaskInput {
   reward: number
   acceptanceCriteria: string[]
   executionAddress?: string
+  /** 报名截止时间；必须在任务截止时间之前。 */
+  applicationDeadline?: string
 }
 
 async function parseResponse<T>(response: Response): Promise<T> {
@@ -160,7 +190,7 @@ export async function cancelTask(taskId: string, ownerId: string, reason: string
 export async function listMyOrders(userId: string): Promise<OrderItem[]> {
   return parseResponse<OrderItem[]>(await fetch(`/api/v1/orders?userId=${encodeURIComponent(userId)}`, { headers: authHeaders() }))
 }
-async function orderAction(orderId: string, action: 'start' | 'submit' | 'approve' | 'reject' | 'resume' | 'cancel', actorId: string, note?: string): Promise<OrderItem> {
+async function orderAction(orderId: string, action: 'start' | 'submit' | 'approve' | 'reject' | 'resume' | 'cancel' | 'dispute', actorId: string, note?: string): Promise<OrderItem> {
   return parseResponse<OrderItem>(await fetch(`/api/v1/orders/${orderId}/${action}`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ actorId, note }),
   }))
@@ -173,6 +203,12 @@ export const rejectOrder = (orderId: string, actorId: string, note: string) => o
 export const resumeOrder = (orderId: string, actorId: string) => orderAction(orderId, 'resume', actorId)
 /** 取消订单：原因必填（≤200 字），会随订单取消记录一起通知对方。 */
 export const cancelOrder = (orderId: string, actorId: string, reason: string) => orderAction(orderId, 'cancel', actorId, reason)
+
+/**
+ * 申请平台介入：需求方在服务者提交验收后发起，服务者在验收被驳回后发起，原因必填（≤500 字）。
+ * 争议期间订单冻结，双方都不能再提交/验收/驳回/取消，等运营处置。
+ */
+export const openDispute = (orderId: string, actorId: string, reason: string) => orderAction(orderId, 'dispute', actorId, reason)
 
 export async function listOrderReviews(orderId: string): Promise<ReviewItem[]> {
   return parseResponse<ReviewItem[]>(await fetch(`/api/v1/orders/${orderId}/reviews`, { headers: authHeaders() }))
@@ -198,6 +234,22 @@ export async function applyForTask(taskId: string, workerId: string, note: strin
 
 export async function listTaskApplications(taskId: string, ownerId: string): Promise<TaskApplication[]> {
   return parseResponse<TaskApplication[]>(await fetch(`/api/v1/tasks/${taskId}/applications?ownerId=${encodeURIComponent(ownerId)}`, { headers: authHeaders() }))
+}
+
+/** 服务者视角的“我的报名”，含是否还能撤回（服务端判定）。 */
+export async function listMyApplications(workerId: string, limit = 20): Promise<MyApplicationItem[]> {
+  const params = new URLSearchParams({ workerId, limit: String(limit) })
+  const result = await parseResponse<{ items: MyApplicationItem[] }>(await fetch(`/api/v1/tasks/applications/mine?${params.toString()}`, { headers: authHeaders() }))
+  return result.items
+}
+
+/** 撤回报名：只能在报名还处于待处理、且任务尚未选中别人时撤回；撤回后可以重新报名。 */
+export async function withdrawApplication(taskId: string, applicationId: string, workerId: string): Promise<TaskItem> {
+  return parseResponse<TaskItem>(await fetch(`/api/v1/tasks/${taskId}/applications/${applicationId}/withdraw`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ workerId }),
+  }))
 }
 
 export async function selectTaskApplication(taskId: string, applicationId: string, ownerId: string): Promise<SelectTaskResult> {

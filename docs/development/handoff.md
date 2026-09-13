@@ -29,11 +29,11 @@ AI 多轮澄清（每轮一个问题）
 → 双方评价，双方提交或 7 天后公开
 ```
 
-尚未实现：真实支付和托管、实名认证、禁止任务风险拦截、真实的病毒/内容扫描服务商（协议已接好，只差选定/部署服务）、争议处理、报名撤回与报名有效期、精确地址访问审计、图片重新编码；运营后台的任务/用户检索与人工下架已实现，风险复核与争议处理仍未实现。
+尚未实现：真实支付和托管、实名认证、禁止任务风险拦截、真实的病毒/内容扫描服务商（协议已接好，只差选定/部署服务）、争议的责任判定与赔付/退款、争议申诉与处理时限、精确地址访问审计、图片重新编码；运营后台的任务/用户检索、人工下架与争议处置已实现，风险规则引擎与客服工单仍未实现。
 
 ## 2. 当前工作区状态
 
-工作区除本轮改动外干净：上一轮的「多实例通知扇出」已经推到 `origin/main`（说明这台机器的远端凭据是可用的，`git push` 即可），因此 `main` 目前只领先 `origin/main` 一个提交——就是本轮的订单取消与任务过期。上一版交接文档描述的“多轮 AI 未提交实现”已经全部提交，本文不再区分“基线 / 未提交”两种状态。
+工作区除本轮改动外干净：上一轮的「多实例通知扇出」已经推到 `origin/main`（说明这台机器的远端凭据是可用的，`git push` 即可）。`main` 上未推送的提交是最近两轮的三块异常流程：订单取消与任务过期、报名撤回与报名截止时间（含迁移 18）、争议处理（含迁移 19）；其中前端与文档随最后一个提交一起进来。上一版交接文档描述的“多轮 AI 未提交实现”已经全部提交，本文不再区分“基线 / 未提交”两种状态。
 
 从上一版基线 `f196850` 到当前 `e45da76` 的主要变化：
 
@@ -56,7 +56,7 @@ backend/AIToHuman.Application/    Common/（IUnitOfWork）、Conversations/、No
                                   Orders/（OrderChatService、EvidenceService）、Tasks/TaskService
 backend/AIToHuman.Contracts/      Conversations/、Notifications/、Orders/（消息与凭证）、Tasks/
 backend/AIToHuman.Domain/         Common/UtcTimestamp、Conversations/、Notifications/、Orders/、Tasks/
-backend/AIToHuman.Infrastructure/ Persistence/（TaskDbContext、EfUnitOfWork、17 个迁移）、
+backend/AIToHuman.Infrastructure/ Persistence/（TaskDbContext、EfUnitOfWork、19 个迁移）、
                                   Conversations/、Notifications/、Orders/（消息与凭证仓储）、
                                   Storage/（本机目录与 S3 兼容对象存储）
 backend/tests/AIToHuman.Domain.Tests/      新增 ConversationTests、NotificationTests、
@@ -119,6 +119,8 @@ docs/                             ai-planning、api/api-guidelines、architectur
 - 通知走 Outbox：业务事务内写入 `notifications` 行，后台 `NotificationDispatcher` 每 2 秒扫描未派发记录。派发顺序是**先原子认领、再推送**：认领用一条条件更新 `UPDATE notifications SET "DispatchedAt" = @p WHERE "Id" = @id AND "DispatchedAt" IS NULL`，只有影响 1 行的实例负责推送，因此多实例同时扫到同一条记录也不会重复推送；推送失败就撤回认领、退回 Outbox 等下个周期，绝不把没推出去的通知标成已派发。
 - 取消订单：需求方在服务者提交验收前可以取消，服务者只能在开始执行前取消；必须填写原因，原因、取消人（`CancelledBy`）与时间（`CancelledAt`）落库。同一事务里把任务放回大厅（未过截止时间，本次选中报名置 `Rejected`，服务者可重新报名）或直接置为过期（已过截止时间），并通知对方参与者（`order.cancelled`）。
 - 任务撤销与过期：所有者可以撤销自己的草稿或尚未被选中的已发布任务（`POST /api/v1/tasks/{id}/cancel`，原因必填，报名中的服务者收到 `task.cancelled`）；超过截止时间仍无人被选中的已发布任务由后台 `TaskExpiryService` 每 60 秒扫描一次置为过期（记 `ExpiredAt`），`Pending` 报名一并置为 `Expired`，所有者与报名者各收到一条 `task.expired`。过期不可逆，任务不会留在“已发布”里等下一个服务者。
+- 报名与报名窗口：任务可以设可选的**报名截止时间**（`ApplicationDeadline`），到点后只关闭新报名，已有报名仍可被选中；服务者可以撤回自己尚未被处理的报名（`POST /api/v1/tasks/{id}/applications/{applicationId}/withdraw`），撤回后记录保留为 `Withdrawn`、可以重新报名，所有者收到 `task.applicationWithdrawn`；服务者在“我的报名”（`GET /api/v1/tasks/applications/mine`）里能看到自己每一条报名的状态与是否还能撤回。
+- 争议：需求方在 `Submitted`、服务者在 `Rejected` 可以发起争议（`POST /api/v1/orders/{id}/dispute`，原因必填 ≤500），订单随即进入 `Disputed` 并冻结（提交、验收、驳回、返工、取消全部拒绝），任务保持 `Assigned`；运营在后台“争议处置”里三选一处置（强制完成 / 退回返工 / 终止订单）并必须写明依据，动作记入 `order.dispute.{approve|rework|cancel}` 审计，双方都会收到 `order.disputed` 与 `order.disputeResolved`。
 - 多实例扇出：`ConnectionStrings__Redis` 已配置且运营打开 `notifications.fanout.enabled` 时，认领方把通知广播到 Redis 频道 `aitohuman:notifications:fanout`（`RedisNotificationFanout`，StackExchange.Redis 发布/订阅），每个实例的 `NotificationFanoutSubscriber` 收到后推给连在自己身上的客户端——用户连在哪个实例都能收到。没配连接串或开关为 false 时，认领方直接推本实例客户端；广播不通（Redis 抖动/还没起来）时兜底推本实例在线客户端并打警告日志，其它实例的客户端靠 REST 补齐；只有广播和本地推送都失败才撤回认领，2 秒后重试。订阅方每 5 秒检查一次开关，运营开启后自动接入，不需要重启。
 - 扇出是 at-most-once 的实时提示：广播时若没有任何实例在订阅，日志会给出警告；事实状态始终以 `notifications` 表与 REST 收件箱为准，客户端重连后重新拉取补齐。
 - 推送使用版本化信封 `{ eventId, type, version, occurredAt, payload }`；`eventId` 是幂等键（订单创建用订单 ID，状态变化由订单 ID + 状态推导），同一业务事件重复入队只保留一条。
@@ -180,6 +182,10 @@ docs/                             ai-planning、api/api-guidelines、architectur
 10. 取消订单的权限按“谁承担后果”划分：服务者只能在**开始执行前**（`Accepted`）取消，一旦开工就要由需求方发起终止，避免接了单又甩单；需求方在服务者提交验收前（`Accepted`/`InProgress`）都可以取消；提交验收后（`Submitted`）双方都不能取消，只能先验收或驳回。取消必须填原因（≤200 字），原因、取消人与时间都落库。
 11. 订单取消后不留死任务：任务未过截止时间就回到大厅重新招募（该次选择作废，服务者可以重新报名），已过截止时间就直接置为过期。
 12. 超过截止时间仍无人被选中的已发布任务由后台扫描置为过期并作废其报名；“已分配”的任务不参与扫描——它归订单流程管，不会因为过了截止时间就从服务者名下消失。
+13. 服务者可以撤回自己**尚未被处理**的报名：记录保留为 `Withdrawn` 便于追溯，撤回后可以重新报名，任务所有者会收到通知；一旦被选中就只能走订单取消，不能悄悄退出。
+14. 任务可以设可选的**报名截止时间**：它只关闭“新报名”，已经报过名的人仍然可以被选中；报名截止时间必须落在创建之后、任务截止时间之前，否则发布会被拒绝。
+15. 争议是双方谈不拢时的兜底，不是常规流程：需求方在服务者提交验收后（`Submitted`）发起，服务者在验收被驳回后（`Rejected`）发起；争议期间订单冻结，双方都动不了，等平台处置。
+16. 争议只有运营能处置，且必须写明依据，三种结果都是终局动作：强制完成（订单通过并关单）、退回返工（回到执行中，返工次数累加）、终止订单（订单取消，任务回大厅或过期；这不是任何一方“取消”，因此不记录取消人）。
 
 ## 5. 技术架构与目录
 
@@ -343,7 +349,7 @@ netstat -ano | Select-String ':5188|:5173'
 - Development 可用 `?userId=...` 连接合成用户；生产环境拒绝该回退。
 - JWT 通过 SignalR `access_token` 查询参数传递，后端只在 `/hubs` 路径读取。
 - 通知不再 fire-and-forget：业务事务内写入 `notifications` 行（该表兼作 Outbox），后台 `NotificationDispatcher` 每 2 秒扫描待派发记录，推送成功后写 `DispatchedAt`，失败留到下一轮，服务重启也不丢。
-- 推送的事件类型目前有 `order.created`（选人）、`order.statusChanged`（开始、提交、驳回、返工、验收）、`order.messageCreated`（新消息）、`order.cancelled`（订单取消）、`task.expired`（任务到期自动过期）和 `task.cancelled`（任务被撤销/下架）；收件箱与未读数走 REST，推送只是刷新提示。
+- 推送的事件类型目前有 `order.created`（选人）、`order.statusChanged`（开始、提交、驳回、返工、验收）、`order.messageCreated`（新消息）、`order.cancelled`（订单取消）、`order.disputed`（进入争议）、`order.disputeResolved`（运营处置完成）、`task.expired`（任务到期自动过期）、`task.cancelled`（任务被撤销/下架）和 `task.applicationWithdrawn`（有人撤回报名）；收件箱与未读数走 REST，推送只是刷新提示。
 - 多实例投递：派发前先用条件更新原子认领（只有影响 1 行的实例负责推送），启用扇出后认领方广播到 Redis 频道 `aitohuman:notifications:fanout`，各实例推给本机客户端；未配 `ConnectionStrings__Redis` 或开关 `notifications.fanout.enabled` 为 false 时退化为单实例直接推送，Redis 不可用时撤回认领并每 2 秒重试。与运营配置的接线见第 3 节。
 
 双浏览器验证：A 以 owner 发布任务，B 以 worker 报名，A 选择 B；B 无需刷新应立即收到通知并更新“我接取的任务”。Network 面板应看到 `/hubs/notifications` 的 WebSocket 或长轮询连接。
@@ -384,6 +390,11 @@ netstat -ano | Select-String ':5188|:5173'
 | POST | `/api/v1/orders/{id}/resume` | worker 按驳回原因返工，`Rejected → InProgress` |
 | POST | `/api/v1/orders/{id}/cancel` | 取消订单；服务者仅 `Accepted`、需求方到 `Submitted` 之前，原因必填；任务回到大厅或直接过期 |
 | POST | `/api/v1/tasks/{id}/cancel` | 所有者撤销自己的任务（草稿或已发布未被选中），原因必填；报名的服务者会收到通知 |
+| POST | `/api/v1/tasks/{id}/applications/{applicationId}/withdraw` | 服务者撤回自己尚未被处理的报名；撤回后可重新报名 |
+| GET | `/api/v1/tasks/applications/mine?workerId=...` | “我的报名”：每条报名的状态与是否还能撤回 |
+| POST | `/api/v1/orders/{id}/dispute` | 发起争议（需求方 `Submitted`、服务者 `Rejected`），原因必填；争议期间订单冻结 |
+| GET | `/api/v1/admin/orders?status=&limit=` | 运营：争议订单列表（默认只看待处置，`all` 看全部） |
+| POST | `/api/v1/admin/orders/{id}/resolve` | 运营处置争议：`Approve`/`Rework`/`Cancel` + 必填依据，进审计并通知双方 |
 | GET | `/api/v1/orders/{id}/messages?userId=...&limit=...` | 订单会话消息与未读数；仅参与者 |
 | POST | `/api/v1/orders/{id}/messages` | 发送会话消息，同时通知对方 |
 | POST | `/api/v1/orders/{id}/messages/read?userId=...` | 标记会话已读，返回最新未读数 |
@@ -415,7 +426,7 @@ netstat -ano | Select-String ':5188|:5173'
 
 Development + PostgreSQL 启动时改为应用 EF Core 迁移（`Database.Migrate()`），不再使用 `EnsureCreated()` 和幂等建表 SQL。生产环境由部署流程执行迁移，不在应用启动时自动迁移。
 
-迁移历史（17 个）：`AddUsers` → `AddOrders` → `AddOrderEvidence` → `AddReviews` → `AddOrderRework` → `AddConversations` → `AddTaskTables` → `AddConcurrencyTokens` → `AddNotifications` → `AddOrderMessages` → `AddTaskExecutionAddress` → `AddEvidence` → `AddSystemSettings` → `AddEvidenceScanAttempts` → `AddEvidenceMetadataRemoved` → `AddAdminAudit`。其中 `AddTaskTables` 补上了此前只由 `EnsureCreated()` 建出、从未纳入迁移的 `tasks` 与 `task_applications` 两张核心表；`AddConcurrencyTokens` 给 `tasks`/`orders` 加 `Version` 乐观并发令牌；`AddTaskExecutionAddress` 给 `tasks` 加参与者层的精确执行地址；`AddEvidence` 建 `evidence` 表；`AddSystemSettings` 建运营配置的两张表；`AddEvidenceScanAttempts` 给 `evidence` 补上扫描尝试次数、最近一次说明与尝试时间；`AddEvidenceMetadataRemoved` 补上“已移除元数据”说明与按人限速用的索引；`AddAdminAudit` 建运营操作审计表 `admin_audit_entries`（人工下架等动作只追加留痕）。
+迁移历史（19 个）：`AddUsers` → `AddOrders` → `AddOrderEvidence` → `AddReviews` → `AddOrderRework` → `AddConversations` → `AddTaskTables` → `AddConcurrencyTokens` → `AddNotifications` → `AddOrderMessages` → `AddTaskExecutionAddress` → `AddEvidence` → `AddSystemSettings` → `AddEvidenceScanAttempts` → `AddEvidenceMetadataRemoved` → `AddAdminAudit` → `AddOrderCancellationAndTaskExpiry` → `AddApplicationDeadline` → `AddOrderDispute`。其中 `AddTaskTables` 补上了此前只由 `EnsureCreated()` 建出、从未纳入迁移的 `tasks` 与 `task_applications` 两张核心表；`AddConcurrencyTokens` 给 `tasks`/`orders` 加 `Version` 乐观并发令牌；`AddTaskExecutionAddress` 给 `tasks` 加参与者层的精确执行地址；`AddEvidence` 建 `evidence` 表；`AddSystemSettings` 建运营配置的两张表；`AddEvidenceScanAttempts` 给 `evidence` 补上扫描尝试次数、最近一次说明与尝试时间；`AddEvidenceMetadataRemoved` 补上“已移除元数据”说明与按人限速用的索引；`AddAdminAudit` 建运营操作审计表 `admin_audit_entries`（人工下架等动作只追加留痕）；`AddOrderCancellationAndTaskExpiry` 给 `orders` 加取消三列、给 `tasks` 加 `ExpiredAt`/`CancelledAt`/`CancellationReason`；`AddApplicationDeadline` 给 `tasks` 加可选的报名截止时间；`AddOrderDispute` 给 `orders` 加争议六列并补 `(Status, CreatedAt)` 索引供运营按状态检索。
 
 早期 `EnsureCreated()` 建出的本地库没有迁移历史记录。启动逻辑会检测这种情况：先用模型对比物理表的「表名.列名」，只有结构完全对得上时，才把当时已有的迁移整体标记为已应用并打警告日志；一旦缺表或缺列就直接报错说明缺了什么，提示删除重建，避免在错误的 schema 上继续运行。基线化之后新增的迁移会正常应用——例如 `AddConcurrencyTokens` 就是在基线化之后自动补上的 `Version` 列。目标库不存在时由 `Migrate()` 负责建库。
 
@@ -557,8 +568,8 @@ npm run build
 
 测试现状：
 
-- 领域单元测试 131 个（`AIToHuman.Domain.Tests`）：本轮新增 22 个覆盖取消与过期（取消订单的角色×阶段矩阵与原因校验、取消后不能继续推进、取消留痕的 rehydrate、任务过期只在过截止时间且已发布时生效、过期作废报名、订单取消后任务回到大厅或过期、作废选中报名后不再披露执行地址）；其余覆盖任务加价、禁止自己报名、禁止重复报名、选择服务者、订单参与者权限、履约状态流、返工闭环与批准后关单、执行地址校验；对话回合不变量、历史窗口与截断；通知字段校验与标记幂等；订单会话消息校验与未读语义；执行凭证的类型/大小/签名校验、扫描状态机与扫描尝试记账、上传限额边界、元数据剥离（JPEG/PNG/WebP 的段结构、损坏文件不改写）；配置键形状、取值上限、版本自增与审计脱敏。
-- 集成测试 228 个（`AIToHuman.IntegrationTests`）：本轮新增 14 个覆盖取消与过期的用例层行为（取消订单的连带效果与通知、单一工作单元边界、开通/拒绝矩阵、过期扫描幂等与批上限、已分配任务不受扫描影响、单条失败不拖垮整批、所有者撤销任务与报名者通知）；此前新增 4 个覆盖多实例派发语义；其余覆盖 AI 多轮协议、输出严格校验与可控重试、SSE 线格式、会话用例、`IUnitOfWork` 事务边界、通知骨干、订单会话、评价盲期、大厅分页筛选与地址披露、执行凭证（上传/下载/权限/扫描门禁/上限/重扫闭环/直连地址签发/元数据剥离/按人配额），ClamAV 的 INSTREAM 协议与扫描实现分派，S3 兼容存储（请求形态、签名确定性、预签名参数与有效期、403/404 映射、缺配置不发请求）、EF 模型快照，以及运营配置（设置目录校验、解析顺序、加密与脱敏、审计、并发冲突、自检、管理员名单判定与优先级、AI 配置热更新）。全部走上游替身与内存仓储，不需要网络和数据库。
+- 领域单元测试 163 个（`AIToHuman.Domain.Tests`）：本轮新增 23 个覆盖报名撤回与争议（报名截止时间的构造与发布校验、到点后拒绝新报名但保留已报名、只能撤回自己的且仅限待处理、撤回后可重新报名、选中后不可撤回；争议的发起角色×阶段矩阵、原因必填与上限、争议期间订单冻结、三种处置结果分别对订单与任务的影响、处置依据必填与只能处置一次、争议留痕的 rehydrate）；此前新增 22 个覆盖取消与过期；其余覆盖任务加价、禁止自己报名、禁止重复报名、选择服务者、订单参与者权限、履约状态流、返工闭环与批准后关单、执行地址校验；对话回合不变量、历史窗口与截断；通知字段校验与标记幂等；订单会话消息校验与未读语义；执行凭证的类型/大小/签名校验、扫描状态机与扫描尝试记账、上传限额边界、元数据剥离（JPEG/PNG/WebP 的段结构、损坏文件不改写）；配置键形状、取值上限、版本自增与审计脱敏。
+- 集成测试 243 个（`AIToHuman.IntegrationTests`）：本轮新增 9 个覆盖争议（发起与冻结、双方发起权限、三种处置结果对任务的影响、单一工作单元、审计、只允许处置争议中的订单、运营列表默认只看待处置与非法入参）；此前新增 14 个覆盖取消与过期、6 个覆盖报名撤回与报名截止；其余覆盖 AI 多轮协议、输出严格校验与可控重试、SSE 线格式、会话用例、`IUnitOfWork` 事务边界、通知骨干、多实例派发语义、订单会话、评价盲期、大厅分页筛选与地址披露、执行凭证（上传/下载/权限/扫描门禁/上限/重扫闭环/直连地址签发/元数据剥离/按人配额），ClamAV 的 INSTREAM 协议与扫描实现分派，S3 兼容存储（请求形态、签名确定性、预签名参数与有效期、403/404 映射、缺配置不发请求）、EF 模型快照，以及运营配置（设置目录校验、解析顺序、加密与脱敏、审计、并发冲突、自检、管理员名单判定与优先级、AI 配置热更新）。全部走上游替身与内存仓储，不需要网络和数据库。
 - 尚缺：认证与授权、PostgreSQL 仓储的自动化测试（目前只有手工端到端验证）、SignalR 重连与派发失败重试、运营后台的其余能力，以及主机级端到端测试——本机 NuGet 无法还原 `Microsoft.AspNetCore.Mvc.Testing`，所以没有 `WebApplicationFactory` 用例；网络可用后补该包，就能把本节的手工联调步骤逐步自动化。
 
 本轮（运营后台检索与人工下架）新增验证：
@@ -567,6 +578,16 @@ npm run build
 - 人工下架：`POST /admin/tasks/{id}/cancel` 返回 `200`、状态变 `Cancelled`，该任务随即从大厅（匿名 `GET /api/v1/tasks`）消失；`GET /admin/audits` 出现 1 条 `action=task.cancel`、`targetType=task`、原因与提交内容一致、`actorId` 等于管理员用户 id 的记录。
 - 失败的操作不留痕迹：审计行数在下架后为 1；同一轮联调里紧接着的另外两步（报名、选人）中的选人步骤失败了（见第 12 节的已知线索），因此“已分配任务拒绝下架”这条规则在这一轮没有通过真实链路复现，它目前由领域单元测试覆盖（8 条：草稿/已发布可下架、已分配与已关闭被拒、原因必填与长度上限、审计字段与 UTC 归一化）。
 - 脚本侧两次自摆乌龙（与产品无关，记录以免重复踩）：E2E 脚本首次混入中文导致 PowerShell 5.1 按 ANSI 读而语法错误；随后又用了不存在的字段名 `rewardAmount`（契约里是 `reward`）却未检查创建任务的返回状态，导致后续步骤全部 404。
+
+本轮（报名撤回/报名截止时间与争议处理）新增验证：
+
+- 迁移与 schema：真实 PostgreSQL 上依次应用第 18、19 个迁移，`information_schema` 里能看到 `tasks.ApplicationDeadline` 与 `orders` 的 `DisputeReason`/`DisputeOpenedBy`/`DisputeOpenedAt`/`DisputeResolution`/`DisputeResolutionNote`/`DisputeResolvedAt`，`__EFMigrationsHistory` 计数为 19。
+- 报名撤回：`GET /api/v1/tasks/applications/mine` 返回 1 条 `Pending` 且 `canWithdraw=true`；撤回返回 `Withdrawn`、`canWithdraw` 变 false、所有者收件箱出现 `task.applicationWithdrawn`；服务者随后可以重新报名（该任务下变成 `Pending` + `Withdrawn` 两条记录），再次重复报名被 `422` 拦住。
+- 报名截止时间：带 30 秒报名窗口的任务发布时 `acceptingApplications=true`；窗口过后新报名返回 `422`、公开详情 `acceptingApplications=false` 且 `applicationDeadline` 有值，但**窗口内已报名的人仍然被成功选中**（任务变 `Assigned`、订单 `Accepted`）——即“到点只关新报名”。
+- 争议发起与冻结：服务者提交验收后需求方 `POST /orders/{id}/dispute` 返回 `Disputed`（含原因与发起人），服务者收到 `order.disputed`；争议期间需求方取消与验收都被 `422` 拦住。
+- 运营处置：`GET /api/v1/admin/orders` 默认只列出这条待处置争议（含 `disputeReason`）；`Rework` 处置后订单回到 `InProgress`、`reworkCount=1`，服务者能继续提交；再次提交后需求方再发起争议、运营 `Approve` 后订单 `Approved` 且任务 `Closed`；服务者在 `Rejected` 发起争议后运营 `Cancel` 得到订单 `Cancelled`（`cancelledBy` 为空）、任务回到 `Published`；双方都收到 `order.disputeResolved`。
+- 审计与错误路径：`GET /api/v1/admin/audits` 里能看到 `order.dispute.rework`、`order.dispute.approve`、`order.dispute.cancel`；验收通过后再发起争议返回 `422`。
+- 说明：用匿名合成用户跑这个 E2E 时，运营争议列表里的双方邮箱为空——那些用户没有注册进 `users` 表；注册用户的真实联调会带出邮箱（用户目录按 ID 查库）。
 
 本轮（订单取消与任务过期）新增验证：
 
@@ -641,12 +662,18 @@ npm run build
 - 接口与契约：`POST /api/v1/orders/{id}/cancel`（复用 `OrderActionRequest`，`note` 即原因）、`POST /api/v1/tasks/{id}/cancel`（新 `CancelTaskRequest(OwnerId, Reason)`）；`OrderResponse` 与 `TaskResponse` 补相应字段；通知新增 `order.cancelled`/`task.expired`/`task.cancelled` 与 `TaskNotificationPayload`（同一任务对多个接收者的事件键按接收者派生，否则只会入队第一条）。
 - 前端：订单与任务上的“取消订单/撤销任务”按钮（内联必填原因 + 二次确认，条件由 `canCancelOrder`/`canCancelTask` 与后端双重把关）、取消原因展示、报名状态中文化、我的任务过期与撤销提示、运营状态筛选补 `Expired`、大厅报名按钮加 `Published` 判断与 `.order-actions button.danger` 样式。
 
+本轮追加（报名撤回/报名截止时间与争议处理）：
+
+- 报名：`TaskItem.WithdrawApplication`（只能撤回自己的、`Pending` 的记录，作废后保留为 `Withdrawn` 且允许重新报名）、`TaskItem.AcceptingApplications(now)` 与可选的 `ApplicationDeadline`（迁移 18）；`TaskService.WithdrawApplication`/`ListMyApplications` 与端点 `POST /tasks/{id}/applications/{applicationId}/withdraw`、`GET /tasks/applications/mine`；通知 `task.applicationWithdrawn`；`TaskResponse`/`TaskSummaryResponse` 补 `applicationDeadline` 与 `acceptingApplications`。
+- 争议：`Order.OpenDispute`（需求方 `Submitted`、服务者 `Rejected`）与 `Order.ResolveDispute(DisputeResolution)`（`Approve`/`Rework`/`Cancel`，依据必填），新增枚举 `DisputeResolution` 与六个落库字段（迁移 19）；`TaskService.OpenDispute`、`AdminConsoleService.ResolveDispute`/`SearchOrders`、新查询接口 `IAdminOrderQuery`（EF 与内存两套实现，并把内存模式下“普通仓储与运营检索共用同一实例”的注册修对）；端点 `POST /orders/{id}/dispute`、`GET /admin/orders`、`POST /admin/orders/{id}/resolve`；通知 `order.disputed`、`order.disputeResolved`（按接收者派生事件键）；运营处置写审计 `order.dispute.{approve|rework|cancel}`。
+- 前端：大厅显示报名截止与“报名已截止”、新增“我的报名”列表与撤回入口、订单行新增“申请平台介入”与争议原因/处置结果展示、运营弹窗新增“争议处置”页签（三条处置动作 + 必填依据）。
+
 ### 后续跟进（原 P1 的延伸项）
 
 - 对象存储的短时签名 URL 已实现（见第 3、11 节）；如果以后要让前端完全绕开后端，需要补 CORS 配置与审计补偿。
 - 选定病毒/内容扫描服务后把 `evidence.scanner.provider` 切成 `http` + `failMode=closed`（重扫闭环已经就绪，只差真实服务商）。
-- 运营后台的其余部分：订单检索、风险记录与高风险任务人工复核、争议处理看板。上传大小与份数上限已经进了设置目录；凭证类型白名单**故意不进**（放开等于允许上传可执行内容）。
-- 通知的更多事件类型（报名、评价公开、加价）与推送渠道（短信、邮件）。
+- 运营后台的其余部分：风险记录与高风险任务人工复核、争议的责任判定与赔付/退款、争议申诉与处理时限、客服工单。上传大小与份数上限已经进了设置目录；凭证类型白名单**故意不进**（放开等于允许上传可执行内容）。
+- 通知的更多事件类型（任务发布、加价、评价公开）与推送渠道（短信、邮件）。
 - 会话消息的分页与历史截断、消息撤回与编辑。
 - 大厅排序选项（悬赏、距离）、任务分类筛选，以及精确地址的访问审计。
 - 图片像素级重新编码、凭证与验收项关联，以及运营后台的任务/用户检索与风险复核。
@@ -694,6 +721,8 @@ npm run build
 - [ ] 多实例投递：给两个实例都配 `ConnectionStrings__Redis`，一个浏览器连实例 A、另一个连实例 B；在 A 上触发一次状态变更，B 的页面应不刷新就收到通知。再在运营后台把 `notifications.fanout.enabled` 关掉重试：通知仍然落库、收件箱照常，只是不再跨实例实时推送（实例 B 的日志会写“当前未启用”）。
 - [ ] 取消订单：服务者开始执行前点“取消订单”应成功，任务回到大厅并可以再次被选人；服务者开工后该按钮应消失（直接调接口返回 `422`）；需求方在服务者提交验收后也不应能取消。
 - [ ] 到期过期：把任务的截止时间设成 1 分钟后并发布（不要选人），一分钟左右刷新“我的任务”，状态应变成“已过期”，报名过的服务者应收到 `task.expired`；已分配的任务即使过了截止时间也不应变成过期。
+- [ ] 报名撤回与报名截止：以服务者身份报名后到“我的报名”里撤回，应看到“已撤回”且可以再次报名；创建一个带报名截止时间的任务，到点后大厅应显示“报名已截止”，但此前报名的人仍能被选中。
+- [ ] 争议：服务者提交后由需求方发起争议，双方应看到订单冻结（按钮消失或接口返回 `422`）；以管理员打开“争议处置”页签，分别验证“退回返工 / 强制完成 / 终止订单”三条路径对订单、任务与双方通知的影响，并确认审计里出现 `order.dispute.*`。
 - [ ] 新功能先补 Contract、领域规则和测试，再扩展页面。
 
 ## 14. 相关文档
