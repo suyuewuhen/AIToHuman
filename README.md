@@ -29,6 +29,7 @@ AIToHuman 是一个“AI 任务管家 + 真人服务任务大厅”平台。用�
 - AI：火山引擎 Ark OpenAI 兼容接口，SSE 流式多轮澄清
 - 凭证存储：本机私有目录或 S3 兼容对象存储（MinIO / 阿里云 OSS / AWS S3）可切换，签名是自研的 AWS SigV4（不依赖厂商 SDK），下载支持短时直连签名地址，已用本机 MinIO 端到端验证
 - 运营配置：设置目录（白名单）+ 加密机密 + 变更审计 + 写入即生效；管理员在顶栏“运营配置”页面即可调整模型、对象存储、内容扫描参数与凭证上传上限（见 [ADR-0003](docs/architecture/decisions/0003-operator-configurable-settings.md)）
+- 测试：PostgreSQL、Redis 与 S3 兼容存储三类外部依赖都有真实环境的自动化回归用例（`backend/tests/AIToHuman.IntegrationTests/Postgres/` 与 `External/`），依赖不可用时整批自动跳过而不是让构建变红；CI 里三个依赖都由服务容器提供
 - 本地依赖：`compose.yaml` 定义 PostgreSQL、Redis 和 MinIO
 
 规划中、代码尚未接入：
@@ -117,6 +118,8 @@ dotnet run --project backend/AIToHuman.Api --urls http://127.0.0.1:5188
 如果本机没有 PostgreSQL，也可以使用 `docker compose up -d postgres` 启动仓库定义的隔离开发数据库；此时请用环境变量覆盖连接串。
 
 跑 `dotnet test` 时，真实数据库回归用例（`backend/tests/AIToHuman.IntegrationTests/Postgres/`）会用同一个连接串建一个临时测试库、跑完全部迁移，用完后尽力删掉（删不掉不影响下次运行，每次都用新的随机库名）；本机没装 PostgreSQL 或连不上时，这批用例自动跳过，不影响其余测试。连接串默认取自 `backend/AIToHuman.Api/appsettings.Development.json`，也可以用环境变量 `AITOHUMAN_TEST_POSTGRES` 单独指定。
+
+同理，Redis 扇出与对象存储的回归用例（`backend/tests/AIToHuman.IntegrationTests/External/`）也要有对应依赖才会真跑：Redis 默认连 `127.0.0.1:6379`（可用 `AITOHUMAN_TEST_REDIS` 覆盖），对象存储默认 `http://127.0.0.1:9000` 上的 `aitohuman-evidence` 桶（可用 `AITOHUMAN_TEST_S3_ENDPOINT` / `_REGION` / `_BUCKET` / `_ACCESS_KEY` / `_SECRET_KEY` 覆盖，默认凭据只适合本机开发）。这批用例会先往桶里写一条探针对象再删掉来确认可用（桶没建、密钥不对会直接跳过并说明原因），依赖不可用时同样自动跳过；对象存储那批因为要真等签名地址过期，会花二十来秒。
 
 另开一个终端：
 

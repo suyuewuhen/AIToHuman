@@ -33,7 +33,7 @@ AI 多轮澄清（每轮一个问题）
 
 ## 2. 当前工作区状态
 
-工作区状态：`main` 与 `origin/main` 同步；本轮的「加固：幂等清理与可读错误」随本轮提交一起进入 `main`（`git log -1` 可见）。上一版交接文档描述的“多轮 AI 未提交实现”已经全部提交，本文不再区分“基线 / 未提交”两种状态。
+工作区状态：`main` 与 `origin/main` 同步；本轮的「把自动化扩展到 Redis 与对象存储」随本轮提交一起进入 `main`（`git log -1` 可见）。上一版交接文档描述的“多轮 AI 未提交实现”已经全部提交，本文不再区分“基线 / 未提交”两种状态。
 
 从上一版基线 `f196850` 到当前 `e45da76` 的主要变化：
 
@@ -334,20 +334,34 @@ Password=123456
 
 连接串存放在被 Git 忽略的 `backend/AIToHuman.Api/appsettings.Development.json`，严禁提交。其他环境通过 `ConnectionStrings__Postgres` 覆盖。
 
-### 真实数据库回归测试
+### 真实依赖回归测试（PostgreSQL / Redis / 对象存储）
 
-`backend/tests/AIToHuman.IntegrationTests/Postgres/` 下有一组跑在真实 PostgreSQL 上的回归用例（并发、EF 变更跟踪、迁移、争议冻结、风险门禁）。它自己建库、跑迁移、用完删库，不需要手工准备：
+`backend/tests/AIToHuman.IntegrationTests/` 下有三组跑在真实依赖上的回归用例，本机装了什么就跑什么、没装就跳过，不需要手工准备：
 
 ```powershell
-dotnet test AIToHuman.sln --no-build --no-restore                    # 本机装了 PostgreSQL 就会跑，约 2 秒
+dotnet test AIToHuman.sln --no-build --no-restore                    # 本机有 PostgreSQL / Redis / MinIO 就会跑
 $env:AITOHUMAN_TEST_POSTGRES = "Host=localhost;Port=5432;Database=postgres;Username=postgres;Password=123456"
-dotnet test AIToHuman.sln --no-build --no-restore                    # 指定别的库来跑
+$env:AITOHUMAN_TEST_REDIS = "127.0.0.1:6379"
+$env:AITOHUMAN_TEST_S3_ENDPOINT = "http://127.0.0.1:9000"
+$env:AITOHUMAN_TEST_S3_BUCKET = "aitohuman-evidence"
+dotnet test AIToHuman.sln --no-build --no-restore                    # 指定依赖地址
 ```
 
+**PostgreSQL**（`Postgres/`，12 条）：并发、EF 变更跟踪（`Save` 是否真的写了所有列）、乐观并发令牌、迁移从零建库、取消订单的连带效果、争议冻结、风险门禁与申诉、幂等记录、草稿版本编号。
+
 - 连接串来源顺序：环境变量 `AITOHUMAN_TEST_POSTGRES` → `backend/AIToHuman.Api/appsettings.Development.json`（该文件不进 Git，凭据不会写进代码）。
-- **连不上数据库时这组用例会标记为“跳过”而不是失败**，所以没装 PostgreSQL 的机器、以及默认 CI 都能跑完其余测试；跳过信息里会写清原因。
-- 测试库名带随机后缀（`aitohuman_regression_<随机>`），不会碰开发库；同一个库在一次运行内共享，每个用例开始前清表。
-- CI 里已经加了 `postgres:16` 服务并注入 `AITOHUMAN_TEST_POSTGRES`，所以这组用例在流水线里是真跑的（见 `.github/workflows/ci.yml`）。
+- 测试库名带随机后缀（`aitohuman_regression_<随机>`），不会碰开发库；一次运行内共享，每个用例开始前清表，结束尽力删库。
+
+**Redis**（`External/RedisFanoutTests.cs`，5 条）：广播的消息能被订阅方按字段原样收到；**处理函数抛异常不会中断订阅**；开关关闭时 `Enabled=false` 且广播抛异常（派发方据此退回单实例推送）；未启用时订阅立即返回；**配了连不上的 Redis 时广播会失败并返回**，不会把派发周期卡住。
+
+**S3 兼容对象存储**（`External/S3StorageTests.cs`，5 条）：对象往返读写与删除；**预签名地址不带鉴权头就能取回字节**且附件名生效；**篡改签名 → 403**；**换对象路径 → 403**（路径参与签名）；**过期后 → 403**。
+
+- 依赖地址与凭据来源：`AITOHUMAN_TEST_REDIS`（默认 `127.0.0.1:6379`）、`AITOHUMAN_TEST_S3_ENDPOINT` / `_REGION` / `_BUCKET` / `_ACCESS_KEY` / `_SECRET_KEY`（默认 `http://127.0.0.1:9000` / `us-east-1` / `aitohuman-evidence` / `minioadmin` / `minioadmin`，其中默认凭据只是本机开发的兜底，其他环境请用环境变量注入）。
+- **对象存储的可用性是真的写一条探针对象再删掉来判定的**：桶不存在、密钥不对、服务没起来都会在这里暴露，跳过信息里会写明原因。
+- **任何依赖不可用时，对应那批用例标记为“跳过”而不是失败**（`[PostgresFact]`/`[RedisFact]`/`[MinioFact]`），所以没装这些服务的机器、以及默认 CI 都能跑完其余测试；跳过信息里会写清原因。
+- **过期判定由服务端负责**：有效期是按 `X-Amz-Date + X-Amz-Expires` 与服务端时钟算的，把客户端时钟往前推没有意义——那条用例是真的等 7 秒再取。
+- CI 里已经起了 `postgres:16`、`redis:7`、`minio/minio` 三个服务并带 healthcheck，测试前还会用 `minio/mc` 容器把测试用的桶建出来（MinIO 起来时是空实例），所以这三组用例在流水线里是真跑的（见 `.github/workflows/ci.yml`）。
+- **仍未自动化**：主机级端到端（`WebApplicationFactory`，本机离线取不到 `Microsoft.AspNetCore.Mvc.Testing`），以及"两个真实 API 实例 + 两个客户端"的通知扇出整链路（下面这组用例覆盖的是"广播能到达订阅方"这一层）。
 
 
 ### 启动后端
@@ -753,6 +767,15 @@ npm run build
 - 实现方式：新增 `ValidationException`（→422+消息）与 `ConflictException`（→409+消息）两个明确的类型，把 AuthService、AiPlanningService 的对话校验、Program.cs 里的消息长度与申诉结论解析都改成前者；重复邮箱从"靠消息里包含『已注册』做字符串匹配"改成明确的 `ConflictException`（那条脆弱的匹配分支已删除）；AI 未配置密钥改用新的 `AiPlanningNotConfiguredException`（→502 + "去运营后台补 ai.apiKey"的可行动线索）。**未预期的 `InvalidOperationException` 仍然只返回通用文案**，避免把 EF 之类的内部消息漏给客户端。
 - 报名列表显示服务者名字：`TaskApplicationResponse` 增加 `workerDisplayName`，与信用摘要同一次批量取（`IUserDirectory.FindMany`）；实测报名行返回 `workerDisplayName=张师傅`；拿不到名字（无 PostgreSQL 时是空实现）时返回 `null`，页面退化成显示 id 前缀——用例锁住了"缺名字不炸列表"。
 
+本轮（把自动化扩展到 Redis 与对象存储）新增验证：
+
+- 编译与测试：`dotnet build AIToHuman.sln --no-restore` 0 警告 0 错误；领域 255 + 集成 **313** = **568** 个用例全通过，其中新增 10 条真实外部依赖用例（Redis 5 + 对象存储 5）。带上真库那批一起跑约 21 秒（对象存储那条"过期"用例真的要等 7 秒）。
+- Redis 扇出（真实 Redis 6379）：广播出去的消息被订阅方**按字段原样**收到（`NotificationFanoutMessage` 相等，`PayloadJson` 不被重新序列化）；处理函数抛异常后**订阅仍然活着**（第二条消息照样收到）；开关关闭时 `Enabled=false` 且 `PublishAsync` 抛 `InvalidOperationException`（派发方据此退回单实例推送）；未启用时 `SubscribeAsync` 立即返回；配了不可达的 Redis（`127.0.0.1:6399`）时 `PublishAsync` 会失败并返回，**不会把派发周期无限卡住**。
+- 对象存储（真实 MinIO 9000 + 桶 `aitohuman-evidence`）：对象往返读写与删除、`ExistsAsync` 真假、不存在的对象读取返回 `null` 而不是抛异常；**预签名地址不带任何鉴权头就能取回字节**，`Content-Disposition` 的附件名生效；**篡改签名末位 → 403**；**拿 A 的签名去取 B 的路径 → 403**；**过期后 → 403**。最后三条是这轮最有价值的部分：它们验证的是我们自研的 SigV4 真的被服务端认账，而不是"看起来像签名"。
+- 跳过语义已实测：把 `AITOHUMAN_TEST_REDIS` 指向 `127.0.0.1:6399`、`AITOHUMAN_TEST_S3_ENDPOINT` 指向 `http://127.0.0.1:9099` 后，这 10 条里 9 条**跳过**、0 失败，只有那条"不可达 Redis 要失败并返回"的纯断言用例继续运行并通过。
+- 两条自己踩过的坑（如实记录，避免后来者重犯）：① 过期那条第一版用假时钟把"现在"推到有效期之后，结果服务端照样返回 `200`——**有效期是服务端按 `X-Amz-Date + X-Amz-Expires` 与它自己的时钟判定的，改客户端时钟没有意义**，现在改成真等 7 秒；② 路径替换那条一开始用 `Uri.EscapeDataString(key)` 去替换 URL，而 URL 里是未转义的路径片段，替换没生效、地址根本没变，于是"因为没改而通过"（`200`），现在加了 `Assert.NotEqual(presigned, swapped)` 防止这种假通过。
+- CI：backend job 现在同时起 `postgres:16`、`redis:7`、`minio/minio`（都带 healthcheck），并在测试前用 `minio/mc` 容器建出测试用的桶——MinIO 起来是空实例，不建桶对象存储用例会跳过。
+
 ## 12. 完成状态与后续顺序
 
 ### P0
@@ -865,6 +888,11 @@ npm run build
 - 可读错误：新增 `ValidationException`/`ConflictException`/`AiPlanningNotConfiguredException` 并在异常映射里逐类给出状态码与"消息是否外泄"，删掉了"消息里包含『已注册』"那条字符串匹配分支。
 - 报名列表：`workerDisplayName`（批量取，取不到返回 null）；`TaskService` 构造新增 `IUserDirectory` 参数，12 个手工构造它的测试文件同步补参数。
 
+本轮追加（把自动化扩展到 Redis 与对象存储）：
+
+- 测试基建：`backend/tests/AIToHuman.IntegrationTests/External/ExternalTestEnvironment.cs`（探测 + `[RedisFact]`/`[MinioFact]` + 字典版设置提供者，对象存储的可用性靠"写一条探针对象再删掉"判定）；`RedisFanoutTests.cs`（5 条）；`S3StorageTests.cs`（5 条）。
+- CI：三个依赖服务 + 建桶步骤（见 `.github/workflows/ci.yml`）。
+
 ### 后续跟进（原 P1 的延伸项）
 
 - 幂等键的收尾：没有 ETag/版本字段返回；前端还没有"自动生成并复用幂等键"，目前只靠按钮置灰防重复点击（见第 10 节）。记录清理已经自动化（24 小时 / 10 分钟 / 每小时一轮）。
@@ -873,7 +901,7 @@ npm run build
 - 运营后台的其余部分：客服工单、争议的责任判定与赔付/退款、争议申诉与处理时限。风险复核队列、误拦申诉与人工下架都已实现；风险规则目录本身还不能后台编辑（改规则要发版并提升版本号），申诉也没有次数与频率限制。上传大小与份数上限已经进了设置目录；凭证类型白名单**故意不进**（放开等于允许上传可执行内容）。
 - 风险判定的增强：模型辅助分类（现在只有字面词表匹配，语义变体容易漏）、追加式决策历史表（现在只保留最新一条判定）、误拦与漏拦的回归测试集扩充（当前是 17 条禁止 + 6 条转人工 + 8 条正常用例）。
 - 草稿的版本与历史：版本号与编辑历史**已实现**（`task_draft_revisions` 只追加，创建写第 1 版、每次编辑追加一版并写变更摘要与该版风险结论）。仍然没有独立的 `TaskDraft` 聚合，编辑是直接改 `ReadyToPublish` 的任务；历史是只读的，**没有回滚到某一版、也没有字段级 diff 展示**，运营后台也看不到（只有所有者能读）。
-- 真实基础设施的自动化回归测试：真实 PostgreSQL 已完成（见第 11 节本轮条目与第 7 节）；还剩 **Redis 扇出**与 **S3/MinIO 对象存储**两块的自动化——它们目前仍靠手工端到端验证。主机级 E2E（`WebApplicationFactory`）仍缺，因为本机离线还原不到 `Microsoft.AspNetCore.Mvc.Testing`。
+- 真实基础设施的自动化回归测试：**PostgreSQL、Redis、S3 兼容对象存储三块都已建立**（见第 7 节与第 11 节本轮条目）。剩下的自动化缺口是主机级端到端（`WebApplicationFactory`）与"两个真实实例 + 客户端"的通知扇出整链路。
 - 通知的更多事件类型（任务发布、加价、评价公开）与推送渠道（短信、邮件）。
 - 会话消息的分页与历史截断、消息撤回与编辑。
 - 大厅排序选项（悬赏、距离）、任务分类筛选，以及精确地址的访问审计。
@@ -934,6 +962,7 @@ npm run build
 - [ ] 用两个账号跑一遍双向信用：服务者完成一单且双方互评后，需求方在自己的任务“查看报名”里应看到该服务者的公开评分与条数，且与 `GET /api/v1/users/{id}/review-summary` 一致；只有单方评价（盲期内）时列表里应为 0 分 / 0 条。
 - [ ] 幂等键：对同一个写接口用同一个 `Idempotency-Key` 连发两次，第二次应返回与第一次相同的状态码和响应体，并带 `Idempotency-Replayed: true`；把请求体改掉再用同一个键，应返回 `409`；不带这个头时行为应和以前完全一样。
 - [ ] 误拦申诉：把一条敏感草稿提交申诉，运营在“误拦申诉”页签里给出结论（依据必填）；如果命中的是禁止类别，申诉成立后任务**依旧不能发布**，所有者收到的通知里 `canPublish` 应为 false；同一版内容再次申诉应返回 `422`，改过文案后可以重新申诉。
+- [ ] 外部依赖回归：跑一次 `dotnet test AIToHuman.sln --no-build --no-restore`，确认 `RedisFanoutTests` 与 `S3StorageTests` 是**通过**而不是**跳过**（跳过说明本机 Redis/MinIO 没起来或桶不存在，跳过信息里有原因）；再把 `AITOHUMAN_TEST_REDIS` 指向 `127.0.0.1:6399` 确认它们变成跳过而不是失败。
 - [ ] 幂等清理：启动 API 后日志应出现「幂等记录清理已启动：已完成记录保留 24 小时、未完成占位保留 10 分钟，单次最多清理 500 条。」；把库里某条 `idempotency_entries` 的 `CompletedAt` 手工改成两天前，下一个整点（或重启后第一轮）应被清掉。
 - [ ] 可读错误：故意发一个缺 `role` 的注册请求，应返回 `422` 且 detail 是「角色必须是 owner 或 worker。」而不是「请求暂时无法处理。」；用已注册邮箱再注册应返回 `409` 且 detail 是「该邮箱已注册。」。
 - [ ] 新功能先补 Contract、领域规则和测试，再扩展页面。

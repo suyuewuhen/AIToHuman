@@ -25,6 +25,29 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      # 通知扇出的回归用例需要真实 Redis；连不上时同一批用例会跳过而不是失败。
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      # 对象存储的回归用例需要真实 S3 兼容服务；桶名要与测试默认值一致（aitohuman-evidence）。
+      minio:
+        image: minio/minio
+        env:
+          MINIO_ROOT_USER: minioadmin
+          MINIO_ROOT_PASSWORD: minioadmin
+        ports:
+          - 9000:9000
+        options: >-
+          --health-cmd "mc ready local"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -32,7 +55,12 @@ jobs:
           dotnet-version: 10.0.x
       - run: dotnet restore AIToHuman.sln --configfile NuGet.Config
       - run: dotnet build AIToHuman.sln --no-restore --configuration Release
-      - name: Run tests (includes real PostgreSQL regression suite)
+      # MinIO 起来时是空实例：先把测试用的桶建出来，否则对象存储用例会因为桶不存在而跳过。
+      - name: Create the bucket used by storage tests
+        run: |
+          docker run --rm --network host --entrypoint sh minio/mc -c \
+            "mc alias set ci http://127.0.0.1:9000 minioadmin minioadmin && mc mb --ignore-existing ci/aitohuman-evidence"
+      - name: Run tests (includes real PostgreSQL / Redis / object storage suites)
         run: dotnet test AIToHuman.sln --no-build --configuration Release
         env:
           AITOHUMAN_TEST_POSTGRES: Host=localhost;Port=5432;Database=postgres;Username=postgres;Password=postgres

@@ -2,7 +2,7 @@
 
 路线图以里程碑和退出条件为主，不先承诺未经团队评估的具体日期。
 
-> **现状标注**（对齐 2026-09-13 代码；已包含订单取消与任务过期、报名撤回与报名截止时间、争议处理与运营处置、确定性风险规则与人工复核、误拦申诉、草稿字段编辑与版本历史、写接口幂等键、真实 PostgreSQL 回归测试基建）
+> **现状标注**（对齐 2026-09-13 代码；已包含订单取消与任务过期、报名撤回与报名截止时间、争议处理与运营处置、确定性风险规则与人工复核、误拦申诉、草稿字段编辑与版本历史、写接口幂等键、真实 PostgreSQL 回归测试基建、外部依赖（Redis 与 S3 兼容存储）的自动化回归）
 >
 > - ✅ 已完成，并有代码或配置可验证。
 > - ⚠️ 部分完成：已交付简化版，仍缺设计中的关键部分。
@@ -18,14 +18,14 @@
 - ✅ 系统架构、领域状态机和 API 约定。
 - ✅ Vue 与 .NET 项目骨架。
 - ✅ PostgreSQL、Redis、MinIO 的本地开发环境定义（`compose.yaml`）。
-- ⚠️ CI、格式和测试基线：`.github/workflows/ci.yml` 已执行后端 `restore/build/test` 和前端 `npm ci`/`npm run typecheck`/`npm run build`，并有 `.editorconfig` 与 244 个领域单元测试、279 个集成测试（其中 9 个是真实 PostgreSQL 回归用例）；后端 job 已在 CI 里起 `postgres:16` 服务并注入连接串，因此真实数据库回归用例在 CI 会真正运行，本机没装数据库时同一批用例自动跳过；尚无 Lint、Markdown 检查、OpenAPI 兼容性检查和技术文档生成。
+- ⚠️ CI、格式和测试基线：`.github/workflows/ci.yml` 已执行后端 `restore/build/test` 和前端 `npm ci`/`npm run typecheck`/`npm run build`，并有 `.editorconfig` 与 255 个领域单元测试、313 个集成测试（其中 12 个是真实 PostgreSQL 回归用例，10 个覆盖 Redis 与 S3 兼容存储）；后端 job 已在 CI 里同时起 `postgres:16`、`redis:7` 与 `minio/minio` 三个服务并注入连接串（测试前用 `minio/mc` 建好测试桶），因此这些真实依赖的回归用例在 CI 会真正运行，本机缺少对应依赖时同一批用例自动跳过；尚无 Lint、Markdown 检查、OpenAPI 兼容性检查和技术文档生成。
 - ✅ 配置分层与运营可配置项：部署级配置（连接串、Redis、日志、密钥环路径）只走环境变量；三方集成参数（模型服务、对象存储、内容扫描）与凭证上传上限登记在设置目录里，可通过管理员接口与顶栏“运营配置”页面修改，机密加密落库并留审计，改完立即生效（见 [ADR-0003](../architecture/decisions/0003-operator-configurable-settings.md)）。运营后台的其余能力（任务/用户检索、人工下架、争议订单检索与处置、风险复核队列与规则目录自述）已实现；仍未实现的是风险看板、申诉的次数/频率限制与模型辅助分类。
 - ⛔ 秘密扫描与依赖更新自动化。
 
 遗留项：
 
-- ✅ 数据库结构已收敛为 EF Core Migration 单一来源：20 个迁移覆盖 users、orders、order_evidence、reviews、tasks、task_applications、conversations、conversation_messages、notifications、order_messages、evidence（含扫描记账与元数据剥离记录）、system_settings、system_setting_audits、admin_audit_entries 等表；最近四条是 `AddOrderCancellationAndTaskExpiry`（给 `orders` 补取消三列 `CancelledAt`/`CancelledBy`/`CancellationReason`，给 `tasks` 补 `ExpiredAt`/`CancelledAt`/`CancellationReason`）、`AddApplicationDeadline`（给 `tasks` 补可选的报名截止时间 `ApplicationDeadline`）、`AddOrderDispute`（给 `orders` 补争议六列 `DisputeReason`/`DisputeOpenedBy`/`DisputeOpenedAt`/`DisputeResolution`/`DisputeResolutionNote`/`DisputeResolvedAt`，并加 `(Status, CreatedAt)` 索引供运营按状态检索）与 `AddTaskRiskAssessment`（给 `tasks` 补风险判定与复核十列 `RiskVerdict`/`RiskRuleCode`/`RiskCategory`/`RiskSummary`/`RiskRuleVersion`/`RiskAssessedAt`/`RiskReviewStatus`/`RiskReviewedBy`/`RiskReviewedAt`/`RiskReviewNote`，并加 `(RiskReviewStatus, CreatedAt)` 索引供复核队列先来先处理；存量行按数据库默认值 `Allowed`/`NotRequired` 回填）。Development 启动执行 `Database.Migrate()`，早期 `EnsureCreated()` 建出的旧库会自动基线化（见 `handoff.md` 第 10 节）。空库迁移、并发选人、草稿编辑落库、争议冻结与风险门禁已经有真实 PostgreSQL 自动化回归（`backend/tests/AIToHuman.IntegrationTests/Postgres/`，见 [开发指南](./development-guide.md) 第 4 节）；Redis 与对象存储仍靠手工端到端验证。
-- ⚠️ Redis 已真正接入：用于通知的多实例扇出（派发方原子认领后发布到固定频道，各实例推给自己进程内的在线客户端，运营可开关，见 [ADR-0004](../architecture/decisions/0004-notification-fanout.md)），已用本机 Redis + 双 API 实例端到端验证；缓存、分布式锁与频率限制仍未接入。MinIO 仍只是 `compose.yaml` 里的本地依赖（S3 兼容对象存储实现已用本机 MinIO 端到端验证），默认仍写本机私有目录，切到 `storage.provider=s3` 即可。
+- ✅ 数据库结构已收敛为 EF Core Migration 单一来源：20 个迁移覆盖 users、orders、order_evidence、reviews、tasks、task_applications、conversations、conversation_messages、notifications、order_messages、evidence（含扫描记账与元数据剥离记录）、system_settings、system_setting_audits、admin_audit_entries 等表；最近四条是 `AddOrderCancellationAndTaskExpiry`（给 `orders` 补取消三列 `CancelledAt`/`CancelledBy`/`CancellationReason`，给 `tasks` 补 `ExpiredAt`/`CancelledAt`/`CancellationReason`）、`AddApplicationDeadline`（给 `tasks` 补可选的报名截止时间 `ApplicationDeadline`）、`AddOrderDispute`（给 `orders` 补争议六列 `DisputeReason`/`DisputeOpenedBy`/`DisputeOpenedAt`/`DisputeResolution`/`DisputeResolutionNote`/`DisputeResolvedAt`，并加 `(Status, CreatedAt)` 索引供运营按状态检索）与 `AddTaskRiskAssessment`（给 `tasks` 补风险判定与复核十列 `RiskVerdict`/`RiskRuleCode`/`RiskCategory`/`RiskSummary`/`RiskRuleVersion`/`RiskAssessedAt`/`RiskReviewStatus`/`RiskReviewedBy`/`RiskReviewedAt`/`RiskReviewNote`，并加 `(RiskReviewStatus, CreatedAt)` 索引供复核队列先来先处理；存量行按数据库默认值 `Allowed`/`NotRequired` 回填）。Development 启动执行 `Database.Migrate()`，早期 `EnsureCreated()` 建出的旧库会自动基线化（见 `handoff.md` 第 10 节）。空库迁移、并发选人、草稿编辑落库、争议冻结与风险门禁已经有真实 PostgreSQL 自动化回归（`backend/tests/AIToHuman.IntegrationTests/Postgres/`，见 [开发指南](./development-guide.md) 第 4 节）；Redis 与对象存储也已有自动化回归（`backend/tests/AIToHuman.IntegrationTests/External/`，覆盖扇出广播与订阅、预签名地址的签名校验与过期，见同一节）。
+- ⚠️ Redis 已真正接入：用于通知的多实例扇出（派发方原子认领后发布到固定频道，各实例推给自己进程内的在线客户端，运营可开关，见 [ADR-0004](../architecture/decisions/0004-notification-fanout.md)），已用本机 Redis + 双 API 实例端到端验证，并已有自动化回归覆盖"广播能到达订阅方、异常不中断订阅、开关关闭时的行为"（但**两个真实实例之间的整链路投递**仍是手工端到端）；缓存、分布式锁与频率限制仍未接入。MinIO 仍只是 `compose.yaml` 里的本地依赖（S3 兼容对象存储实现已用本机 MinIO 端到端验证，并有自动化回归覆盖对象往返、签名校验与过期，默认仍写本机私有目录，切到 `storage.provider=s3` 即可）。
 
 退出条件：团队确认首发城市、任务分类、AI 建议价冷启动方式和身份/支付策略；开发环境可复现。开发环境可复现已基本达成，产品决策项仍未确认。
 
