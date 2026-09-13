@@ -24,6 +24,13 @@ public sealed class InMemoryTaskRepository : ITaskRepository, IAdminTaskQuery
         .Take(filter.Limit)
         .ToArray();
     public IReadOnlyCollection<TaskItem> ListByOwner(Guid ownerId) => _tasks.Values.Where(task => task.OwnerId == ownerId).OrderByDescending(task => task.CreatedAt).ToArray();
+
+    /// <summary>后台过期扫描：内存实现保存的是同一个对象引用，Save 无需写回。</summary>
+    public IReadOnlyCollection<TaskItem> ListOverduePublished(DateTimeOffset now, int limit) => _tasks.Values
+        .Where(task => task.Status == TaskStatus.Published && task.Deadline <= now)
+        .OrderBy(task => task.Deadline)
+        .Take(limit)
+        .ToArray();
     public TaskItem? Get(Guid id) => _tasks.GetValueOrDefault(id);
 
     public void Add(TaskItem task)

@@ -19,6 +19,10 @@ export interface TaskItem {
   acceptanceCriteria: string[]
   applicationCount: number
   hasExecutionAddress?: boolean
+  /** 后端定时扫描发现截止时间已过时写入。 */
+  expiredAt?: string | null
+  cancelledAt?: string | null
+  cancellationReason?: string | null
 }
 
 export interface OrderItem {
@@ -38,6 +42,9 @@ export interface OrderItem {
   reworkCount: number
   rejectionNote?: string | null
   unreadMessageCount?: number
+  cancelledAt?: string | null
+  cancelledBy?: string | null
+  cancellationReason?: string | null
 }
 
 export interface ReviewItem {
@@ -142,10 +149,18 @@ export async function increaseTaskReward(taskId: string, ownerId: string, reward
   }))
 }
 
+export async function cancelTask(taskId: string, ownerId: string, reason: string): Promise<TaskItem> {
+  return parseResponse<TaskItem>(await fetch(`/api/v1/tasks/${taskId}/cancel`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ ownerId, reason }),
+  }))
+}
+
 export async function listMyOrders(userId: string): Promise<OrderItem[]> {
   return parseResponse<OrderItem[]>(await fetch(`/api/v1/orders?userId=${encodeURIComponent(userId)}`, { headers: authHeaders() }))
 }
-async function orderAction(orderId: string, action: 'start' | 'submit' | 'approve' | 'reject' | 'resume', actorId: string, note?: string): Promise<OrderItem> {
+async function orderAction(orderId: string, action: 'start' | 'submit' | 'approve' | 'reject' | 'resume' | 'cancel', actorId: string, note?: string): Promise<OrderItem> {
   return parseResponse<OrderItem>(await fetch(`/api/v1/orders/${orderId}/${action}`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ actorId, note }),
   }))
@@ -156,6 +171,8 @@ export const submitOrder = (orderId: string, actorId: string, note: string) => o
 export const approveOrder = (orderId: string, actorId: string, note?: string) => orderAction(orderId, 'approve', actorId, note)
 export const rejectOrder = (orderId: string, actorId: string, note: string) => orderAction(orderId, 'reject', actorId, note)
 export const resumeOrder = (orderId: string, actorId: string) => orderAction(orderId, 'resume', actorId)
+/** 取消订单：原因必填（≤200 字），会随订单取消记录一起通知对方。 */
+export const cancelOrder = (orderId: string, actorId: string, reason: string) => orderAction(orderId, 'cancel', actorId, reason)
 
 export async function listOrderReviews(orderId: string): Promise<ReviewItem[]> {
   return parseResponse<ReviewItem[]>(await fetch(`/api/v1/orders/${orderId}/reviews`, { headers: authHeaders() }))

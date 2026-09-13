@@ -20,6 +20,7 @@ using AIToHuman.Api;
 using AIToHuman.Api.Notifications;
 using AIToHuman.Api.Orders;
 using AIToHuman.Api.Settings;
+using AIToHuman.Api.Tasks;
 using AIToHuman.Application.Admin;
 using AIToHuman.Application.Settings;
 using AIToHuman.Contracts.Admin;
@@ -128,6 +129,8 @@ builder.Services.AddSingleton<INotificationFanout>(provider => new RedisNotifica
 builder.Services.AddHostedService<NotificationFanoutSubscriber>();
 // 待扫描凭证的自动重扫：扫描服务不可用时不让凭证永远卡在“不可下载”。
 builder.Services.AddHostedService<EvidenceRescanService>();
+// 过期任务的兜底扫描：超过截止时间仍无人被选中的已发布任务会被置为过期并通知相关人。
+builder.Services.AddHostedService<TaskExpiryService>();
 builder.Services.AddProblemDetails();
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBearer(options =>
 {
@@ -291,6 +294,12 @@ tasks.MapPost("/{id:guid}/increase-reward", (Guid id, Guid? ownerId, IncreaseRew
     EnsureRole(user, "owner", environment);
     return Results.Ok(service.IncreaseReward(id, ResolveUserId(user, ownerId ?? Guid.Empty, environment), request));
 });
+// 需求方撤销自己的任务：草稿或已发布但还没被选中时可以撤销，必须填原因；已产生订单的任务会被领域规则拦住。
+tasks.MapPost("/{id:guid}/cancel", (Guid id, CancelTaskRequest request, ClaimsPrincipal user, IHostEnvironment environment, TaskService service) =>
+{
+    EnsureRole(user, "owner", environment);
+    return Results.Ok(service.CancelTask(id, ResolveUserId(user, request.OwnerId, environment), request.Reason));
+});
 tasks.MapPost("/{id:guid}/applications", (Guid id, ApplyForTaskRequest request, ClaimsPrincipal user, IHostEnvironment environment, TaskService service) =>
 {
     EnsureRole(user, "worker", environment);
@@ -422,6 +431,8 @@ app.MapPost("/api/v1/orders/{id:guid}/submit", (Guid id, OrderActionRequest requ
 app.MapPost("/api/v1/orders/{id:guid}/approve", (Guid id, OrderActionRequest request, ClaimsPrincipal user, IHostEnvironment environment, TaskService service) => Results.Ok(service.ApproveOrder(id, ResolveUserId(user, request.ActorId, environment), request.Note)));
 app.MapPost("/api/v1/orders/{id:guid}/reject", (Guid id, OrderActionRequest request, ClaimsPrincipal user, IHostEnvironment environment, TaskService service) => Results.Ok(service.RejectOrder(id, ResolveUserId(user, request.ActorId, environment), request.Note)));
 app.MapPost("/api/v1/orders/{id:guid}/resume", (Guid id, OrderActionRequest request, ClaimsPrincipal user, IHostEnvironment environment, TaskService service) => Results.Ok(service.ResumeOrder(id, ResolveUserId(user, request.ActorId, environment))));
+// 取消订单：服务者只能在开始执行前取消，需求方到提交验收前；原因必填，取消后任务回到大厅或直接过期。
+app.MapPost("/api/v1/orders/{id:guid}/cancel", (Guid id, OrderActionRequest request, ClaimsPrincipal user, IHostEnvironment environment, TaskService service) => Results.Ok(service.CancelOrder(id, ResolveUserId(user, request.ActorId, environment), request.Note)));
 app.MapGet("/api/v1/orders/{id:guid}/reviews", (Guid id, ClaimsPrincipal user, IHostEnvironment environment, TaskService service) => Results.Ok(service.ListReviews(id, ResolveUserId(user, Guid.Empty, environment))));
 app.MapPost("/api/v1/orders/{id:guid}/reviews", (Guid id, CreateReviewRequest request, ClaimsPrincipal user, IHostEnvironment environment, TaskService service) => Results.Ok(service.CreateReview(id, request with { ReviewerId = ResolveUserId(user, request.ReviewerId, environment) }, ResolveUserId(user, request.ReviewerId, environment))));
 app.MapGet("/api/v1/users/{id:guid}/review-summary", (Guid id, TaskService service) => Results.Ok(service.GetReviewSummary(id)));

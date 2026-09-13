@@ -6,6 +6,8 @@ using AIToHuman.Application.Orders;
 using AIToHuman.Domain.Orders;
 using AIToHuman.Domain.Common;
 using AIToHuman.Application.Notifications;
+// System.Threading.Tasks 里也有一个 TaskStatus，这里明确指向领域里的那个。
+using DomainTaskStatus = AIToHuman.Domain.Tasks.TaskStatus;
 
 namespace AIToHuman.Application.Tasks;
 
@@ -69,7 +71,7 @@ public sealed class TaskService(ITaskRepository repository, IOrderRepository ord
         return task.Applications.Select(MapApplication).ToArray();
     }
 
-    public IReadOnlyCollection<TaskSummaryResponse> ListMine(Guid ownerId) => repository.ListByOwner(ownerId).Select(MapSummary).ToArray();
+    public IReadOnlyCollection<TaskSummaryResponse> ListMine(Guid ownerId) => repository.ListByOwner(ownerId).Select(task => MapSummary(task, includeCancellationTrail: true)).ToArray();
 
     /// <summary>
     /// 大厅列表：按区域与悬赏区间筛选，按截止时间升序游标分页。
@@ -94,7 +96,7 @@ public sealed class TaskService(ITaskRepository repository, IOrderRepository ord
 
         var hasMore = rows.Length > limit;
         var page = hasMore ? rows[..limit] : rows;
-        return new(page.Select(MapSummary).ToArray(), hasMore ? EncodeCursor(page[^1]) : null, hasMore);
+        return new(page.Select(task => MapSummary(task)).ToArray(), hasMore ? EncodeCursor(page[^1]) : null, hasMore);
     }
 
     public const int MaxPageSize = 50;
@@ -170,6 +172,97 @@ public sealed class TaskService(ITaskRepository repository, IOrderRepository ord
     public OrderResponse RejectOrder(Guid id, Guid actorId, string? note) => TransitionOrder(id, actorId, order => order.Reject(actorId, note, timeProvider.GetUtcNow()));
     public OrderResponse ResumeOrder(Guid id, Guid actorId) => TransitionOrder(id, actorId, order => order.ResumeRework(actorId));
 
+    /// <summary>
+    /// 取消订单：谁能取消、能取消到哪一步由领域层判定（服务者只能在未开始时取消，需求方到提交验收前）。
+    /// 同时把任务放回大厅（未过截止时间）或置为过期，作废本次选择，并通知对方参与者。全过程一个事务。
+    /// </summary>
+    public OrderResponse CancelOrder(Guid id, Guid actorId, string? reason)
+    {
+        var order = orderRepository.Get(id) ?? throw new KeyNotFoundException("订单不存在。");
+        var task = repository.Get(order.TaskId);
+        var now = timeProvider.GetUtcNow();
+        var recipient = actorId == order.OwnerId ? order.WorkerId : order.OwnerId;
+
+        unitOfWork.Execute(() =>
+        {
+            order.Cancel(actorId, reason, now);
+            orderRepository.Save(order);
+
+            // 只有仍处于 Assigned 的任务才需要处理：历史数据里任务可能已经被关掉。
+            if (task is not null && task.Status == DomainTaskStatus.Assigned)
+            {
+                var outcome = task.ReleaseAfterOrderCancelled(now);
+                repository.Save(task);
+
+                // 任务因为已过截止时间而直接终结时，需求方需要知道“不用再等了”。
+                if (outcome == TaskReleaseOutcome.Expired && actorId != task.OwnerId)
+                {
+                    notifications.EnqueueTaskExpired(task, task.OwnerId, now);
+                }
+            }
+
+            notifications.EnqueueOrderCancelled(order, recipient, now);
+        });
+
+        return Map(order);
+    }
+
+    /// <summary>
+    /// 需求方撤销自己的任务（草稿或已发布但还没被选中）：必须填原因，报名中的服务者会收到通知。
+    /// 已经产生订单的任务不能在客户端撤销，只能先取消订单——由领域层拦住。
+    /// </summary>
+    public TaskResponse CancelTask(Guid id, Guid ownerId, string? reason)
+    {
+        var task = GetOwned(id, ownerId);
+        var now = timeProvider.GetUtcNow();
+        var applicants = task.Applications
+            .Where(item => item.Status == TaskApplicationStatus.Pending)
+            .Select(item => item.WorkerId)
+            .ToArray();
+
+        unitOfWork.Execute(() =>
+        {
+            task.Cancel(reason ?? string.Empty, now);
+            repository.Save(task);
+            foreach (var applicant in applicants) notifications.EnqueueTaskCancelled(task, applicant, now);
+        });
+
+        return Map(task);
+    }
+
+    /// <summary>
+    /// 后台过期扫描：把超过截止时间仍无人被选中的已发布任务置为过期，作废其报名并通知所有者与报名者。
+    /// 多条任务各自独立处理：某一条被并发改动（例如刚好有人选中了服务者）只跳过那一条，不影响这一轮其它任务。
+    /// </summary>
+    public TaskExpiryResult ExpireOverdueTasks(int limit)
+    {
+        var now = timeProvider.GetUtcNow();
+        var expired = 0;
+        var skipped = 0;
+
+        foreach (var task in repository.ListOverduePublished(now, limit))
+        {
+            try
+            {
+                var applicants = task.Expire(now);
+                unitOfWork.Execute(() =>
+                {
+                    repository.Save(task);
+                    notifications.EnqueueTaskExpired(task, task.OwnerId, now);
+                    foreach (var applicant in applicants) notifications.EnqueueTaskExpired(task, applicant, now);
+                });
+                expired++;
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                // 读到之后状态被别的请求或实例改掉了（乐观并发冲突、或已被选中），这一条留给下一轮。
+                skipped++;
+            }
+        }
+
+        return new TaskExpiryResult(expired, skipped);
+    }
+
     public IReadOnlyCollection<ReviewResponse> ListReviews(Guid orderId, Guid viewerId)
     {
         var order = orderRepository.Get(orderId) ?? throw new KeyNotFoundException("订单不存在。");
@@ -240,16 +333,21 @@ public sealed class TaskService(ITaskRepository repository, IOrderRepository ord
     private void CloseTaskIfAssigned(Guid taskId)
     {
         if (repository.Get(taskId) is not { } task) return;
-        if (task.Status != AIToHuman.Domain.Tasks.TaskStatus.Assigned) return;
+        if (task.Status != DomainTaskStatus.Assigned) return;
         task.Close();
         repository.Save(task);
     }
 
-    private static TaskResponse Map(TaskItem task) => new(task.Id, task.OwnerId, task.Title, task.Description, task.District, task.Deadline, task.Reward.Amount, task.Reward.Currency, task.Status.ToString(), task.AcceptanceCriteria, task.Applications.Select(MapApplication).ToArray());
+    private static TaskResponse Map(TaskItem task) => new(task.Id, task.OwnerId, task.Title, task.Description, task.District, task.Deadline, task.Reward.Amount, task.Reward.Currency, task.Status.ToString(), task.AcceptanceCriteria, task.Applications.Select(MapApplication).ToArray(), task.ExpiredAt, task.CancelledAt, task.CancellationReason);
     private static TaskApplicationResponse MapApplication(TaskApplication application) => new(application.Id, application.WorkerId, application.Note, application.Status.ToString(), application.SubmittedAt);
 
-    private static TaskSummaryResponse MapSummary(TaskItem task) => new(task.Id, task.OwnerId, task.Title, task.Description, task.District, task.Deadline, task.Reward.Amount, task.Reward.Currency, task.Status.ToString(), task.AcceptanceCriteria, task.Applications.Count, task.HasExecutionAddress);
-    private static OrderResponse Map(Order order) => new(order.Id, order.TaskId, order.OwnerId, order.WorkerId, order.Title, order.Reward.Amount, order.Reward.Currency, order.Status.ToString(), order.CreatedAt, order.EvidenceNote, order.ReviewNote, order.SubmittedAt, order.ReviewedAt, order.ReworkCount, order.RejectionNote);
+    private static TaskSummaryResponse MapSummary(TaskItem task, bool includeCancellationTrail = false) => new(
+        task.Id, task.OwnerId, task.Title, task.Description, task.District, task.Deadline, task.Reward.Amount, task.Reward.Currency,
+        task.Status.ToString(), task.AcceptanceCriteria, task.Applications.Count, task.HasExecutionAddress,
+        // 过期时间对谁都不敏感；撤销原因可能是运营的处置说明（例如“包含违规内容”），
+        // 只回给任务所有者，公开详情与大厅都不带。
+        task.ExpiredAt, includeCancellationTrail ? task.CancellationReason : null);
+    private static OrderResponse Map(Order order) => new(order.Id, order.TaskId, order.OwnerId, order.WorkerId, order.Title, order.Reward.Amount, order.Reward.Currency, order.Status.ToString(), order.CreatedAt, order.EvidenceNote, order.ReviewNote, order.SubmittedAt, order.ReviewedAt, order.ReworkCount, order.RejectionNote, 0, order.CancelledAt, order.CancelledBy, order.CancellationReason);
     private static ReviewResponse MapReview(Review review, bool visible) => new(review.Id, review.OrderId, review.ReviewerId, review.RevieweeId, review.Rating, visible ? review.Comment : "评价将在双方完成后公开", review.CreatedAt, visible);
     private static void EnsureParticipant(Order order, Guid actorId) { if (order.OwnerId != actorId && order.WorkerId != actorId) throw new UnauthorizedAccessException("只有订单参与者可以执行该操作。"); }
     private bool IsReviewPublic(Guid orderId, DateTimeOffset createdAt)

@@ -7,13 +7,20 @@ export interface OrderNotificationPayload {
   title: string
 }
 
+/** 任务类通知（`task.expired` / `task.cancelled`）的载荷。 */
+export interface TaskNotificationPayload {
+  taskId: string
+  status: string
+  title: string
+}
+
 /** 事件信封：带事件 ID 与版本，客户端据此去重并判断能否解析。 */
 export interface NotificationEnvelope {
   eventId: string
   type: string
   version: number
   occurredAt: string
-  payload: OrderNotificationPayload | Record<string, unknown>
+  payload: OrderNotificationPayload | TaskNotificationPayload | Record<string, unknown>
 }
 
 export interface NotificationItem {
@@ -23,7 +30,7 @@ export interface NotificationItem {
   version: number
   createdAt: string
   readAt: string | null
-  payload: OrderNotificationPayload | Record<string, unknown>
+  payload: OrderNotificationPayload | TaskNotificationPayload | Record<string, unknown>
 }
 
 export interface NotificationList {

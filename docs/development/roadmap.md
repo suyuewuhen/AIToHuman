@@ -18,13 +18,13 @@
 - ✅ 系统架构、领域状态机和 API 约定。
 - ✅ Vue 与 .NET 项目骨架。
 - ✅ PostgreSQL、Redis、MinIO 的本地开发环境定义（`compose.yaml`）。
-- ⚠️ CI、格式和测试基线：`.github/workflows/ci.yml` 已执行后端 `restore/build/test` 和前端 `npm ci/build`，并有 `.editorconfig` 与 109 个领域单元测试、214 个集成测试；尚无 Lint、Markdown 检查、OpenAPI 兼容性检查和技术文档生成。
+- ⚠️ CI、格式和测试基线：`.github/workflows/ci.yml` 已执行后端 `restore/build/test` 和前端 `npm ci/build`，并有 `.editorconfig` 与 131 个领域单元测试、228 个集成测试；尚无 Lint、Markdown 检查、OpenAPI 兼容性检查和技术文档生成。
 - ✅ 配置分层与运营可配置项：部署级配置（连接串、Redis、日志、密钥环路径）只走环境变量；三方集成参数（模型服务、对象存储、内容扫描）与凭证上传上限登记在设置目录里，可通过管理员接口与顶栏“运营配置”页面修改，机密加密落库并留审计，改完立即生效（见 [ADR-0003](../architecture/decisions/0003-operator-configurable-settings.md)）。运营后台的其余能力（任务/用户检索、人工下架）已实现，风险复核与争议处理仍未实现。
 - ⛔ 秘密扫描与依赖更新自动化。
 
 遗留项：
 
-- ✅ 数据库结构已收敛为 EF Core Migration 单一来源：16 个迁移覆盖 users、orders、order_evidence、reviews、tasks、task_applications、conversations、conversation_messages、notifications、order_messages、evidence（含扫描记账与元数据剥离记录）、system_settings、system_setting_audits、admin_audit_entries 等表，Development 启动执行 `Database.Migrate()`，早期 `EnsureCreated()` 建出的旧库会自动基线化（见 `handoff.md` 第 10 节）。
+- ✅ 数据库结构已收敛为 EF Core Migration 单一来源：17 个迁移覆盖 users、orders、order_evidence、reviews、tasks、task_applications、conversations、conversation_messages、notifications、order_messages、evidence（含扫描记账与元数据剥离记录）、system_settings、system_setting_audits、admin_audit_entries 等表；最新的 `AddOrderCancellationAndTaskExpiry` 给 `orders` 补上取消三列（`CancelledAt`/`CancelledBy`/`CancellationReason`），给 `tasks` 补上过期与撤销三列（`ExpiredAt`/`CancelledAt`/`CancellationReason`）。Development 启动执行 `Database.Migrate()`，早期 `EnsureCreated()` 建出的旧库会自动基线化（见 `handoff.md` 第 10 节）。
 - ⚠️ Redis 已真正接入：用于通知的多实例扇出（派发方原子认领后发布到固定频道，各实例推给自己进程内的在线客户端，运营可开关，见 [ADR-0004](../architecture/decisions/0004-notification-fanout.md)），已用本机 Redis + 双 API 实例端到端验证；缓存、分布式锁与频率限制仍未接入。MinIO 仍只是 `compose.yaml` 里的本地依赖（S3 兼容对象存储实现已用本机 MinIO 端到端验证），默认仍写本机私有目录，切到 `storage.provider=s3` 即可。
 
 退出条件：团队确认首发城市、任务分类、AI 建议价冷启动方式和身份/支付策略；开发环境可复现。开发环境可复现已基本达成，产品决策项仍未确认。
@@ -46,7 +46,7 @@
 
 - ⛔ 服务者资料和服务区域：没有 `WorkerProfile`，报名不校验账户状态、类别或区域；报名接口也不返回服务者信用，需求方选人时看不到服务者评价摘要，双向选择目前只有单向可见。
 - ⚠️ 大厅列表、筛选和任务详情：列表（游标分页 + 区域/悬赏区间筛选）、公开详情与草稿隔离已实现，只返回区域、悬赏、验收标准和报名数；分类、时间、距离筛选与排序选项尚未实现。
-- ⚠️ AI 建议价、用户设定/提高悬赏、报名、撤回、选择报名者和订单创建：建议价（本地规则）、悬赏设定与分配前加价、报名、选择报名者和订单创建已实现；撤回和报名有效期未实现。
+- ⚠️ AI 建议价、用户设定/提高悬赏、报名、撤回、选择报名者和订单创建：建议价（本地规则）、悬赏设定与分配前加价、报名、选择报名者和订单创建已实现；订单取消已实现（服务者只能在未开工前取消、需求方在服务者提交验收前可取消，原因必填；取消后任务若未过截止时间就回到大厅重新招募并把选中的报名置为 `Rejected`，已过截止时间则直接把任务置为 `Expired`）；撤回报名和报名有效期未实现。
 - ⚠️ 后端状态机、审计和基础通知：任务与订单状态机、乐观并发令牌与显式事务已实现；审计日志缺失；通知已持久化（`notifications` 表兼作 Outbox + 后台派发与重试 + 收件箱未读数），派发改为「先用条件 UPDATE 原子认领（`WHERE DispatchedAt IS NULL`）→ 再发布/推送 → 失败则撤回认领退回 Outbox 等下一轮」，因此多实例不会重复推送；启用 `notifications.fanout.enabled` 时由认领方广播到 Redis，各实例推给连在自己身上的在线客户端，未启用或 Redis 不可用时降级为本实例推送。
 
 退出条件：并发选单无重复订单；跨用户和跨角色越权测试通过；公开数据不泄露精确位置。并发选单已由乐观并发令牌 + 显式事务保证（12 路并行选人、并发报名、并发验收都有真实 PostgreSQL 验证）；精确执行地址只在订单成立后向参与者披露，大厅与公开详情只暴露 `hasExecutionAddress`；越权现有领域单元测试与手工端到端覆盖，主机级自动化测试仍缺（见 `handoff.md` 第 11 节）。
@@ -57,10 +57,10 @@
 
 - ⚠️ 订单消息和 SignalR 更新：订单内消息、会话未读数与状态变更事件已实现（统一走持久化通知 + SignalR 推送，客户端按 REST 重新拉取事实状态）；消息分页、撤回与编辑未实现。
 - ⚠️ 文件上传、扫描、凭证关联和验收：验收与驳回已实现（驳回必须填原因），凭证文件上传与鉴权下载已实现（类型白名单 + 文件签名校验 + 大小与摘要校验 + 扫描状态机 + 待扫描凭证的退避重扫 + 按人小时配额），存储位置可在本机目录与 S3 兼容对象存储之间切换，下载也支持短时直连签名地址，上传时默认剥离图片元数据（EXIF/GPS 等），扫描方式支持 `none`/外部 HTTP 服务/clamd INSTREAM 三选一，这些开关都在运营后台；缺的是**部署**真实病毒库或选定内容扫描服务，以及图片像素级重编码与“凭证关联到具体验收项”。
-- ⚠️ 取消、超时、争议、双向评价盲期/公开和运营处理：评价盲期与公开规则（双方提交或 7 天后）已实现；取消、超时和争议未实现，运营处理缺失。
+- ⚠️ 取消、超时、争议、双向评价盲期/公开和运营处理：评价盲期与公开规则（双方提交或 7 天后）已实现；取消与截止时间过期已实现（`POST /api/v1/orders/{id}/cancel` 按角色与阶段限制、原因必填并落库；后台 `TaskExpiryService` 每 60 秒把仍处于 `Published` 且已过截止时间的任务置为 `Expired`，作废 `Pending` 报名并通知任务所有者与报名者，已分配的任务不参与过期扫描）；争议处理与运营处置流程仍未实现。
 - ⛔ 完整可观测性、备份和恢复演练。
 
-退出条件：核心端到端场景和异常场景通过；对象权限、安全日志与运营处置流程通过评审。当前只覆盖正常履约路径，异常场景和运营流程都未开始。
+退出条件：核心端到端场景和异常场景通过；对象权限、安全日志与运营处置流程通过评审。当前正常履约路径与取消、过期两类异常路径都已覆盖，并在真实 PostgreSQL 上端到端验证（取消后的任务去向、报名作废、通知，以及过期扫描与通知）；争议处理与运营处置流程仍未开始，对象权限与安全日志的评审尚未进行。
 
 ## M4：封闭试点（未开始）
 

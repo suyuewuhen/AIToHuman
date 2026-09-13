@@ -5,6 +5,7 @@ using AIToHuman.Contracts.Notifications;
 using AIToHuman.Contracts.Orders;
 using AIToHuman.Domain.Notifications;
 using AIToHuman.Domain.Orders;
+using AIToHuman.Domain.Tasks;
 
 namespace AIToHuman.Application.Notifications;
 
@@ -28,6 +29,29 @@ public sealed class NotificationService(INotificationRepository repository, Time
     /// <summary>订单状态变化：通知对方参与者。事件键由订单与状态推导，重放同一状态不会重复通知。</summary>
     public void EnqueueOrderStatusChanged(Order order, Guid recipientId, DateTimeOffset now) =>
         EnqueueOrderEvent(recipientId, NotificationTypes.OrderStatusChanged, DeriveEventId(order.Id, order.Status.ToString()), order, now);
+
+    /// <summary>订单被取消：通知对方参与者。事件键由订单与 Cancelled 推导，重复调用不会产生第二条。</summary>
+    public void EnqueueOrderCancelled(Order order, Guid recipientId, DateTimeOffset now) =>
+        EnqueueOrderEvent(recipientId, NotificationTypes.OrderCancelled, DeriveEventId(order.Id, order.Status.ToString()), order, now);
+
+    /// <summary>任务过期：通知所有者或被作废的报名者；同一条任务对不同人的事件键必须不同，否则只会入队第一条。</summary>
+    public void EnqueueTaskExpired(TaskItem task, Guid recipientId, DateTimeOffset now) =>
+        EnqueueTaskEvent(task, recipientId, NotificationTypes.TaskExpired, "Expired", now);
+
+    /// <summary>任务被撤销：通知报名中（尚未被选中）的服务者。</summary>
+    public void EnqueueTaskCancelled(TaskItem task, Guid recipientId, DateTimeOffset now) =>
+        EnqueueTaskEvent(task, recipientId, NotificationTypes.TaskCancelled, "Cancelled", now);
+
+    private void EnqueueTaskEvent(TaskItem task, Guid recipientId, string type, string eventName, DateTimeOffset now)
+    {
+        if (recipientId == Guid.Empty) return;
+
+        var eventId = DeriveEventId(task.Id, $"{eventName}:{recipientId:N}");
+        if (repository.ExistsByEventId(eventId)) return;
+
+        var payload = JsonSerializer.Serialize(new TaskNotificationPayload(task.Id, task.Status.ToString(), task.Title), PayloadOptions);
+        repository.Add(new Notification(recipientId, eventId, type, EnvelopeVersion, payload, now));
+    }
 
     /// <summary>订单会话新消息：通知对方参与者。事件键用消息 ID，每条消息都是独立事件。</summary>
     public void EnqueueOrderMessage(Order order, OrderMessage message, Guid recipientId, DateTimeOffset now)

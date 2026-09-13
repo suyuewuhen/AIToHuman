@@ -1,6 +1,7 @@
 using AIToHuman.Domain.Admin;
 using AIToHuman.Domain.Orders;
 using AIToHuman.Domain.Settings;
+using AIToHuman.Domain.Tasks;
 using Microsoft.EntityFrameworkCore;
 
 namespace AIToHuman.Infrastructure.Persistence;
@@ -34,6 +35,7 @@ public sealed class TaskDbContext(DbContextOptions<TaskDbContext> options) : DbC
             entity.Property(item => item.RewardCurrency).HasMaxLength(3).IsRequired();
             entity.Property(item => item.Status).HasConversion<string>().HasMaxLength(32);
             entity.Property(item => item.AcceptanceCriteriaJson).IsRequired();
+            entity.Property(item => item.CancellationReason).HasMaxLength(TaskItem.MaxCancellationReasonLength);
             entity.HasIndex(item => new { item.Status, item.Deadline });
             entity.HasMany(item => item.Applications).WithOne(item => item.Task).HasForeignKey(item => item.TaskId).OnDelete(DeleteBehavior.Cascade);
         });
@@ -72,6 +74,7 @@ public sealed class TaskDbContext(DbContextOptions<TaskDbContext> options) : DbC
             entity.Property(item => item.EvidenceNote).HasMaxLength(4000);
             entity.Property(item => item.ReviewNote).HasMaxLength(4000);
             entity.Property(item => item.RejectionNote).HasMaxLength(4000);
+            entity.Property(item => item.CancellationReason).HasMaxLength(Order.MaxCancellationReasonLength);
         });
 
         modelBuilder.Entity<ReviewRecord>(entity =>
@@ -192,6 +195,13 @@ public sealed class TaskRecord
     public string Status { get; set; } = "ReadyToPublish";
     public string AcceptanceCriteriaJson { get; set; } = "[]";
     public DateTimeOffset CreatedAt { get; set; }
+
+    /// <summary>超过截止时间仍无人被选中而自动过期的处理时刻。</summary>
+    public DateTimeOffset? ExpiredAt { get; set; }
+
+    /// <summary>任务被所有者撤销或运营下架的时间与原因。</summary>
+    public DateTimeOffset? CancelledAt { get; set; }
+    public string? CancellationReason { get; set; }
     public int Version { get; set; }
     public List<ApplicationRecord> Applications { get; set; } = [];
 }
@@ -234,6 +244,11 @@ public sealed class OrderRecord
     public DateTimeOffset? ReviewedAt { get; set; }
     public string? RejectionNote { get; set; }
     public int ReworkCount { get; set; }
+
+    /// <summary>取消订单的时间、发起人与原因（原因必填）。</summary>
+    public DateTimeOffset? CancelledAt { get; set; }
+    public Guid? CancelledBy { get; set; }
+    public string? CancellationReason { get; set; }
     public int Version { get; set; }
 }
 

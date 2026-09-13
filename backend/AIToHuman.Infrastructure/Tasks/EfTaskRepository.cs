@@ -43,6 +43,19 @@ public sealed class EfTaskRepository(TaskDbContext db) : ITaskRepository
         .Select(Map)
         .ToArray();
 
+    /// <summary>
+    /// 后台过期扫描：过截止时间但仍处于 Published 的任务。保持跟踪，Save 时才能用读到的版本做并发校验，
+    /// 两个实例同时扫到同一条时只有一个能写成功，另一个抛并发冲突并留给下一轮。
+    /// </summary>
+    public IReadOnlyCollection<TaskItem> ListOverduePublished(DateTimeOffset now, int limit) => db.Tasks
+        .Include(task => task.Applications)
+        .Where(task => task.Status == nameof(DomainTaskStatus.Published) && task.Deadline <= now)
+        .OrderBy(task => task.Deadline)
+        .Take(limit)
+        .AsEnumerable()
+        .Select(Map)
+        .ToArray();
+
     // 注意：Get 必须保持跟踪状态。乐观并发令牌依赖「做业务判断时读到的版本」与
     // Save 时 WHERE 里用的原始版本是同一个；一旦这里用 AsNoTracking，Save 会重新读库拿到
     // 最新版本再自增，并发写入就永远不会冲突。
@@ -62,6 +75,9 @@ public sealed class EfTaskRepository(TaskDbContext db) : ITaskRepository
         record.Status = task.Status.ToString();
         record.RewardAmount = task.Reward.Amount;
         record.RewardCurrency = task.Reward.Currency;
+        record.ExpiredAt = task.ExpiredAt;
+        record.CancelledAt = task.CancelledAt;
+        record.CancellationReason = task.CancellationReason;
         var storedApplications = db.Applications.Where(item => item.TaskId == task.Id).ToDictionary(item => item.Id);
         foreach (var current in task.Applications)
         {
@@ -88,6 +104,7 @@ public sealed class EfTaskRepository(TaskDbContext db) : ITaskRepository
         ExecutionAddress = task.ExecutionAddress,
         Deadline = task.Deadline, RewardAmount = task.Reward.Amount, RewardCurrency = task.Reward.Currency,
         Status = task.Status.ToString(), AcceptanceCriteriaJson = JsonSerializer.Serialize(task.AcceptanceCriteria), CreatedAt = task.CreatedAt,
+        ExpiredAt = task.ExpiredAt, CancelledAt = task.CancelledAt, CancellationReason = task.CancellationReason,
         Applications = task.Applications.Select(item => ToRecord(item, task.Id)).ToList()
     };
 
@@ -99,5 +116,6 @@ public sealed class EfTaskRepository(TaskDbContext db) : ITaskRepository
     private static TaskItem Map(TaskRecord record) => TaskItem.Rehydrate(
         record.Id, record.OwnerId, record.Title, record.Description, record.District, record.Deadline,
         new Money(record.RewardAmount, record.RewardCurrency), JsonSerializer.Deserialize<string[]>(record.AcceptanceCriteriaJson) ?? [], record.CreatedAt,
-        Enum.Parse<DomainTaskStatus>(record.Status), record.Applications.Select(item => TaskApplication.Rehydrate(item.Id, item.WorkerId, item.Note, item.SubmittedAt, Enum.Parse<TaskApplicationStatus>(item.Status))), record.ExecutionAddress);
+        Enum.Parse<DomainTaskStatus>(record.Status), record.Applications.Select(item => TaskApplication.Rehydrate(item.Id, item.WorkerId, item.Note, item.SubmittedAt, Enum.Parse<TaskApplicationStatus>(item.Status))), record.ExecutionAddress,
+        record.ExpiredAt, record.CancelledAt, record.CancellationReason);
 }

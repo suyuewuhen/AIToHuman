@@ -70,6 +70,13 @@ public sealed class TaskItem
     public TaskStatus Status { get; private set; } = TaskStatus.ReadyToPublish;
     public IReadOnlyCollection<TaskApplication> Applications => _applications.AsReadOnly();
 
+    /// <summary>系统发现任务超过截止时间仍无人被选中的时刻；过期时间语义上等于 <see cref="Deadline"/>，这里记录的是处理时刻。</summary>
+    public DateTimeOffset? ExpiredAt { get; private set; }
+
+    /// <summary>任务被撤销（所有者撤销或运营下架）的时间与原因；原因必填。</summary>
+    public DateTimeOffset? CancelledAt { get; private set; }
+    public string? CancellationReason { get; private set; }
+
     public bool HasExecutionAddress => !string.IsNullOrWhiteSpace(ExecutionAddress);
 
     public static TaskItem Rehydrate(
@@ -84,7 +91,10 @@ public sealed class TaskItem
         DateTimeOffset createdAt,
         TaskStatus status,
         IEnumerable<TaskApplication> applications,
-        string? executionAddress = null)
+        string? executionAddress = null,
+        DateTimeOffset? expiredAt = null,
+        DateTimeOffset? cancelledAt = null,
+        string? cancellationReason = null)
     {
         var task = new TaskItem
         {
@@ -98,7 +108,10 @@ public sealed class TaskItem
             AcceptanceCriteria = acceptanceCriteria,
             CreatedAt = createdAt,
             Status = status,
-            ExecutionAddress = NormalizeExecutionAddress(executionAddress)
+            ExecutionAddress = NormalizeExecutionAddress(executionAddress),
+            ExpiredAt = expiredAt,
+            CancelledAt = cancelledAt,
+            CancellationReason = cancellationReason
         };
         task._applications.AddRange(applications);
         return task;
@@ -181,9 +194,9 @@ public sealed class TaskItem
     }
 
     /// <summary>
-    /// 运营人工下架：草稿或已发布但尚未分配的任务可以下架，下架后不再出现在任务大厅。
-    /// 必须给出原因（原因本身记在运营审计里，任务实体只负责拦住“没有原因的下架”）。
-    /// 已经产生订单的任务不能直接下架——订单要先按正常流程结束或走争议处理，
+    /// 运营人工下架或所有者自己撤销：草稿或已发布但尚未分配的任务可以撤销，撤销后不再出现在任务大厅。
+    /// 必须给出原因，原因与时间记在任务上（运营下架同时还会写一条运营审计）。
+    /// 已经产生订单的任务不能直接撤销——订单要先按正常流程结束，或者走“取消订单”把任务放回大厅，
     /// 否则会出现“任务消失了但订单还挂在服务者名下”的状态。
     /// </summary>
     public void Cancel(string reason, DateTimeOffset now)
@@ -191,20 +204,65 @@ public sealed class TaskItem
         if (Status is not (TaskStatus.ReadyToPublish or TaskStatus.Published))
         {
             throw Status == TaskStatus.Assigned
-                ? new DomainException("任务已经分配并产生订单，不能直接下架：请先处理订单（验收、驳回或走争议流程）。")
-                : new DomainException($"任务当前状态 {Status} 不允许下架。");
+                ? new DomainException("任务已经分配并产生订单，不能直接撤销：请先处理订单（验收、驳回或取消订单）。")
+                : new DomainException($"任务当前状态 {Status} 不允许撤销。");
         }
 
         var trimmed = reason?.Trim() ?? string.Empty;
         if (trimmed.Length is < 1 or > MaxCancellationReasonLength)
-            throw new DomainException($"下架任务必须填写原因，长度不超过 {MaxCancellationReasonLength} 个字符。");
+            throw new DomainException($"撤销任务必须填写原因，长度不超过 {MaxCancellationReasonLength} 个字符。");
 
-        _ = UtcTimestamp.Normalize(now);
+        CancelledAt = UtcTimestamp.Normalize(now);
+        CancellationReason = trimmed;
         Status = TaskStatus.Cancelled;
     }
 
-    /// <summary>下架原因的长度上限（原因记在运营审计表里）。</summary>
+    /// <summary>撤销原因的长度上限（运营下架的原因同时记在运营审计表里）。</summary>
     public const int MaxCancellationReasonLength = 200;
+
+    /// <summary>
+    /// 超过截止时间仍无人被选中的已发布任务自动过期。
+    /// 返回被这次过期作废的报名者（用于通知他们“报名已失效”），报名状态同时置为 <see cref="TaskApplicationStatus.Expired"/>。
+    /// </summary>
+    public IReadOnlyCollection<Guid> Expire(DateTimeOffset now)
+    {
+        EnsureStatus(TaskStatus.Published);
+        if (Deadline > now) throw new DomainException("截止时间还没到，任务不能标记为过期。");
+
+        var affected = _applications.Where(item => item.Status == TaskApplicationStatus.Pending).Select(item => item.WorkerId).ToArray();
+        foreach (var application in _applications.Where(item => item.Status == TaskApplicationStatus.Pending))
+        {
+            application.Status = TaskApplicationStatus.Expired;
+        }
+
+        Status = TaskStatus.Expired;
+        ExpiredAt = UtcTimestamp.Normalize(now);
+        return affected;
+    }
+
+    /// <summary>
+    /// 订单被取消后任务的去向：还没到截止时间就回到大厅重新招募（该次选择作废，服务者可以重新报名），
+    /// 已经过了截止时间就直接过期，避免留下一个再也没人能接的“已发布”任务。
+    /// 作废选中报名还有一个必要作用：执行地址只对“被选中的服务者”披露，留着 Selected 会继续泄露地址。
+    /// </summary>
+    public TaskReleaseOutcome ReleaseAfterOrderCancelled(DateTimeOffset now)
+    {
+        EnsureStatus(TaskStatus.Assigned);
+        foreach (var application in _applications.Where(item => item.Status == TaskApplicationStatus.Selected))
+        {
+            application.Status = TaskApplicationStatus.Rejected;
+        }
+
+        if (Deadline <= now)
+        {
+            Status = TaskStatus.Expired;
+            ExpiredAt = UtcTimestamp.Normalize(now);
+            return TaskReleaseOutcome.Expired;
+        }
+
+        Status = TaskStatus.Published;
+        return TaskReleaseOutcome.Reopened;
+    }
 
     private void EnsureStatus(TaskStatus expected)
     {

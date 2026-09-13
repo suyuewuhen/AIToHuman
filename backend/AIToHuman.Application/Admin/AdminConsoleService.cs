@@ -1,3 +1,5 @@
+using AIToHuman.Application.Common;
+using AIToHuman.Application.Notifications;
 using AIToHuman.Application.Orders;
 using AIToHuman.Application.Tasks;
 using AIToHuman.Contracts.Admin;
@@ -19,7 +21,9 @@ public sealed class AdminConsoleService(
     ITaskRepository taskRepository,
     IOrderRepository orderRepository,
     IAdminAuditRepository auditRepository,
-    TimeProvider timeProvider)
+    TimeProvider timeProvider,
+    NotificationService notifications,
+    IUnitOfWork unitOfWork)
 {
     /// <summary>运营下架动作的审计名称。</summary>
     public const string TaskCancelAction = "task.cancel";
@@ -60,7 +64,7 @@ public sealed class AdminConsoleService(
                 .ToArray());
     }
 
-    /// <summary>人工下架：写状态 + 记审计。已产生订单的任务会被领域规则拦住。</summary>
+    /// <summary>人工下架：写状态 + 记审计 + 通知相关人。已产生订单的任务会被领域规则拦住。</summary>
     public AdminTaskItemResponse CancelTask(Guid id, string reason, Guid actorId)
     {
         var task = taskRepository.Get(id) ?? throw new KeyNotFoundException("任务不存在。");
@@ -68,9 +72,21 @@ public sealed class AdminConsoleService(
 
         // 先让领域规则判定能不能下架（原因缺失、状态不允许都在这里拦），成立之后再写审计，避免留下“没生效的操作记录”。
         task.Cancel(reason, now);
-        taskRepository.Save(task);
 
-        auditRepository.Add(AdminAuditEntry.Record(actorId, TaskCancelAction, TaskTargetType, task.Id, reason, now));
+        var applicants = task.Applications
+            .Where(item => item.Status == TaskApplicationStatus.Pending)
+            .Select(item => item.WorkerId)
+            .ToArray();
+
+        unitOfWork.Execute(() =>
+        {
+            taskRepository.Save(task);
+            auditRepository.Add(AdminAuditEntry.Record(actorId, TaskCancelAction, TaskTargetType, task.Id, reason, now));
+
+            // 下架不能悄悄进行：所有者需要知道自己的任务被处置了，报名中的服务者需要知道报名已经失效。
+            notifications.EnqueueTaskCancelled(task, task.OwnerId, now);
+            foreach (var applicant in applicants) notifications.EnqueueTaskCancelled(task, applicant, now);
+        });
 
         var owners = userDirectory.FindMany([task.OwnerId]);
         return Map(task, owners);

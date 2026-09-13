@@ -17,10 +17,10 @@
 | `User` | ⚠️ | 账户、JWT 和角色切换已实现；`WorkerProfile` 未实现，服务者没有资料与服务区域 |
 | `Conversation` | ✅ | `Conversation` 聚合已实现，消息与草稿状态落库，支持刷新恢复与历史截断；仍缺模型运行元数据 |
 | `TaskDraft` | ⛔ | 无草稿实体与版本号；AI 返回的 `plan` 经确认后直接创建 `ReadyToPublish` 任务 |
-| `Task` | ✅ | `TaskItem` 已实现，含所有者、截止时间、公开区域和验收标准校验 |
-| `Application` | ⚠️ | `TaskApplication` 已实现；无有效期字段，无撤回与过期流程 |
-| `Order` | ✅ | `Order` 已实现，含参与者校验和状态机 |
-| `Evidence` | ⚠️ | 无独立实体和对象存储；凭证以订单上的 `EvidenceNote` 文本承载（≤4000 字符） |
+| `Task` | ✅ | `TaskItem` 已实现，含所有者、截止时间、公开区域和验收标准校验；`Expired`（后台扫描超期未分配任务）与 `Cancelled`（所有者撤销、运营下架）都有落库时间戳与原因 |
+| `Application` | ⚠️ | `TaskApplication` 已实现；订单取消把选中的报名置为 `Rejected`、任务过期把 `Pending` 置为 `Expired`；仍无有效期字段，也没有撤回接口 |
+| `Order` | ✅ | `Order` 已实现，含参与者校验、状态机与取消（`Cancelled` + 取消人、取消时间、取消原因） |
+| `Evidence` | ⚠️ | `OrderEvidence` + `evidence` 表已实现：类型白名单与文件签名校验、扫描状态机与退避重扫、上传时元数据剥离、按人小时配额，存储走 `IFileStorage`（本机目录或 S3 兼容对象存储，支持短时直连下载地址）；订单上的 `EvidenceNote` 仍作为“完成说明”文本框与凭证文件并存。仍缺图片像素级重编码与“凭证关联到具体验收项” |
 | `Review` | ⚠️ | `Review` 已实现；无状态字段（盲期按时间动态判定），单一评分维度 |
 | `Dispute` | ⛔ | 无实体、无接口；`OrderStatus.Disputed` 仅枚举占位 |
 | `AuditEvent` | ⛔ | 无实体、无审计日志；操作痕迹只体现为部分实体上的时间戳 |
@@ -56,13 +56,13 @@ AI 与用户共同编辑的临时结构。保存字段完整性、风险检查�
 
 用户公开发布的需求，包含公开信息、私密执行信息、步骤、验收条件、单一固定悬赏和截止时间。建议价格区间只属于草稿辅助信息，不进入已发布任务的交易条件。
 
-> 实现现状（✅）：`TaskItem` 已实现标题（≤80 字）、描述、`District`、截止时间、`Money` 悬赏和验收标准集合，并校验所有者非空、截止时间晚于创建时间、至少一项验收标准。尚无：私密执行信息（精确地址、联系方式）、任务步骤、分类、隐私等级、取消条件、风险决策版本，以及“任务”级别的并发令牌。
+> 实现现状（✅）：`TaskItem` 已实现标题（≤80 字）、描述、`District`、截止时间、`Money` 悬赏和验收标准集合，并校验所有者非空、截止时间晚于创建时间、至少一项验收标准。精确执行地址也已实现：`tasks.ExecutionAddress` 由 `ExecutionAddressFor(viewer)` 决定是否披露，只给所有者与**被选中**的服务者，订单取消把选中报名置为 `Rejected` 后立即收回；接口是 `GET /api/v1/tasks/{id}/execution-address`，大厅与公开详情只暴露 `hasExecutionAddress`。尚无：联系方式、任务步骤、分类、隐私等级、取消条件、风险决策版本（`tasks` 的 `Version` 乐观并发令牌已存在，见第 5 节）。
 
 ### Application
 
 服务者查看任务悬赏和用户公开评价后，表示愿意按当前悬赏执行任务的报名。报名可包含预计到达时间和说明，但不包含服务者自定义价格。选中时生成不可变报名快照。
 
-> 实现现状（⚠️）：`TaskApplication` 已实现 `WorkerId`、备注、提交时间和状态，`Apply` 已校验“不能报名自己的任务”和“不能重复报名（同一服务者仅一条 `Pending`）”。缺失：预计到达时间、报名有效期字段、撤回接口、过期处理，以及选中时固化的报名快照。
+> 实现现状（⚠️）：`TaskApplication` 已实现 `WorkerId`、备注、提交时间和状态，`Apply` 已校验“不能报名自己的任务”和“不能重复报名（同一服务者仅一条 `Pending`）”。缺失：预计到达时间、报名有效期字段、撤回接口，以及选中时固化的报名快照；报名的失效只在任务过期时统一置为 `Expired`，也只在订单取消时由 `Selected` 退回 `Rejected`（见第 3 节）。
 >
 > 双向选择目前是单向可见：大厅返回需求方的公开评价摘要，服务者报名前能看到需求方信用；但报名接口只返回 `WorkerId`、备注、状态和提交时间，需求方在选人时看不到服务者的评价摘要。这属于接口缺口，不是有意设计。
 
@@ -70,7 +70,7 @@ AI 与用户共同编辑的临时结构。保存字段完整性、风险检查�
 
 用户查看服务者公开评价并选择报名者后形成的执行关系，是执行状态、验收、争议以及未来支付的核心聚合。
 
-> 实现现状（✅）：`Order` 已实现任务、双方参与者、标题与 `Money` 快照、状态机和参与者校验（`EnsureWorker`/`EnsureOwner` + `EnsureStatus`）。`RejectionNote` 保存最近一次驳回原因并在验收通过时清空，`ReworkCount` 累计返工次数。快照仅覆盖标题与悬赏，未保存验收条件、报名快照和执行说明；也没有争议、取消、支付相关字段。
+> 实现现状（✅）：`Order` 已实现任务、双方参与者、标题与 `Money` 快照、状态机和参与者校验（`EnsureWorker`/`EnsureOwner` + `EnsureStatus`）。`RejectionNote` 保存最近一次驳回原因并在验收通过时清空，`ReworkCount` 累计返工次数。取消已落地：`CancelledAt`、`CancelledBy`、`CancellationReason` 三个字段记录取消人、时间与必填原因。快照仅覆盖标题与悬赏，未保存验收条件、报名快照和执行说明；仍没有争议与支付相关字段。
 
 ### Evidence
 
@@ -117,7 +117,9 @@ Assigned
 > 实现现状（⚠️）：`TaskStatus` 枚举为 `ReadyToPublish`、`Published`、`Assigned`、`Closed`、`Expired`、`Cancelled`，其中 `ReadyToPublish → Published`（`Publish`，并校验截止时间未过）、`Published → Assigned`（`SelectApplication`）已接入，`Published` 期间可 `IncreaseReward` 和 `Apply`。
 >
 > - `Draft`、`Archived` 不在枚举中：没有草稿聚合，也没有放弃草稿的归档路径。
-> - `Closed` 已接入：订单验收通过后由 `TaskService.ApproveOrder` 调用 `TaskItem.Close()`，把任务从 `Assigned` 推进到 `Closed`，关闭后不再出现在任务大厅。`Expired`、`Cancelled` 仍只有枚举值，没有截止时间过期作业、取消接口和取消原因记录。
+> - `Closed` 已接入：订单验收通过后由 `TaskService.ApproveOrder` 调用 `TaskItem.Close()`，把任务从 `Assigned` 推进到 `Closed`，关闭后不再出现在任务大厅。
+> - `Expired` 已接入：后台 `TaskExpiryService` 每 60 秒扫一批（单轮上限 100 条）仍处于 `Published` 且 `Deadline` 已过的任务，置为 `Expired` 并记 `ExpiredAt`，同时把 `Pending` 报名置为 `Expired`、通知任务所有者与每个被作废的报名者（事件键按接收者派生，否则只会入队第一条）。**`Assigned` 的任务不参与扫描**：它归订单流程管，不能因为过了截止时间就从服务者名下消失。扫描是幂等的，同一任务不会重复处理；单条任务被并发改动（已被选中、已被撤销、另一个实例先处理）只跳过那一条，不影响同批其它任务，一轮结果是 `TaskExpiryResult(Expired, Skipped)`。
+> - `Cancelled` 已接入：所有者在被选中前可用 `POST /api/v1/tasks/{id}/cancel`（`ownerId` + 必填 `reason`，≤200 字）撤销，记 `CancelledAt`/`CancellationReason` 并通知报名者；运营下架走 `POST /api/v1/admin/tasks/{id}/cancel`，原因除写 `admin_audit_entries` 外同样记在任务上。
 > - `ReadyToPublish` 草稿不进入大厅，公开详情也只对所有者可见，其他人拿到 `404`。
 > - 发布时不重新校验风险决策，因为风险决策尚未实现。
 
@@ -133,10 +135,11 @@ Pending
 
 报名在服务者声明的有效期内构成按任务当前悬赏接单的承诺。服务者不能提交不同价格。用户选择必须在数据库事务中检查任务状态和报名有效期，并使用并发令牌保证最多一份报名成功；成功后订单直接进入 `Accepted`。
 
-> 实现现状（⚠️）：`TaskApplicationStatus` 枚举为 `Pending`、`Selected`、`Withdrawn`、`Rejected`、`Expired`，实际只用到 `Pending`、`Selected` 和 `Rejected`——`SelectApplication` 把选中的一条置为 `Selected`，其余 `Pending` 一并置为 `Rejected`（简化实现，未使用 `Withdrawn`/`Expired`）。
+> 实现现状（⚠️）：`TaskApplicationStatus` 枚举为 `Pending`、`Selected`、`Withdrawn`、`Rejected`、`Expired`。`SelectApplication` 把选中的一条置为 `Selected`，其余 `Pending` 一并置为 `Rejected`；除此之外还接入了 `Selected → Rejected`（订单被取消，服务者可重新报名）和 `Pending → Expired`（任务过了截止时间被后台置为过期）。`Withdrawn` 仍没有写入路径。
 >
-> - 没有报名有效期字段，因此“按有效期校验”和报名自动过期都不存在。
+> - 没有报名有效期字段，因此“按有效期校验”不存在；报名失效只发生在任务过期时（`Pending → Expired`），不按服务者声明的有效期。
 > - 没有撤回接口。
+> - 订单取消时把选中报名置为 `Rejected` 不只是状态清理：执行地址只对当前被选中的服务者披露，留着 `Selected` 会继续向他泄露地址。
 > - 选择报名的并发安全由任务行的 `Version` 乐观并发令牌 + 显式数据库事务保证（选人与建订单同一事务），并有 `orders.TaskId` 唯一索引兜底；并发选单的“最多一份成功”已用 12 路并行请求在真实 PostgreSQL 上验证。
 > - 选中后在同一次调用中直接创建 `Accepted` 订单，与设计一致。
 
@@ -160,7 +163,7 @@ Disputed
 
 首版不设置 `PendingAcceptance`。服务者无法履行时必须走受审计的取消流程，平台据此计算履约指标；未来若引入非承诺型推荐或抢单模式，再通过独立 ADR 扩展状态机。
 
-> 实现现状（⚠️）：`OrderStatus` 枚举为 `Accepted`、`InProgress`、`Submitted`、`Approved`、`Rejected`、`Disputed`、`Cancelled`；已接入的实际状态机是 `Accepted → InProgress → Submitted → Approved`、`Submitted → Rejected`，以及返工路径 `Rejected → InProgress`。与上文设计的对应关系：
+> 实现现状（⚠️）：`OrderStatus` 枚举为 `Accepted`、`InProgress`、`Submitted`、`Approved`、`Rejected`、`Disputed`、`Cancelled`；已接入的实际状态机是 `Accepted → InProgress → Submitted → Approved`、`Submitted → Rejected`、返工路径 `Rejected → InProgress`，以及取消 `Accepted`/`InProgress` → `Cancelled`。与上文设计的对应关系：
 >
 > | 设计状态 | 实现 | 接入方式与差异 |
 > | --- | --- | --- |
@@ -169,11 +172,11 @@ Disputed
 > | `InProgress` | ✅ `InProgress` | 服务者 `POST /api/v1/orders/{id}/start` |
 > | `AwaitingReview` | ⚠️ `Submitted` | 提交换名为 `Submitted`，要求必填执行凭证说明 |
 > | `Completed` | ⚠️ `Approved` | 终态改名为 `Approved`，`Approved` 后才可评价 |
-> | `rejected → InProgress` | ⛔ 不支持 | `Rejected` 是终态：驳回后没有返工或重新提交路径（P0 待办） |
+> | `rejected → InProgress` | ✅ `Rejected → InProgress` | 返工闭环已接入：`Order.ResumeRework(actorId)` 校验操作者是服务者且订单处于 `Rejected`，随后 `ReworkCount++` 并退回 `InProgress`；驳回原因保留在 `RejectionNote`（验收通过时清空）以便追溯。端点为 `POST /api/v1/orders/{id}/resume`，前端“继续返工”按钮调用它 |
 > | `Disputed` | ⛔ 仅枚举 | 除订单状态流转接口外没有争议接口，也没有冻结结算语义 |
-> | `Cancelled` | ⛔ 仅枚举 | 没有取消接口、取消人和取消原因记录，任务也不会随之取消 |
+> | `Cancelled` | ✅ `Cancelled` | 已接入：`POST /api/v1/orders/{id}/cancel`（`actorId` + 必填 `note`，≤200 字）记 `CancelledAt`/`CancelledBy`/`CancellationReason`。服务者只能在 `Accepted`（还没开始执行）时取消，开工后要终止必须由需求方发起；需求方在 `Submitted` 之前都可取消；提交验收之后双方都不能取消（先验收或驳回）；`Approved`/`Cancelled` 不能再取消，非参与者返回「只有订单参与者可以取消订单。」（均为 `422` + 可读中文原因）。同一事务内连带：任务未过截止时间则退回 `Published` 重新招募并把选中报名置为 `Rejected`，已过截止时间则置为 `Expired`（记 `ExpiredAt`，取消者不是需求方时需求方还会收到 `task.expired`）；双方参与者收到 `order.cancelled` |
 >
-> 另外，订单批准后不会自动把任务推进到 `Closed`；服务者提交凭证仅有文本说明，没有 `Evidence` 材料校验。
+> 另外，订单验收通过时 `TaskService.ApproveOrder` 在同一个事务里调用 `CloseTaskIfAssigned`，把 `Assigned` 任务推进到 `Closed`（返工期间任务保持 `Assigned`，不会回到大厅）；执行凭证已经是独立实体与独立表（`OrderEvidence` + `evidence`），支持上传、鉴权下载、扫描门禁与短时直连地址，`EvidenceNote` 只承担“完成说明”文本的角色。
 
 ## 5. 不变量
 
@@ -185,7 +188,7 @@ Disputed
 - ⚠️ Order 的用户、服务者、任务快照和报名快照创建后不可替换。参与者创建后不可替换，但只固化了标题和悬赏，验收条件、执行说明和报名快照未进入订单。
 - ✅ 状态转换必须同时验证操作者、当前状态和必要材料。`EnsureWorker`/`EnsureOwner` 区分服务者与需求方动作，`EnsureStatus` 校验当前状态；提交凭证和驳回验收均要求必填说明。
 - ⚠️ AwaitingReview 必须至少有一份通过安全检查的 Evidence。当前只要求 `EvidenceNote` 非空文本，没有文件、类型/大小校验或扫描状态。
-- ⚠️ Completed、Cancelled 是普通流程下的终态。当前终态是 `Approved` 且不可重开，与设计一致；但纠错用的受控运营命令和“复制字段创建新任务”的流程未实现。
+- ⚠️ Completed、Cancelled 是普通流程下的终态。订单终态目前是 `Approved`（不可重开）与 `Cancelled`，任务终态是 `Closed`、`Cancelled` 与 `Expired`；纠错用的受控运营命令和“复制字段创建新任务”的流程未实现。
 - ✅ 所有领域时刻以 UTC 保存。`TaskItem`、`Order`、`TaskApplication`、`Review` 的构造函数统一调用 `UtcTimestamp.Normalize`，因为 PostgreSQL 的 `timestamp with time zone` 只接受零偏移量；此前客户端或 AI 提交带 `+08:00` 的 `deadline` 会让创建任务返回 `500`。
 
 ## 6. 领域事件
@@ -206,7 +209,7 @@ Disputed
 
 > 实现现状（⚠️）：领域层仍然没有事件类型，也没有事件存储；但通知已经具备可靠投递链路：`Notification` 实体 + `notifications` 表（`EventId` 唯一索引做幂等），应用层在业务事务内写入通知（兼作 Outbox），`NotificationDispatcher` 后台任务扫描未派发记录并通过 SignalR 推送 `notification.created` 信封（`eventId`/`type`/`version`/`occurredAt`/`payload`）。派发前先用条件 UPDATE 原子认领（`WHERE DispatchedAt IS NULL`），失败则撤回认领退回 Outbox 等下一轮，因此多实例不会重复推送；多实例经 Redis 扇出转发到各实例的在线客户端，未启用扇出时只推本实例。
 >
-> 已接入的事件类型：`order.created`（选人后通知服务者）、`order.statusChanged`（开始、提交、验收、驳回、返工时通知对方参与者）。`TaskPublished`、`TaskRewardIncreased`、`ReviewPublished` 等仍未实现；`EvidenceUploaded`、`DisputeOpened`、`RiskReviewRequested` 依赖尚未实现的功能。
+> 已接入的事件类型：`order.created`（选人后通知服务者）、`order.statusChanged`（开始、提交、验收、驳回、返工时通知对方参与者）、`order.cancelled`（取消订单时通知对方参与者）、`task.expired`（任务过期时通知所有者与每个被作废的报名者）、`task.cancelled`（所有者撤销或运营下架任务时通知报名者），载荷分别为 `OrderNotificationPayload(orderId, status, title)` 与 `TaskNotificationPayload(taskId, status, title)`。`TaskPublished`、`TaskRewardIncreased`、`ReviewPublished` 等仍未实现；`EvidenceUploaded`、`DisputeOpened`、`RiskReviewRequested` 依赖尚未实现的功能。
 
 ## 7. 位置与隐私建模
 

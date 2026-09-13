@@ -8,10 +8,22 @@ public static class NotificationTypes
     public const string OrderCreated = "order.created";
     public const string OrderStatusChanged = "order.statusChanged";
     public const string OrderMessageCreated = "order.messageCreated";
+
+    /// <summary>订单被取消：通知对方参与者，取消原因走 REST 详情。</summary>
+    public const string OrderCancelled = "order.cancelled";
+
+    /// <summary>任务超过截止时间仍无人被选中而自动过期：通知所有者与被作废的报名者。</summary>
+    public const string TaskExpired = "task.expired";
+
+    /// <summary>任务被所有者撤销或运营下架：通知报名中的服务者。</summary>
+    public const string TaskCancelled = "task.cancelled";
 }
 
 /// <summary>订单相关通知的载荷；只带定位信息，不带敏感内容。</summary>
 public sealed record OrderNotificationPayload(Guid OrderId, string Status, string Title);
+
+/// <summary>任务相关通知的载荷；只带定位信息，不含执行地址等参与者层内容。</summary>
+public sealed record TaskNotificationPayload(Guid TaskId, string Status, string Title);
 
 /// <summary>持久化通知，供收件箱列表与未读数使用。</summary>
 public sealed record NotificationResponse(Guid Id, Guid EventId, string Type, int Version, DateTimeOffset CreatedAt, DateTimeOffset? ReadAt, JsonElement Payload);

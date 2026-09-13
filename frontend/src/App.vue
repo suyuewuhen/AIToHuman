@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { getDevSession, type DevSession } from './api/session'
 import { clearAccessToken, getAccessToken, getCurrentUser, login, register, switchRole, type ActiveRole, type CurrentUser } from './api/auth'
-import { applyForTask, approveOrder, createOrderReview, createTask, getExecutionAddress, getReviewSummary, increaseTaskReward, listMyOrders, listMyTasks, listOrderReviews, listPublishedTasks, listTaskApplications, publishTask, rejectOrder, resumeOrder, selectTaskApplication, startOrder, submitOrder, type OrderItem, type ReviewItem, type TaskApplication, type TaskItem, type ReviewSummary } from './api/tasks'
+import { applyForTask, approveOrder, cancelOrder, cancelTask, createOrderReview, createTask, getExecutionAddress, getReviewSummary, increaseTaskReward, listMyOrders, listMyTasks, listOrderReviews, listPublishedTasks, listTaskApplications, publishTask, rejectOrder, resumeOrder, selectTaskApplication, startOrder, submitOrder, type OrderItem, type ReviewItem, type TaskApplication, type TaskItem, type ReviewSummary } from './api/tasks'
 import { connectNotifications as connectNotificationHub, disconnectNotifications, listNotifications, markNotificationsRead, type NotificationEnvelope, type NotificationItem } from './api/notifications'
 import { listOrderMessages, markOrderMessagesRead, sendOrderMessage, type OrderMessage } from './api/messages'
 import { absoluteMaxEvidenceBytes, allowedEvidenceTypes, downloadEvidence, listOrderEvidence, uploadOrderEvidence, type EvidenceItem } from './api/evidence'
@@ -69,6 +69,15 @@ const myTasksLoading = ref(false)
 const myTasksError = ref('')
 const publishingTaskId = ref('')
 const raisingTaskId = ref('')
+// 取消订单 / 撤销任务：内联必填原因 + 二次确认，与运营下架同一套交互。
+const orderCancelId = ref('')
+const orderCancelReason = ref('')
+const orderCancelBusy = ref(false)
+const orderCancelError = ref('')
+const taskCancelId = ref('')
+const taskCancelReason = ref('')
+const taskCancelBusy = ref(false)
+const taskCancelError = ref('')
 const notifications = ref<NotificationItem[]>([])
 const unreadCount = ref(0)
 const notificationsOpen = ref(false)
@@ -381,6 +390,19 @@ function isOwnTask(task: TaskItem) {
 }
 function taskStatusLabel(status: string) {
   return ({ ReadyToPublish: '待发布', Published: '已发布', Assigned: '已分配', Closed: '已完成', Expired: '已过期', Cancelled: '已取消' } as Record<string, string>)[status] ?? status
+}
+/** 报名状态文案；未登记的状态原样显示，避免后端新增状态时被前端吞掉。 */
+function applicationStatusLabel(status: string) {
+  return ({ Pending: '待处理', Selected: '已选中', Withdrawn: '已撤回', Rejected: '未选中', Expired: '已失效' } as Record<string, string>)[status] ?? status
+}
+/** 取消订单的按钮可见性：服务者只能在未开始时取消；需求方在服务者提交验收前都可以取消。 */
+function canCancelOrder(order: OrderItem) {
+  if (order.status !== 'Accepted' && order.status !== 'InProgress') return false
+  return orderTab.value === 'published' ? true : order.status === 'Accepted'
+}
+/** 撤销任务：只有所有者能在被接单前撤销（已分配/已关闭/已过期都由后端状态机拦住）。 */
+function canCancelTask(task: TaskItem) {
+  return task.status === 'ReadyToPublish' || task.status === 'Published'
 }
 
 async function submitPrompt() {
@@ -700,6 +722,79 @@ async function transitionOrder(order: OrderItem, action: 'start' | 'submit' | 'a
   }
 }
 
+function startOrderCancel(order: OrderItem) {
+  orderCancelId.value = order.id
+  orderCancelReason.value = ''
+  orderCancelError.value = ''
+}
+
+async function confirmOrderCancel(order: OrderItem) {
+  if (!authUser.value) {
+    orderCancelError.value = '请先登录后操作订单。'
+    return
+  }
+  const reason = orderCancelReason.value.trim()
+  if (!reason) {
+    orderCancelError.value = '取消订单必须填写原因。'
+    return
+  }
+  if (reason.length > 200) {
+    orderCancelError.value = '取消原因不能超过 200 字。'
+    return
+  }
+
+  orderCancelBusy.value = true
+  orderCancelError.value = ''
+  try {
+    const updated = await cancelOrder(order.id, authUser.value.userId, reason)
+    orders.value = orders.value.map((item) => item.id === updated.id ? updated : item)
+    orderCancelId.value = ''
+    applicationNotice.value = `订单「${order.title}」已取消，取消原因已通知对方。`
+    // 取消订单会连带改变任务状态，所以顺带刷新大厅与“我的任务”。
+    await refreshHall()
+  } catch (error) {
+    orderCancelError.value = error instanceof Error ? error.message : '取消订单失败'
+  } finally {
+    orderCancelBusy.value = false
+  }
+}
+
+function startTaskCancel(task: TaskItem) {
+  taskCancelId.value = task.id
+  taskCancelReason.value = ''
+  taskCancelError.value = ''
+}
+
+async function confirmTaskCancel(task: TaskItem) {
+  if (!authUser.value) {
+    taskCancelError.value = '请先登录后操作任务。'
+    return
+  }
+  const reason = taskCancelReason.value.trim()
+  if (!reason) {
+    taskCancelError.value = '撤销任务必须填写原因。'
+    return
+  }
+  if (reason.length > 200) {
+    taskCancelError.value = '撤销原因不能超过 200 字。'
+    return
+  }
+
+  taskCancelBusy.value = true
+  taskCancelError.value = ''
+  try {
+    const updated = await cancelTask(task.id, authUser.value.userId, reason)
+    myTasks.value = myTasks.value.map((item) => item.id === updated.id ? updated : item)
+    taskCancelId.value = ''
+    applicationNotice.value = `任务「${task.title}」已撤销。`
+    await refreshHall()
+  } catch (error) {
+    taskCancelError.value = error instanceof Error ? error.message : '撤销任务失败'
+  } finally {
+    taskCancelBusy.value = false
+  }
+}
+
 async function loadReviews(order: OrderItem) {
   try { orderReviews.value[order.id] = await listOrderReviews(order.id) } catch (error) { applicationNotice.value = error instanceof Error ? error.message : '评价加载失败' }
 }
@@ -760,6 +855,9 @@ function notificationText(type: string, payload: unknown) {
   if (type === 'order.created') return `需求方已同意你的报名：「${title}」已进入接取的任务。`
   if (type === 'order.statusChanged') return `订单「${title}」已更新为${orderStatusLabel(detail?.status ?? '')}。`
   if (type === 'order.messageCreated') return `订单「${title}」有新消息：${detail?.preview ?? ''}`
+  if (type === 'order.cancelled') return `订单「${title}」已取消。`
+  if (type === 'task.expired') return `任务「${title}」已过期：截止时间已过，系统自动关闭，不能再报名或执行。`
+  if (type === 'task.cancelled') return `任务「${title}」已被需求方撤销。`
   return `有新的通知：${title}`
 }
 
@@ -1178,7 +1276,7 @@ onMounted(async () => {
             <div class="task-action-buttons">
               <button v-if="canManageTask(task) && task.applicationCount > 0" type="button" class="secondary-action" @click="viewApplications(task)">{{ viewingApplicationsTaskId === task.id ? '收起报名' : '查看报名' }}</button>
               <button v-if="canManageTask(task) && task.status === 'Published'" type="button" class="secondary-action" :disabled="raisingTaskId === task.id" @click="raiseTaskReward(task)">{{ raisingTaskId === task.id ? '加价中…' : '提高悬赏' }}</button>
-              <button v-if="isWorker" type="button" :disabled="applyingTaskId === task.id" @click="apply(task)">{{ applyingTaskId === task.id ? '提交中…' : '按此悬赏报名' }}</button>
+              <button v-if="isWorker && task.status === 'Published'" type="button" :disabled="applyingTaskId === task.id" @click="apply(task)">{{ applyingTaskId === task.id ? '提交中…' : '按此悬赏报名' }}</button>
               <button v-if="!authUser && !session" type="button" class="secondary-action" @click="authOpen = true">登录后操作</button>
             </div>
           </div>
@@ -1188,7 +1286,7 @@ onMounted(async () => {
             <span v-else-if="taskApplications.length === 0">暂无有效报名</span>
             <div v-for="application in taskApplications" v-else :key="application.id" class="application-row">
               <div><strong>服务者 {{ application.workerId.slice(0, 8) }}</strong><small>{{ application.note || '未附加备注' }}</small></div>
-              <button type="button" :disabled="selectingApplicationId === application.id || application.status !== 'Pending'" @click="selectApplication(task, application)">{{ application.status === 'Pending' ? (selectingApplicationId === application.id ? '选择中…' : '选择') : application.status }}</button>
+              <button type="button" :disabled="selectingApplicationId === application.id || application.status !== 'Pending'" @click="selectApplication(task, application)">{{ application.status === 'Pending' ? (selectingApplicationId === application.id ? '选择中…' : '选择') : applicationStatusLabel(application.status) }}</button>
             </div>
           </div>
         </article>
@@ -1216,12 +1314,22 @@ onMounted(async () => {
               <small>{{ taskStatusLabel(task.status) }} · 截止 {{ formatDeadline(task.deadline) }} · {{ task.district }}</small>
               <h3>{{ task.title }}</h3>
               <span>任务号 {{ task.id.slice(0, 8) }} · {{ task.applicationCount }} 人已报名</span>
+              <p v-if="task.status === 'Expired'" class="order-note rejection"><b>已过期：</b>截止时间已过，系统自动关闭，不能再报名或执行。</p>
+              <p v-if="task.cancellationReason" class="order-note rejection"><b>撤销原因：</b>{{ task.cancellationReason }}</p>
               <div class="order-actions">
                 <button v-if="task.status === 'ReadyToPublish'" type="button" :disabled="publishingTaskId === task.id" @click="publishMyTask(task)">{{ publishingTaskId === task.id ? '发布中…' : '发布到任务大厅' }}</button>
                 <button v-if="task.status === 'Published' && task.applicationCount > 0" type="button" class="secondary-action" @click="openMyTaskApplications(task)">查看报名</button>
                 <button v-else-if="task.status === 'Published'" type="button" class="secondary-action" @click="hallTab = 'public'">去大厅查看</button>
                 <button v-if="task.status === 'Published'" type="button" :disabled="raisingTaskId === task.id" @click="raiseTaskReward(task)">{{ raisingTaskId === task.id ? '加价中…' : '加价' }}</button>
                 <button v-if="task.status === 'Assigned' || task.status === 'Closed'" type="button" class="secondary-action" @click="openOrders">查看订单</button>
+                <button v-if="canCancelTask(task) && taskCancelId !== task.id" type="button" class="danger" @click="startTaskCancel(task)">撤销任务</button>
+                <span v-if="task.status === 'Expired' || task.status === 'Cancelled'" class="order-note">该任务已结束，不能继续操作。</span>
+              </div>
+              <div v-if="taskCancelId === task.id" class="order-actions order-cancel">
+                <input v-model.trim="taskCancelReason" type="text" maxlength="200" placeholder="填写撤销原因（必填，最多 200 字）" />
+                <button type="button" class="danger" :disabled="taskCancelBusy" @click="confirmTaskCancel(task)">{{ taskCancelBusy ? '撤销中…' : '确认撤销' }}</button>
+                <button type="button" class="secondary-action" :disabled="taskCancelBusy" @click="taskCancelId = ''">放弃</button>
+                <span v-if="taskCancelError" class="cancel-error">{{ taskCancelError }}</span>
               </div>
             </div>
             <strong>¥{{ task.reward }}</strong>
@@ -1240,7 +1348,7 @@ onMounted(async () => {
       <div v-else-if="ordersError" class="hall-state error"><strong>订单暂时离线</strong><span>{{ ordersError }}</span><button type="button" @click="loadOrders">重新连接</button></div>
       <div v-else-if="visibleOrders.length === 0" class="hall-state"><strong>{{ orderTab === 'published' ? '还没有发布订单' : '还没有接取任务' }}</strong><span>{{ orderTab === 'published' ? '确认发布并选择服务者后，订单会显示在这里。' : '在任务大厅报名并被需求方选中后，任务会显示在这里。' }}</span></div>
       <div v-else class="orders-list">
-        <article v-for="order in visibleOrders" :key="order.id" class="order-row"><div><small>{{ formatDeadline(order.createdAt) }} · {{ orderStatusLabel(order.status) }}</small><h3>{{ order.title }}</h3><span>订单号 {{ order.id.slice(0, 8) }} · {{ orderTab === 'published' ? '服务者待执行' : '需求方已确认' }}</span><p v-if="order.evidenceNote" class="order-note"><b>执行凭证：</b>{{ order.evidenceNote }}</p><p v-if="order.rejectionNote" class="order-note rejection"><b>驳回原因：</b>{{ order.rejectionNote }}</p><p v-else-if="order.reviewNote" class="order-note"><b>验收意见：</b>{{ order.reviewNote }}</p><p v-if="order.reworkCount > 0" class="order-note"><b>返工次数：</b>{{ order.reworkCount }} 次</p><p v-if="orderAddresses[order.taskId]" class="order-note"><b>执行地址：</b>{{ orderAddresses[order.taskId] }}</p><div v-if="evidenceOpenOrderId === order.id" class="evidence-panel">
+        <article v-for="order in visibleOrders" :key="order.id" class="order-row"><div><small>{{ formatDeadline(order.createdAt) }} · {{ orderStatusLabel(order.status) }}</small><h3>{{ order.title }}</h3><span>订单号 {{ order.id.slice(0, 8) }} · {{ orderTab === 'published' ? '服务者待执行' : '需求方已确认' }}</span><p v-if="order.evidenceNote" class="order-note"><b>执行凭证：</b>{{ order.evidenceNote }}</p><p v-if="order.rejectionNote" class="order-note rejection"><b>驳回原因：</b>{{ order.rejectionNote }}</p><p v-else-if="order.reviewNote" class="order-note"><b>验收意见：</b>{{ order.reviewNote }}</p><p v-if="order.cancellationReason" class="order-note rejection"><b>取消原因：</b>{{ order.cancellationReason }}</p><p v-if="order.reworkCount > 0" class="order-note"><b>返工次数：</b>{{ order.reworkCount }} 次</p><p v-if="orderAddresses[order.taskId]" class="order-note"><b>执行地址：</b>{{ orderAddresses[order.taskId] }}</p><div v-if="evidenceOpenOrderId === order.id" class="evidence-panel">
               <strong>执行凭证</strong>
               <span v-if="evidenceBusy && !evidenceByOrder[order.id]">正在读取凭证…</span>
               <span v-else-if="!evidenceByOrder[order.id]?.length">还没有上传凭证。</span>
@@ -1258,7 +1366,7 @@ onMounted(async () => {
                 <input type="file" accept="image/jpeg,image/png,image/webp,application/pdf" :disabled="evidenceBusy" @change="uploadEvidence(order, $event)" />
               </label>
               <p v-if="evidenceError" class="notice warning">{{ evidenceError }}</p>
-            </div><div class="order-actions"><button type="button" class="secondary-action" @click="openChat(order)">消息<span v-if="order.unreadMessageCount" class="unread-dot">{{ order.unreadMessageCount }}</span></button><button type="button" class="secondary-action" @click="toggleEvidence(order)">{{ evidenceOpenOrderId === order.id ? '收起凭证' : '凭证' }}</button><button type="button" class="secondary-action" @click="loadExecutionAddress({ id: order.taskId } as TaskItem)">执行地址</button><button v-if="orderTab === 'taken' && order.status === 'Accepted'" type="button" @click="transitionOrder(order, 'start')">开始执行</button><button v-if="orderTab === 'taken' && order.status === 'InProgress'" type="button" @click="transitionOrder(order, 'submit')">提交验收</button><button v-if="orderTab === 'taken' && order.status === 'Rejected'" type="button" @click="transitionOrder(order, 'resume')">继续返工</button><button v-if="orderTab === 'published' && order.status === 'Submitted'" type="button" @click="transitionOrder(order, 'approve')">确认完成</button><button v-if="orderTab === 'published' && order.status === 'Submitted'" type="button" class="secondary-action" @click="transitionOrder(order, 'reject')">需要补充</button><button v-if="order.status === 'Approved'" type="button" class="secondary-action" @click="openReview(order)">写评价</button></div><div v-if="orderReviews[order.id]?.length" class="review-list"><div v-for="review in orderReviews[order.id]" :key="review.id"><span class="review-stars">{{ '★'.repeat(review.rating) }}{{ '☆'.repeat(5 - review.rating) }}</span><span>{{ review.comment }}</span><small>{{ review.isVisible ? '已公开' : '盲期中' }}</small></div></div></div><strong>¥{{ order.reward }}</strong></article>
+            </div><div class="order-actions"><button type="button" class="secondary-action" @click="openChat(order)">消息<span v-if="order.unreadMessageCount" class="unread-dot">{{ order.unreadMessageCount }}</span></button><button type="button" class="secondary-action" @click="toggleEvidence(order)">{{ evidenceOpenOrderId === order.id ? '收起凭证' : '凭证' }}</button><button type="button" class="secondary-action" @click="loadExecutionAddress({ id: order.taskId } as TaskItem)">执行地址</button><button v-if="orderTab === 'taken' && order.status === 'Accepted'" type="button" @click="transitionOrder(order, 'start')">开始执行</button><button v-if="orderTab === 'taken' && order.status === 'InProgress'" type="button" @click="transitionOrder(order, 'submit')">提交验收</button><button v-if="orderTab === 'taken' && order.status === 'Rejected'" type="button" @click="transitionOrder(order, 'resume')">继续返工</button><button v-if="orderTab === 'published' && order.status === 'Submitted'" type="button" @click="transitionOrder(order, 'approve')">确认完成</button><button v-if="orderTab === 'published' && order.status === 'Submitted'" type="button" class="secondary-action" @click="transitionOrder(order, 'reject')">需要补充</button><button v-if="canCancelOrder(order) && orderCancelId !== order.id" type="button" class="danger" @click="startOrderCancel(order)">取消订单</button><button v-if="order.status === 'Approved'" type="button" class="secondary-action" @click="openReview(order)">写评价</button></div><div v-if="orderCancelId === order.id" class="order-actions order-cancel"><input v-model.trim="orderCancelReason" type="text" maxlength="200" placeholder="填写取消原因（必填，最多 200 字）" /><button type="button" class="danger" :disabled="orderCancelBusy" @click="confirmOrderCancel(order)">{{ orderCancelBusy ? '取消中…' : '确认取消' }}</button><button type="button" class="secondary-action" :disabled="orderCancelBusy" @click="orderCancelId = ''">放弃</button><span v-if="orderCancelError" class="cancel-error">{{ orderCancelError }}</span></div><div v-if="orderReviews[order.id]?.length" class="review-list"><div v-for="review in orderReviews[order.id]" :key="review.id"><span class="review-stars">{{ '★'.repeat(review.rating) }}{{ '☆'.repeat(5 - review.rating) }}</span><span>{{ review.comment }}</span><small>{{ review.isVisible ? '已公开' : '盲期中' }}</small></div></div></div><strong>¥{{ order.reward }}</strong></article>
       </div>
     </section>
 
@@ -1308,6 +1416,7 @@ onMounted(async () => {
               <option value="Published">大厅中</option>
               <option value="Assigned">已分配</option>
               <option value="Closed">已结束</option>
+              <option value="Expired">已过期</option>
               <option value="Cancelled">已下架</option>
             </select>
             <button type="button" class="settings-primary" :disabled="adminTaskBusy" @click="loadAdminTasks()">检索</button>

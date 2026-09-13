@@ -47,11 +47,20 @@ public sealed class Order
     public string? RejectionNote { get; private set; }
     public int ReworkCount { get; private set; }
 
-    public static Order Rehydrate(Guid id, Guid taskId, Guid ownerId, Guid workerId, string title, Money reward, OrderStatus status, DateTimeOffset createdAt, string? evidenceNote = null, string? reviewNote = null, DateTimeOffset? submittedAt = null, DateTimeOffset? reviewedAt = null, string? rejectionNote = null, int reworkCount = 0) => new()
+    /// <summary>取消时间、发起人与原因。原因必填，便于对方与运营事后追溯谁在什么时候终止了订单。</summary>
+    public DateTimeOffset? CancelledAt { get; private set; }
+    public Guid? CancelledBy { get; private set; }
+    public string? CancellationReason { get; private set; }
+
+    /// <summary>取消原因的长度上限。</summary>
+    public const int MaxCancellationReasonLength = 200;
+
+    public static Order Rehydrate(Guid id, Guid taskId, Guid ownerId, Guid workerId, string title, Money reward, OrderStatus status, DateTimeOffset createdAt, string? evidenceNote = null, string? reviewNote = null, DateTimeOffset? submittedAt = null, DateTimeOffset? reviewedAt = null, string? rejectionNote = null, int reworkCount = 0, DateTimeOffset? cancelledAt = null, Guid? cancelledBy = null, string? cancellationReason = null) => new()
     {
         Id = id, TaskId = taskId, OwnerId = ownerId, WorkerId = workerId, Title = title, Reward = reward, Status = status, CreatedAt = createdAt,
         EvidenceNote = evidenceNote, ReviewNote = reviewNote, SubmittedAt = submittedAt, ReviewedAt = reviewedAt,
-        RejectionNote = rejectionNote, ReworkCount = reworkCount
+        RejectionNote = rejectionNote, ReworkCount = reworkCount,
+        CancelledAt = cancelledAt, CancelledBy = cancelledBy, CancellationReason = cancellationReason
     };
 
     public void Start(Guid actorId)
@@ -100,6 +109,40 @@ public sealed class Order
         EnsureStatus(OrderStatus.Rejected);
         ReworkCount++;
         Status = OrderStatus.InProgress;
+    }
+
+    /// <summary>
+    /// 取消订单。需求方可以在服务者提交验收之前取消；服务者只在还没开始执行（<see cref="OrderStatus.Accepted"/>）时
+    /// 才能单方面取消，一旦开工就要由需求方发起终止，避免“接了单又甩单”无人负责。
+    /// 提交验收后（<see cref="OrderStatus.Submitted"/>）双方都不能取消：先验收或驳回，争议走后续流程。
+    /// 取消必须填写原因，原因与取消人一并留痕。
+    /// </summary>
+    public void Cancel(Guid actorId, string? reason, DateTimeOffset now)
+    {
+        if (actorId != OwnerId && actorId != WorkerId) throw new DomainException("只有订单参与者可以取消订单。");
+
+        if (actorId == WorkerId && Status != OrderStatus.Accepted)
+        {
+            throw new DomainException($"服务者只能在开始执行前取消订单，当前状态 {Status} 请与需求方协商后由需求方处理。");
+        }
+
+        if (actorId == OwnerId && Status is not (OrderStatus.Accepted or OrderStatus.InProgress))
+        {
+            throw Status == OrderStatus.Submitted
+                ? new DomainException("服务者已经提交验收，请先验收或驳回，不要直接取消。")
+                : new DomainException($"订单当前状态 {Status} 不允许取消。");
+        }
+
+        var trimmed = reason?.Trim() ?? string.Empty;
+        if (trimmed.Length is < 1 or > MaxCancellationReasonLength)
+        {
+            throw new DomainException($"取消订单必须填写原因，长度不超过 {MaxCancellationReasonLength} 个字符。");
+        }
+
+        Status = OrderStatus.Cancelled;
+        CancelledAt = UtcTimestamp.Normalize(now);
+        CancelledBy = actorId;
+        CancellationReason = trimmed;
     }
 
     private void EnsureWorker(Guid actorId)

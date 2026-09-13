@@ -206,6 +206,12 @@ h1 em { color: var(--acid); font-style: normal; }
 .order-actions { display: flex; gap: 8px; margin-top: 12px; }
 .order-actions button { border: 0; padding: 8px 11px; background: var(--green); color: white; cursor: pointer; font-size: 10px; }
 .order-actions button.secondary-action { border: 1px solid var(--ink); background: transparent; color: var(--ink); }
+/* `.settings-secondary.danger` 管不到订单行里的按钮，这里单独定义（危险色与运营下架一致）。 */
+.order-actions button.danger { border: 1px solid #9a321f; background: #9a321f; color: #fff; }
+/* 内联取消/撤销：复用 .order-actions 的按钮样式，只额外允许换行并容纳必填原因的输入框。 */
+.order-cancel { flex-wrap: wrap; align-items: center; }
+.order-cancel input { flex: 1 1 240px; min-width: 180px; padding: 8px 10px; border: 1px solid var(--line); background: #fffdf7; color: var(--ink); font-size: 11px; }
+.order-cancel .cancel-error { color: #9a321f; font-size: 11px; }
 .unread-dot { display: inline-block; margin-left: 6px; padding: 0 5px; border-radius: 8px; background: var(--acid); color: #fff; font-size: 10px; }
 .chat-dialog { width: min(560px, 94vw); }
 .chat-hint { margin: 0 0 12px; color: #747b77; font-size: 11px; }
