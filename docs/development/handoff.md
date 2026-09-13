@@ -799,7 +799,7 @@ npm run build
 本轮（运营后台独立成页）新增验证：
 
 - 前端：`npm run typecheck` 与 `npm run build` 通过；构建产出**两个入口**——主应用 `dist/index.html`（JS 从 233.42 kB 降到 127.97 kB，运营后台整块搬走）+ 运营后台 `dist/ops.html`（`ops-*.js` 36.51 kB）+ 共享分包 `styles-*.js` 71.73 kB；后端未改动，`dotnet test` 仍是领域 283 + 集成 331 = 614 全通过。
-- 真机浏览器检查（Playwright + Chromium，连本机 Vite 开发服务器与真实后端、真实 PostgreSQL，共 19 项断言全部通过，页面无 console 错误、无失败请求）：
+- 真机浏览器检查（Playwright + Chromium，连本机 Vite 开发服务器与真实后端、真实 PostgreSQL，共 20 项断言全部通过，页面无 console 错误、无失败请求）：
   - `/ops.html` 未登录时显示登录卡片；用管理员账号登录后进入后台，顶栏显示操作人；页签为「配置项 26 / 变更记录 / 任务检索 / 用户检索 / 争议处置 / 风险复核 / 误拦申诉 / 规则目录 v5」，规则目录页签上的版本号与生效版本一致。
   - 各页签真实取数：规则目录渲染出 10 条规则 + 4 版历史（14 行）、任务检索按关键字“文件”命中 6 条、变更记录 15 条（含 `task.risk.rules.update` / `task.risk.rules.reset`）。
   - 版面：内容区 1180px、页面 1240px、`max-height: none`、横向溢出 0px——确认是整页铺开而不是原来那个 780×88vh 的对话框。
