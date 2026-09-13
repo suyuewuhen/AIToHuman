@@ -134,15 +134,15 @@ npm run dev
 
 必须先启动后端，再启动 Vite；否则浏览器会看到 `vite http proxy error: ECONNREFUSED 127.0.0.1:5188`。可以先访问 `http://127.0.0.1:5188/health`，确认返回 `healthy` 后再打开前端。
 
-前端地址为 `http://localhost:5173`（运营后台是同一套前端里的独立页面：`http://localhost:5173/ops.html`，本地也支持 `/ops/`），API 健康检查为 `http://localhost:5188/health`。任务与报名使用 PostgreSQL 持久化；Redis 已用于通知的多实例扇出（由运营开关 `notifications.fanout.enabled` 控制，未启用时按单实例推送），MinIO 作为本地依赖供 S3 兼容对象存储使用（凭证默认仍写本机私有目录）。
+前端地址为 `http://localhost:5173`（**运营后台是独立页面**，本地直接用 `http://localhost:5173/ops/`，`/ops.html` 也有效），API 健康检查为 `http://localhost:5188/health`。本地是同源（Vite 代理 `/api` 与 `/hubs`），**不需要配任何前端变量、也不需要开 CORS**。任务与报名使用 PostgreSQL 持久化；Redis 已用于通知的多实例扇出（由运营开关 `notifications.fanout.enabled` 控制，未启用时按单实例推送），MinIO 作为本地依赖供 S3 兼容对象存储使用（凭证默认仍写本机私有目录）。
 
 ### 部署：同源、自己的域名或子路径
 
-默认假设前端与 API 同源（`/api`、`/hubs` 由反向代理转发），前端不需要任何配置：所有请求都走相对路径。要把运营后台放到自己的域名或子路径时：
+默认假设前端与 API 同源（`/api`、`/hubs` 由反向代理转发），前端不需要任何配置：所有请求都走相对路径。运营后台在自己的子路径 `/ops/` 下（构建会一并产出 `dist/ops/index.html`，静态托管按目录找 index.html 即可用，不用写服务端规则）。要把运营后台放到自己的域名或子路径时：
 
-- 构建期变量：`VITE_API_BASE_URL`（API 基地址，如 `https://api.example.com`；留空 = 同源）、`VITE_HUB_BASE_URL`（SignalR，默认跟随 API）、`VITE_APP_HOME_URL`（运营后台里“返回任务工作台”的目标）、`VITE_OPS_HOME_URL`（主应用顶栏“运营后台”的目标）。例如 `$env:VITE_API_BASE_URL='https://api.example.com'; npm run build`。
-- 跨源时后端要放行来源：`Cors__AllowedOrigins=https://ops.example.com,https://app.example.com`（逗号/分号/空格分隔，或 `Cors__AllowedOrigins__0=` 数组写法）。没配置时只放行本机 5173。
-- 子路径托管：让 `/ops/` 指向 `ops.html` 即可（资源地址是根路径绝对的 `/assets/...`），完整配置与 nginx 例见 [交接文档第 7 节](docs/development/handoff.md)。
+- 构建期变量写在 `frontend/.env.example`（复制成 `.env.local` 再改；默认全空 = 同源）：`VITE_API_BASE_URL`（API 基地址，如 `https://api.example.com`）、`VITE_HUB_BASE_URL`（SignalR，默认跟随 API）、`VITE_APP_HOME_URL`（运营后台里“返回任务工作台”的目标）、`VITE_OPS_HOME_URL`（主应用顶栏“运营后台”的目标）。也可以直接给环境变量：`$env:VITE_API_BASE_URL='https://api.example.com'; npm run build`。
+- 跨源时后端要放行来源：`Cors__AllowedOrigins=https://ops.example.com,https://app.example.com`（逗号/分号/空格分隔，或 `Cors__AllowedOrigins__0=` 数组写法）。没配置时开发环境只放行本机 5173 / 4173，其它环境一个都不放行；生效清单会打进启动日志。
+- 推荐的放法是**子域名**（`ops.example.com` + `app.example.com` + `api.example.com`）；只想要子路径则连变量都不用配。完整对照表、nginx 例，以及“没有域名时用两个本机端口彩排跨域”的做法见 [交接文档第 7 节](docs/development/handoff.md)。
 
 打开前端后，点击右上角“开发会话”可登录或注册真实账户。一个账户同时支持需求方和服务者身份，登录后点击右上角身份菜单即可切换，不需要重复注册。切换只改变当前 JWT 的操作角色，不会改变账户 ID、历史任务或订单归属。任务创建、报名、查看报名和选择服务者会使用 JWT 身份；未登录时仅保留 Development 环境的合成会话用于联调。
 

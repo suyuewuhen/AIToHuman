@@ -6,7 +6,7 @@
 
 当前分支：`main`
 
-最新已提交基线：本轮之前 `main` 与 `origin/main` 同步在 `5effb4b`（运营后台独立成页及其文档计数修正）；本轮「运营后台跨域/子路径部署」是紧随其后的一个提交，并已推送保持两边一致（见第 2 节）。
+最新已提交基线：本轮之前 `main` 与 `origin/main` 同步在 `7613e3d`（运营后台跨域/子路径部署）；本轮「本地开发形态收口」是紧随其后的一个提交，并已推送保持两边一致（见第 2 节）。
 
 本文面向接手开发、代码评审和本地联调人员。内容以已提交代码为准；上一版文档里“已提交基线 / 当前未提交实现”的双轨描述已经过时——所有多轮 AI、通知、会话与凭证实现都已提交。文中每条“已实现 / 未实现”的结论都对应第 11 节可复现的验证步骤。
 
@@ -33,7 +33,7 @@ AI 多轮澄清（每轮一个问题）
 
 ## 2. 当前工作区状态
 
-工作区状态：`main` 与 `origin/main` 同步；本轮的「运营后台跨域/子路径部署」随本轮提交一起进入 `main` 并推送（`git log -1` 可见）。上一版交接文档描述的“多轮 AI 未提交实现”已经全部提交，本文不再区分“基线 / 未提交”两种状态。
+工作区状态：`main` 与 `origin/main` 同步；本轮的「本地开发形态收口」随本轮提交一起进入 `main` 并推送（`git log -1` 可见）。上一版交接文档描述的“多轮 AI 未提交实现”已经全部提交，本文不再区分“基线 / 未提交”两种状态。
 
 从基线 `f196850` 到 `e45da76`（多轮 AI 与会话持久化那一轮）的主要变化：
 
@@ -402,13 +402,16 @@ npm install
 npm run dev
 ```
 
-访问 <http://localhost:5173>（主应用：对话工作台、任务大厅、订单）。**运营后台是同一套前端里的独立页面**：<http://localhost:5173/ops.html>；也可以从主应用顶栏的“运营后台 ↗”进入（只对管理员显示）。Vite 将 `/api`、`/health` 和 `/hubs` 代理到 `http://127.0.0.1:5188`，两个页面共用这个代理。必须先启动后端，否则会出现 `ECONNREFUSED 127.0.0.1:5188`，AI、登录、任务和 SignalR 都不可用。
+访问 <http://localhost:5173>（主应用：对话工作台、任务大厅、订单）。**运营后台是同一套前端里的独立页面**，两个地址都能用：<http://localhost:5173/ops/>（子路径，推荐）或 <http://localhost:5173/ops.html>；也可以从主应用顶栏的“运营后台 ↗”进入（只对管理员显示）。Vite 将 `/api`、`/health` 和 `/hubs` 代理到 `http://127.0.0.1:5188`，两个页面共用这个代理——**本地是同源，所以不需要配任何环境变量、也不需要开 CORS**。
 
-`npm run build` 会同时产出两个入口：`dist/index.html` 与 `dist/ops.html`（外加共享的分包），所以静态托管时两个文件都要部署；运营后台不依赖主应用，单独打开也能用。
+`npm run build` 会产出三个 HTML：`dist/index.html`（主应用）、`dist/ops.html`（运营后台）与 `dist/ops/index.html`（同一份运营后台，让静态托管能直接按 `/ops/` 访问，不必为子路径写服务端规则），外加共享的分包。静态托管时整个 `dist` 一起发布；运营后台不依赖主应用，单独打开也能用。
+
+前端可配置项写在 `frontend/.env.example` 里（复制成 `.env.local` 再改，默认全空 = 同源）：
+`VITE_API_BASE_URL`、`VITE_HUB_BASE_URL`、`VITE_APP_HOME_URL`、`VITE_OPS_HOME_URL`。
 
 ### 把运营后台放到自己的域名或子路径
 
-默认部署是**同源**：前端与 API 在同一个域名下，`/api`、`/hubs` 由反向代理转发到后端，前端不需要任何配置（所有请求都走相对路径）。要拆开时按下面的方式做。
+本地开发不需要域名：上面的 `/ops/` 就是子路径形态，`npm run dev` 已经按它跑。等有了真实域名再按下面的方式落配置——**推荐的放法是子域名**（运营后台 `ops.example.com`、主应用 `app.example.com`、后端 `api.example.com`）：三个来源各自独立，谁也不影响谁，运营后台也不必和主应用抢同一份静态托管的路径规则。
 
 两种放法（构建产物相同，区别只在托管与配置）：
 
@@ -417,19 +420,20 @@ npm run dev
 | 子域名（推荐） | `https://ops.example.com/` | `VITE_API_BASE_URL=https://api.example.com`<br>`VITE_APP_HOME_URL=https://app.example.com/`<br>`VITE_OPS_HOME_URL=https://ops.example.com/` | `Cors__AllowedOrigins=https://ops.example.com,https://app.example.com` |
 | 子路径（同域） | `https://example.com/ops/` | 一般不需要（同源相对路径）<br>跨源时才填 `VITE_API_BASE_URL` | 同源不需要 CORS；跨源时列出前端来源 |
 
-- 变量在**构建前**通过环境变量传入，例如：`$env:VITE_API_BASE_URL='https://api.example.com'; npm run build`。全部变量与默认值见 `frontend/src/api/base.ts` 顶部与 `frontend/env.d.ts`：`VITE_API_BASE_URL`（API 基地址，留空 = 同源）、`VITE_HUB_BASE_URL`（SignalR Hub，默认跟随 API）、`VITE_APP_HOME_URL`（运营后台里“返回任务工作台”的目标）、`VITE_OPS_HOME_URL`（主应用顶栏“运营后台”的目标）。前端所有请求都经过 `apiFetch()`，不存在“漏改一处、线上 404”的散落拼接。
-- 跨源时后端必须放行来源，否则浏览器在预检阶段就拦掉请求：`Cors__AllowedOrigins`（逗号/分号/空格分隔，也接受 `Cors__AllowedOrigins__0=` 数组写法，规则见 `Program.cs` 里的 `ReadList`）。策略同时开了 `AllowCredentials`：SignalR 的 JS 客户端协商默认带 credentials，不开这一项会出现“页面功能都正常、只有通知订阅在控制台报 CORS 错误”。接口认证走 Bearer 令牌、不用 Cookie，来源又是明确列出的，所以这不构成额外的跨站请求伪造面。
-- 子路径托管只要让 `/ops/` 指向 `ops.html` 即可：构建产物里的资源地址是根路径绝对的（`/assets/...`），因此 `dist` 放在根目录、再加一条改写就能用。nginx 例：
+- 变量在**构建前**通过环境变量或 `frontend/.env.local` 传入，例如：`$env:VITE_API_BASE_URL='https://api.example.com'; npm run build`。含义见 `frontend/src/api/base.ts` 顶部与 `frontend/env.d.ts`。前端所有请求都经过 `apiFetch()`，不存在“漏改一处、线上 404”的散落拼接。
+- 跨源时后端必须放行来源，否则浏览器在预检阶段就拦掉请求：`Cors__AllowedOrigins`（逗号/分号/空格分隔，也接受 `Cors__AllowedOrigins__0=` 数组写法，规则见 `Program.cs` 里的 `ReadList`）。**没配置时的兜底按环境区分**：开发环境放行本机 5173 / 4173（本地彩排用），其它环境一个都不放行（同源部署本来不需要 CORS）；生效清单每次启动都打进日志，配没配一眼可见。策略同时开了 `AllowCredentials`：SignalR 的 JS 客户端协商默认带 credentials，不开这一项会出现“页面功能都正常、只有通知订阅在控制台报 CORS 错误”。接口认证走 Bearer 令牌、不用 Cookie，来源又是明确列出的，所以这不构成额外的跨站请求伪造面。
+- 子路径托管：构建产物已经带了 `dist/ops/index.html`，**任何会按目录找 index.html 的静态托管直接把 `/ops/` 指过去就能用**（资源地址是根路径绝对的 `/assets/...`）。要自己写规则也行，nginx 例：
 
 ```nginx
 root /srv/aitohuman/dist;
-location /ops/ { try_files $uri /ops.html; }        # 运营后台在子路径
+location /ops/ { try_files $uri /ops/index.html; }   # 运营后台在子路径（dist/ops/index.html 已由构建产出）
 location / { try_files $uri /index.html; }          # 主应用（前端自带兜底，可按需换成 =404）
 location /api/ { proxy_pass http://127.0.0.1:5188; }
 location /hubs/ { proxy_pass http://127.0.0.1:5188; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection "upgrade"; }
 ```
 
 - 本地也能按子路径试：`npm run dev` / `npm run preview` 已内置 `/ops` 与 `/ops/` → `/ops.html` 的改写（见 `vite.config.ts` 的 `opsSubpath` 插件），所以“本地怎么访问、线上就怎么访问”。
+- 想在没有域名的前提下彩排“跨源部署”，用本机两个端口就够了：`npm run build` 后用 `npm run preview`（4173）或任意静态服务器当第二个源、API 仍在 5188，给 API 加上 `Cors__AllowedOrigins=http://localhost:4173`（或静态服务器实际使用的来源）即可；第 11 节有实测记录。
 - 两个入口的登录态是**按来源隔离**的（JWT 存在 `localStorage`）：运营后台在自己的域名下有自己的登录卡片，不需要、也不会共享主应用的会话。这正是独立页面该有的行为，部署时不必额外做单点登录。
 
 如果端口已占用：
@@ -822,6 +826,14 @@ npm run build
 - 两条自己踩过的坑（如实记录，避免后来者重犯）：① 过期那条第一版用假时钟把"现在"推到有效期之后，结果服务端照样返回 `200`——**有效期是服务端按 `X-Amz-Date + X-Amz-Expires` 与它自己的时钟判定的，改客户端时钟没有意义**，现在改成真等 7 秒；② 路径替换那条一开始用 `Uri.EscapeDataString(key)` 去替换 URL，而 URL 里是未转义的路径片段，替换没生效、地址根本没变，于是"因为没改而通过"（`200`），现在加了 `Assert.NotEqual(presigned, swapped)` 防止这种假通过。
 - CI：backend job 现在同时起 `postgres:16`、`redis:7`、`minio/minio`（都带 healthcheck），并在测试前用 `minio/mc` 容器建出测试用的桶——MinIO 起来是空实例，不建桶对象存储用例会跳过。
 
+本轮（本地开发形态收口：零配置 + 纯静态也能用子路径）新增验证：
+
+- 构建产物：`npm run build` 现在产出三份 HTML——`dist/index.html`、`dist/ops.html`、`dist/ops/index.html`（第三份由 `vite.config.ts` 的 `opsSubpath` 插件在构建后拷贝，指向同一份 `/assets/ops-*.js`）；`frontend/.env.example` 记录了四个前端变量，默认全空。
+- 开发零配置真机检查（Playwright + Chromium，连本机 Vite 5173 与真实后端 5188，未设置任何环境变量）：`http://localhost:5173/ops/` 能打开运营后台、地址栏停在 `/ops/`、用管理员账号登录后页签与数据齐全（配置项 26 … 规则目录 v5）；主应用的运营入口仍是同源 `/ops.html`；无 console 错误。
+- **纯静态托管 + 跨源 API** 真机检查（不经过 Vite、也没有 nginx：`npm run build` 时给 `VITE_API_BASE_URL=http://127.0.0.1:5188`，用 `python -m http.server 4180 --directory dist` 当静态源，API 侧 `Cors__AllowedOrigins=http://localhost:4180`）：`http://localhost:4180/ops/` 与 `http://localhost:4180/ops.html` 都返回 `200` 并能登录取数（页签同样齐全），`http://localhost:4180/` 也能打开；无 console 错误。这条同时证明了“子路径不需要服务端改写规则”。
+- 后端启动日志会打印生效的跨域来源，实测输出：`跨域允许来源：http://localhost:4180（同源部署不需要 CORS；跨域部署请用 Cors__AllowedOrigins 配置）`；未配置时开发环境回退到本机 5173 / 4173，其它环境为空（仅接受同源）。
+- 回归：前端 `typecheck` 与 `build` 通过；后端 `dotnet build` 0 警告 0 错误，领域 283 + 集成 331 = 614 个用例全通过。
+
 本轮（运营后台跨域/子路径部署）新增验证：
 
 - 前端：`npm run typecheck` 与 `npm run build` 通过；默认构建里**没有绝对 API 地址**（全部走相对路径），跨域构建会把 `VITE_API_BASE_URL` 等值内联进共享分包。
@@ -984,6 +996,12 @@ npm run build
 
 - 测试基建：`backend/tests/AIToHuman.IntegrationTests/External/ExternalTestEnvironment.cs`（探测 + `[RedisFact]`/`[MinioFact]` + 字典版设置提供者，对象存储的可用性靠"写一条探针对象再删掉"判定）；`RedisFanoutTests.cs`（5 条）；`S3StorageTests.cs`（5 条）。
 - CI：三个依赖服务 + 建桶步骤（见 `.github/workflows/ci.yml`）。
+
+本轮追加（本地开发形态收口）：
+
+- 前端构建：`vite.config.ts` 的 `opsSubpath` 插件在 `closeBundle` 时把 `dist/ops.html` 拷成 `dist/ops/index.html`，于是纯静态托管（会按目录找 index.html）直接支持 `/ops/`，不必再写 `try_files`；新增 `frontend/.env.example`（四个 `VITE_*` 变量，默认全空 = 同源）。
+- 后端：CORS 兜底改成按环境区分——开发环境放行本机 5173 / 4173（本地彩排跨域用），其它环境一个都不放行（同源部署不需要 CORS）；启动时把生效来源打进日志。
+- 文档：第 7 节重写为「本地零配置 → 有域名后再落配置」的顺序，明确推荐子域名放法，并给出无需域名即可彩排跨域的两个端口做法。
 
 本轮追加（运营后台跨域/子路径部署）：
 

@@ -191,7 +191,10 @@ builder.Services.AddAuthorization(options => options.AddPolicy(
 // 必须在部署配置里显式列出允许的来源：
 //   Cors__AllowedOrigins=https://ops.example.com,https://app.example.com
 // （逗号/分号/空格分隔，也接受 Cors__AllowedOrigins__0=... 的数组写法。）
-// 没有配置时只放行本机开发地址（Vite 开发服务器 5173），因为默认部署是同源 + 反向代理，根本不需要 CORS。
+//
+// 没有配置时按环境兜底：**开发环境**放行本机常用的两个前端端口（Vite 开发 5173、预览 4173，用于本地
+// 彩排跨域部署）；**其它环境**一个都不放行——同源部署本来不需要 CORS，而"默认放开某个来源"在线上
+// 只会变成一份没人记得的例外。生效清单会在启动日志里打出来，配没配一眼可见。
 //
 // 为什么还要 AllowCredentials：SignalR 的 JS 客户端协商时默认带 credentials（mode: 'include'），
 // 浏览器要求此时响应里必须有 Access-Control-Allow-Credentials: true，否则订阅会被预检直接拦掉
@@ -199,8 +202,12 @@ builder.Services.AddAuthorization(options => options.AddPolicy(
 // 它要求来源必须是明确列出的（不能用 *），也正是我们这里的写法；接口认证走 Bearer 令牌、不用 Cookie，
 // 所以放开凭据不会多给已经不在名单里的站点任何权限。
 const string FrontendCorsPolicy = "frontend";
-var allowedOrigins = ReadList(builder.Configuration, "Cors:AllowedOrigins",
-    ["http://localhost:5173", "http://127.0.0.1:5173"]);
+var configuredOrigins = ReadList(builder.Configuration, "Cors:AllowedOrigins", []);
+var allowedOrigins = configuredOrigins.Length > 0
+    ? configuredOrigins
+    : builder.Environment.IsDevelopment()
+        ? ["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:4173", "http://127.0.0.1:4173"]
+        : [];
 builder.Services.AddCors(options => options.AddPolicy(FrontendCorsPolicy, policy => policy
     .WithOrigins(allowedOrigins)
     .AllowAnyHeader()
@@ -208,6 +215,10 @@ builder.Services.AddCors(options => options.AddPolicy(FrontendCorsPolicy, policy
     .AllowCredentials()));
 
 var app = builder.Build();
+
+// 跨域允许来源一眼可见：配错了（或多配了一个来源）能立刻在启动日志里发现。
+app.Logger.LogInformation("跨域允许来源：{Origins}（同源部署不需要 CORS；跨域部署请用 Cors__AllowedOrigins 配置）",
+    allowedOrigins.Length > 0 ? string.Join("、", allowedOrigins) : "无（仅接受同源请求）");
 
 if (app.Environment.IsDevelopment() && usePostgres)
 {
