@@ -135,10 +135,15 @@ public sealed class TaskService(ITaskRepository repository, IOrderRepository ord
         return new(Map(task), Map(order!));
     }
 
+    /// <summary>
+    /// 报名列表（仅任务所有者）。每条报名带上该服务者的公开评价摘要，
+    /// 让需求方在选人前就能比较信用，而不是只能看到一个 workerId。
+    /// </summary>
     public IReadOnlyCollection<TaskApplicationResponse> ListApplications(Guid id, Guid ownerId)
     {
         var task = GetOwned(id, ownerId);
-        return task.Applications.Select(MapApplication).ToArray();
+        var credit = LoadWorkerCredit(task.Applications);
+        return task.Applications.Select(application => MapApplication(application, credit)).ToArray();
     }
 
     public IReadOnlyCollection<TaskSummaryResponse> ListMine(Guid ownerId) => repository.ListByOwner(ownerId).Select(task => MapSummary(task, includeCancellationTrail: true)).ToArray();
@@ -378,9 +383,8 @@ public sealed class TaskService(ITaskRepository repository, IOrderRepository ord
 
     public ReviewSummaryResponse GetReviewSummary(Guid userId)
     {
-        var visible = reviewRepository.ListByReviewee(userId).Where(item => IsReviewPublic(item.OrderId, item.CreatedAt)).ToArray();
-        var average = visible.Length == 0 ? 0m : Math.Round((decimal)visible.Average(item => item.Rating), 1);
-        return new(userId, average, visible.Length, visible.Take(5).Select(item => MapReview(item, true)).ToArray());
+        var (average, count, recent) = PublicCredit(userId);
+        return new(userId, average, count, recent);
     }
 
     public RewardSuggestionResponse SuggestReward(RewardSuggestionRequest request)
@@ -434,9 +438,43 @@ public sealed class TaskService(ITaskRepository repository, IOrderRepository ord
         repository.Save(task);
     }
 
-    private TaskResponse Map(TaskItem task) => new(task.Id, task.OwnerId, task.Title, task.Description, task.District, task.Deadline, task.Reward.Amount, task.Reward.Currency, task.Status.ToString(), task.AcceptanceCriteria, task.Applications.Select(MapApplication).ToArray(), task.ExpiredAt, task.CancelledAt, task.CancellationReason, task.ApplicationDeadline, task.AcceptingApplications(timeProvider.GetUtcNow()),
+    private TaskResponse Map(TaskItem task) => new(task.Id, task.OwnerId, task.Title, task.Description, task.District, task.Deadline, task.Reward.Amount, task.Reward.Currency, task.Status.ToString(), task.AcceptanceCriteria, MapApplications(task.Applications), task.ExpiredAt, task.CancelledAt, task.CancellationReason, task.ApplicationDeadline, task.AcceptingApplications(timeProvider.GetUtcNow()),
         task.RiskVerdict.ToString(), task.RiskRuleCode, task.RiskCategory, task.RiskSummary, task.RiskRuleVersion, task.RiskAssessedAt, task.RiskReviewStatus.ToString(), task.RiskReviewedAt, task.RiskReviewNote, task.IsPublishBlockedByRisk, CanEditDraft(task));
-    private static TaskApplicationResponse MapApplication(TaskApplication application) => new(application.Id, application.WorkerId, application.Note, application.Status.ToString(), application.SubmittedAt);
+    private static TaskApplicationResponse MapApplication(TaskApplication application, IReadOnlyDictionary<Guid, (decimal Average, int Count)> credit) =>
+        credit.TryGetValue(application.WorkerId, out var summary)
+            ? new(application.Id, application.WorkerId, application.Note, application.Status.ToString(), application.SubmittedAt, summary.Average, summary.Count)
+            : new(application.Id, application.WorkerId, application.Note, application.Status.ToString(), application.SubmittedAt);
+
+    /// <summary>一次把涉及到的服务者信用都取出来，避免每条报名各自查一遍。</summary>
+    private IReadOnlyDictionary<Guid, (decimal Average, int Count)> LoadWorkerCredit(IEnumerable<TaskApplication> applications)
+    {
+        var credit = new Dictionary<Guid, (decimal, int)>();
+        foreach (var workerId in applications.Select(item => item.WorkerId).Distinct())
+        {
+            var (average, count, _) = PublicCredit(workerId);
+            if (count > 0) credit[workerId] = (average, count);
+        }
+
+        return credit;
+    }
+
+    private IReadOnlyList<TaskApplicationResponse> MapApplications(IEnumerable<TaskApplication> applications)
+    {
+        var materialized = applications.ToArray();
+        var credit = LoadWorkerCredit(materialized);
+        return materialized.Select(application => MapApplication(application, credit)).ToArray();
+    }
+
+    /// <summary>
+    /// 某个用户的公开信用：只统计已达到公开条件的评价（双方都提交，或订单完成满 7 天）。
+    /// 盲期内的评价既不出现在摘要里，也不出现在公开资料里。
+    /// </summary>
+    private (decimal Average, int Count, IReadOnlyCollection<ReviewResponse> Recent) PublicCredit(Guid userId)
+    {
+        var visible = reviewRepository.ListByReviewee(userId).Where(item => IsReviewPublic(item.OrderId, item.CreatedAt)).ToArray();
+        var average = visible.Length == 0 ? 0m : Math.Round((decimal)visible.Average(item => item.Rating), 1);
+        return (average, visible.Length, visible.Take(5).Select(item => MapReview(item, true)).ToArray());
+    }
 
     private TaskSummaryResponse MapSummary(TaskItem task, bool includeCancellationTrail = false) => new(
         task.Id, task.OwnerId, task.Title, task.Description, task.District, task.Deadline, task.Reward.Amount, task.Reward.Currency,

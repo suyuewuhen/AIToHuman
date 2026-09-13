@@ -60,6 +60,8 @@ GET    /api/v1/workers/{workerId}/reviews
 
 任务大厅的 `GET /tasks` 与公开任务详情只返回区域、悬赏、验收标准和报名人数等公开摘要，不返回服务者 `workerId`、报名备注或联系方式。报名详情仅在后续完成认证和资源授权后，向任务所有者或对应服务者返回。
 
+已实现的报名列表（`GET /api/v1/tasks/{id}/applications?ownerId=...`，仅任务所有者，其他身份 `403`）在报名本身之外带上了该服务者的**公开**评价摘要：`workerAverageRating` 与 `workerReviewCount`。只统计已达到公开条件的评价（同一订单双方都提交，或订单完成满 7 天），盲期内的评价不计入，因此与 `GET /api/v1/users/{id}/review-summary` 的口径完全一致（服务端共用同一处公开信用计算，前端对没有公开评价的服务者显示“暂无公开评价”，而不是 0 分）。响应仍然不含执行地址等参与者层信息。
+
 公开详情 `GET /tasks/{id}` 不返回他人的草稿：`ReadyToPublish` 状态只有所有者能读到，其他人（含匿名）得到 `404`。精确执行地址走独立接口 `GET /tasks/{id}/execution-address`，只有所有者与被选中的服务者可读，其余返回 `403`；大厅与公开详情只暴露 `hasExecutionAddress` 布尔值。
 
 `GET /tasks/mine` 是所有者视角的任务列表：返回当前用户作为所有者的全部任务及其状态（`ReadyToPublish`、`Published`、`Assigned`、`Closed` 等）和报名人数，避免草稿、已分配和已结束的任务只在公开大厅里消失。身份优先取 JWT，Development 环境可用 `?ownerId=...` 回退；已认证时请求里的 `ownerId` 会被忽略。状态里包含 `Expired`（超过截止时间被后台置为过期）与 `Cancelled`（所有者撤销或运营下架）。

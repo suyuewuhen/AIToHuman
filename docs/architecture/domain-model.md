@@ -18,7 +18,7 @@
 | `Conversation` | ✅ | `Conversation` 聚合已实现，消息与草稿状态落库，支持刷新恢复与历史截断；仍缺模型运行元数据 |
 | `TaskDraft` | ⚠️ | 仍无独立草稿实体与版本号/编辑历史；AI 返回的 `plan` 经确认后直接创建 `ReadyToPublish` 任务，但该任务的字段可编辑（`PUT /api/v1/tasks/{id}`，仅 `ReadyToPublish`），编辑复用创建时的校验并重跑风险判定 |
 | `Task` | ✅ | `TaskItem` 已实现，含所有者、截止时间、公开区域和验收标准校验；可选的报名截止时间 `ApplicationDeadline` 到点后只关闭新报名；`Expired`（后台扫描超期未分配任务）与 `Cancelled`（所有者撤销、运营下架）都有落库时间戳与原因 |
-| `Application` | ⚠️ | `TaskApplication` 已实现；服务者可撤回自己仍处于 `Pending` 的报名（`Withdrawn`，之后可重新报名），订单取消把选中的报名置为 `Rejected`、任务过期把 `Pending` 置为 `Expired`；仍无预计到达时间，也没有选人时固化的报名快照 |
+| `Application` | ⚠️ | `TaskApplication` 已实现；服务者可撤回自己仍处于 `Pending` 的报名（`Withdrawn`，之后可重新报名），订单取消把选中的报名置为 `Rejected`、任务过期把 `Pending` 置为 `Expired`；报名列表内联该服务者的公开评价摘要（`WorkerAverageRating`/`WorkerReviewCount`，只统计已公开评价）；仍无预计到达时间，也没有选人时固化的报名快照 |
 | `Order` | ✅ | `Order` 已实现，含参与者校验、状态机、取消（`Cancelled` + 取消人、取消时间、取消原因）与争议（`Disputed` + 发起人、原因、发起时间、处置结果、处置依据与处置时间） |
 | 风险模型（`RiskRule`/`RiskAssessment`） | ⚠️ | 代码内版本化规则目录（`RiskRuleCatalog`，版本 1、12 个原因代码）已实现，并接入创建草稿与发布两个门禁，`RiskReviewStatus` 记录人工复核结论；缺模型辅助分类、误拦申诉与追加式决策历史，见第 10 节 |
 | `Evidence` | ⚠️ | `OrderEvidence` + `evidence` 表已实现：类型白名单与文件签名校验、扫描状态机与退避重扫、上传时元数据剥离、按人小时配额，存储走 `IFileStorage`（本机目录或 S3 兼容对象存储，支持短时直连下载地址）；订单上的 `EvidenceNote` 仍作为“完成说明”文本框与凭证文件并存。仍缺图片像素级重编码与“凭证关联到具体验收项” |
@@ -65,7 +65,7 @@ AI 与用户共同编辑的临时结构。保存字段完整性、风险检查�
 
 > 实现现状（⚠️）：`TaskApplication` 已实现 `WorkerId`、备注、提交时间和状态，`Apply` 已校验“不能报名自己的任务”和“不能重复报名（同一服务者仅一条 `Pending`）”。撤回已实现：`TaskItem.WithdrawApplication(applicationId, workerId, now)` 只允许撤回自己的、仍处于 `Pending` 的报名，撤回后记录保留为 `Withdrawn`、服务者可以重新报名（重复报名仍被拦），被选中之后要退出只能走订单取消；端点是 `POST /api/v1/tasks/{id}/applications/{applicationId}/withdraw`，任务所有者会收到 `task.applicationWithdrawn`。**服务者声明的报名有效期**仍没有字段，取而代之的是任务级的报名截止时间（可选的 `ApplicationDeadline` 到点后只关闭新报名，已有报名仍可被选中）；`GET /api/v1/tasks/applications/mine` 返回服务者自己的报名与 `canWithdraw`。缺失：预计到达时间、选中时固化的报名快照；报名的失效只在任务过期时统一置为 `Expired`，也只在订单取消时由 `Selected` 退回 `Rejected`（见第 3 节）。
 >
-> 双向选择目前是单向可见：大厅返回需求方的公开评价摘要，服务者报名前能看到需求方信用；但报名接口只返回 `WorkerId`、备注、状态和提交时间，需求方在选人时看不到服务者的评价摘要。这属于接口缺口，不是有意设计。
+> 双向选择已经双向可见：大厅返回需求方的公开评价摘要（服务者报名前能看到需求方信用），报名列表里也带上了该服务者的公开评价摘要——`TaskApplicationResponse` 在报名本身之外返回 `WorkerAverageRating` 与 `WorkerReviewCount`，供需求方在选人前看信用。摘要只统计**已公开**的评价（双方都提交，或订单完成满 7 天），盲期内的评价不计入，口径与 `GET /api/v1/users/{id}/review-summary` 完全一致（服务层共用同一个公开信用计算）；没有公开评价的服务者返回 `0` 分 / `0` 条，不伪造分数。列表仍只有任务所有者可读，也不含执行地址等参与者层信息。
 
 ### Order
 
@@ -260,7 +260,7 @@ Money(amount, currency)
 > - 7 天期限是代码常量，不是可配置的平台设置；使用 `TimeProvider` 获取 UTC 时间。
 > - 评价用单一 1–5 星评分和一段文字，没有区分“用户评价服务者”和“服务者评价用户”的评分维度，但通过 `RevieweeId` 分别汇总到各自信用资料。
 > - 每方每个订单只能评价一次：应用层先查 `GetByReviewer` 并返回 `422`，数据库 `(OrderId, ReviewerId)` 唯一索引仅作兜底。
-> - 公开摘要返回平均分与评价数量，已满足“显示样本量”要求。
+> - 公开摘要返回平均分与评价数量，已满足“显示样本量”要求。同一份公开信用同时用于两处：`GET /api/v1/users/{id}/review-summary`（公开资料）与任务报名列表（需求方选人前看服务者信用），因此两处口径不会漂移；服务者侧看需求方信用仍走大厅与公开详情里的公开摘要。
 > - `HiddenByModeration`、举报处理、公开后不可修改/删除的约束都未实现（当前也没有修改或删除接口）。
 
 ## 10. 风险规则与人工复核

@@ -1673,7 +1673,14 @@ onMounted(async () => {
             <span v-if="applicationsLoading">正在读取报名信息…</span>
             <span v-else-if="taskApplications.length === 0">暂无有效报名</span>
             <div v-for="application in taskApplications" v-else :key="application.id" class="application-row">
-              <div><strong>服务者 {{ application.workerId.slice(0, 8) }}</strong><small>{{ application.note || '未附加备注' }}</small></div>
+              <div>
+                <strong>服务者 {{ application.workerId.slice(0, 8) }}</strong>
+                <small class="application-credit">
+                  <template v-if="application.workerReviewCount > 0">公开评价 {{ application.workerAverageRating.toFixed(1) }} 分 · {{ application.workerReviewCount }} 条</template>
+                  <template v-else>暂无公开评价（评价在双方都提交或订单完成满 7 天后公开）</template>
+                </small>
+                <small>{{ application.note || '未附加备注' }}</small>
+              </div>
               <button type="button" :disabled="selectingApplicationId === application.id || application.status !== 'Pending'" @click="selectApplication(task, application)">{{ application.status === 'Pending' ? (selectingApplicationId === application.id ? '选择中…' : '选择') : applicationStatusLabel(application.status) }}</button>
             </div>
           </div>

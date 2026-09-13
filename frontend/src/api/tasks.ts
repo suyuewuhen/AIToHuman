@@ -4,6 +4,10 @@ export interface TaskApplication {
   note: string
   status: string
   submittedAt: string
+  /** 这名服务者的公开评价均分；没有公开评价时为 0，看 workerReviewCount 判断。 */
+  workerAverageRating: number
+  /** 公开评价条数（盲期内的评价不计入）。 */
+  workerReviewCount: number
 }
 
 export interface TaskItem {

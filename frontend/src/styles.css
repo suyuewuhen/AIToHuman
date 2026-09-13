@@ -352,3 +352,6 @@ h1 em { color: var(--acid); font-style: normal; }
 .draft-edit-field textarea { resize: vertical; }
 .draft-edit .cancel-error { color: #9a321f; font-size: 11px; }
 .draft-edit-notice { color: #4b6b4b; font-size: 11px; }
+
+/* 报名行里的服务者信用：选人前要看得到分数与样本量 */
+.application-credit { color: #8a6100 !important; }

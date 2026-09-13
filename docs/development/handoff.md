@@ -33,7 +33,7 @@ AI 多轮澄清（每轮一个问题）
 
 ## 2. 当前工作区状态
 
-工作区状态：`main` 与 `origin/main` 同步（草稿字段编辑已推送）；本轮的「真实 PostgreSQL 回归测试基建」随本轮提交一起进入 `main`（`git log -1` 可见）。上一版交接文档描述的“多轮 AI 未提交实现”已经全部提交，本文不再区分“基线 / 未提交”两种状态。
+工作区状态：`main` 与 `origin/main` 同步；本轮的「报名列表内联服务者信用」随本轮提交一起进入 `main`（`git log -1` 可见）。上一版交接文档描述的“多轮 AI 未提交实现”已经全部提交，本文不再区分“基线 / 未提交”两种状态。
 
 从上一版基线 `f196850` 到当前 `e45da76` 的主要变化：
 
@@ -105,7 +105,7 @@ docs/                             ai-planning、api/api-guidelines、architectur
 - 大厅列表按截止时间升序游标分页（`items`/`nextCursor`/`hasMore`），支持按区域、悬赏区间筛选；非法区间或非法游标返回 `400` 与可读原因。
 - 公开详情只对已发布及之后的状态开放；`ReadyToPublish` 草稿仅所有者可见，其他人（含匿名）一律 `404`，避免草稿内容泄露。
 - 精确执行地址属于订单参与者层信息：所有者始终可读，被选中的服务者在订单成立后可读，已报名但未被选中的服务者与其他人返回 `403`；大厅与公开详情只暴露 `hasExecutionAddress` 布尔值，永远不含地址本身。
-- 需求方在选人前能看到服务者的公开评价摘要：报名列表本身只返回 `workerId`/备注/状态/提交时间，服务者信用要通过 `GET /api/v1/users/{workerId}/review-summary` 单独查；报名接口**不**内联评价摘要，这是当前已知的接口缺口（见第 12 节后续跟进）。
+- 需求方在选人前能看到服务者的公开评价摘要：报名列表（`GET /api/v1/tasks/{id}/applications`，仅所有者）每条报名都带 `workerAverageRating` 与 `workerReviewCount`，**只统计已公开的评价**（同一订单双方都提交，或订单完成满 7 天），盲期内的评价不计入；口径与 `GET /api/v1/users/{id}/review-summary` 完全一致（服务层用同一个 `PublicCredit` 计算）。没有公开评价的服务者显示 0 分 / 0 条，页面写“暂无公开评价”而不是伪造分数；每个报名只看自己那个 workerId，不会串号。
 
 ### 风险规则与人工复核
 
@@ -414,7 +414,7 @@ netstat -ano | Select-String ':5188|:5173'
 | POST | `/api/v1/tasks/{id}/publish` | 所有者发布 |
 | POST | `/api/v1/tasks/{id}/increase-reward` | 分配前加价 |
 | POST | `/api/v1/tasks/{id}/applications` | worker 报名 |
-| GET | `/api/v1/tasks/{id}/applications?ownerId=...` | 所有者查看报名 |
+| GET | `/api/v1/tasks/{id}/applications?ownerId=...` | 所有者查看报名，每条带该服务者的公开评价摘要（`workerAverageRating` / `workerReviewCount`，盲期不计入） |
 | POST | `/api/v1/tasks/{id}/applications/{applicationId}/select` | 选人并创建订单 |
 | GET | `/api/v1/tasks/{id}/order` | 当前实现的订单查询入口，需参与者身份 |
 | GET | `/api/v1/orders?userId=...` | 当前用户订单列表，含各订单会话未读数 |
@@ -684,6 +684,13 @@ npm run build
 - CI：`.github/workflows/ci.yml` 的 backend job 增加 `postgres:16` 服务（带 healthcheck）并把 `AITOHUMAN_TEST_POSTGRES` 注入 `dotnet test`，因此这组用例在流水线里是真跑的；frontend job 补上 `npm run typecheck`。
 - 顺带说明：这组用例第一次跑就抓到了我自己测试代码里的一个错误假设（12 个服务者报名后不应只存在一条 `Pending` 报名），也算验证了它确实在跑真库。
 
+本轮（报名列表内联服务者信用）新增验证：
+
+- 编译与测试：`dotnet build AIToHuman.sln --no-restore` 0 警告 0 错误；领域 233 + 集成 **272** = **505** 个用例全通过；前端 `npm run typecheck` 与 `npm run build` 通过（215.07 kB）。
+- 新增 5 个集成用例（`WorkerCreditInApplicationsTests`）：带公开评价时列表显示均分与样本量；仍在盲期的评价不计入；没有公开评价时是 0 分 / 0 条而不是编造分数；同一任务的多个报名各带自己的信用（不串号）；报名列表与 `GET /users/{id}/review-summary` 口径一致。
+- 真实 PostgreSQL + 真实 HTTP 端到端：服务者完成第一单且双方互评（立即公开，需求方给 5 分），第二单只有需求方单方评 1 分（仍在盲期）；随后需求方在自己的任务报名列表里读到 `评分=5 条数=1`——盲期那条 1 分没有计入，且与 `GET /api/v1/users/{id}/review-summary` 返回的 `5 / 1` 完全一致；服务者身份读别人的报名列表返回 `403`；另一名新服务者的报名显示 `0 / 0`，没有串到别人的分数。
+- 实现要点：只用既有的 `IReviewRepository`，**没有改 `TaskService` 构造函数**（避免波及既有测试）；列表按 distinct workerId 批量取信用，不是每条报名各查一次。
+
 ## 12. 完成状态与后续顺序
 
 ### P0
@@ -764,6 +771,12 @@ npm run build
 - 8 个真库用例：见第 11 节本轮条目。重点是把“内存替身测不出来”的缺陷类型固定在回归里：并发写入与乐观并发令牌、EF 变更跟踪（`Save` 是否真的写了所有列）、迁移与真实 SQL 语义。
 - CI 接线：backend job 起 `postgres:16` 服务并注入 `AITOHUMAN_TEST_POSTGRES`；frontend job 补 `npm run typecheck`。
 
+本轮追加（报名列表内联服务者信用）：
+
+- 契约：`TaskApplicationResponse` 补 `WorkerAverageRating`（默认 0）与 `WorkerReviewCount`（默认 0）。
+- 服务层：`TaskService.PublicCredit(userId)` 把“哪些评价算公开”的判定收敛成一处，`GetReviewSummary` 与报名列表共用，避免两处口径漂移；`LoadWorkerCredit` 按 distinct workerId 批量取，`MapApplication` 接收摘要映射。
+- 前端：`api/tasks.ts` 的 `TaskApplication` 补两个字段；“查看报名”每条显示“公开评价 X.X 分 · N 条”，没有公开评价时说明公开条件（双方都提交或完成满 7 天）。
+
 ### 后续跟进（原 P1 的延伸项）
 
 - 对象存储的短时签名 URL 已实现（见第 3、11 节）；如果以后要让前端完全绕开后端，需要补 CORS 配置与审计补偿。
@@ -828,6 +841,7 @@ npm run build
 - [ ] 编辑一条草稿（改标题、悬赏、验收标准与截止时间后保存）：`GET /api/v1/tasks/{id}` 返回的字段应与提交一致，随后能发布；编辑已发布的任务应返回 `422`。
 - [ ] 用敏感草稿验证防绕过：先由运营放行 → 再编辑草稿 → 复核状态应回到“待复核”、复核人与依据清空、重新出现在“风险复核”队列、发布被 `422` 拦住；再次放行后可以发布。
 - [ ] 跑一次 `dotnet test AIToHuman.sln --no-build --no-restore`：确认 `PostgresRegressionTests` 是**通过**而不是**跳过**（跳过说明本机没连上测试库，见第 7 节“真实数据库回归测试”）；再把 `AITOHUMAN_TEST_POSTGRES` 指向不可达端口确认它们变成跳过而不是失败。
+- [ ] 用两个账号跑一遍双向信用：服务者完成一单且双方互评后，需求方在自己的任务“查看报名”里应看到该服务者的公开评分与条数，且与 `GET /api/v1/users/{id}/review-summary` 一致；只有单方评价（盲期内）时列表里应为 0 分 / 0 条。
 - [ ] 新功能先补 Contract、领域规则和测试，再扩展页面。
 
 ## 14. 相关文档
