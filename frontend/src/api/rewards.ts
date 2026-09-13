@@ -1,3 +1,5 @@
+import { apiFetch } from './base'
+
 export interface RewardSuggestion {
   suggestedReward: number
   minimumReward: number
@@ -8,7 +10,7 @@ export interface RewardSuggestion {
 }
 
 export async function requestRewardSuggestion(): Promise<RewardSuggestion> {
-  const response = await fetch('/api/v1/reward-suggestions', {
+  const response = await apiFetch('/api/v1/reward-suggestions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({

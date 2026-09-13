@@ -1,3 +1,4 @@
+import { apiFetch } from './base'
 import { getAccessToken } from './auth'
 
 /** 运营后台的任务摘要（跨所有者）。 */
@@ -149,12 +150,12 @@ export async function searchAdminTasks(keyword: string, status: string, limit = 
   const query = new URLSearchParams({ limit: String(limit) })
   if (keyword.trim()) query.set('keyword', keyword.trim())
   if (status.trim()) query.set('status', status.trim())
-  return parseResponse<AdminTaskList>(await fetch(`/api/v1/admin/tasks?${query.toString()}`, { headers: authHeaders() }))
+  return parseResponse<AdminTaskList>(await apiFetch(`/api/v1/admin/tasks?${query.toString()}`, { headers: authHeaders() }))
 }
 
 /** 人工下架：必须给原因，原因会写进运营审计；已产生订单的任务会被服务端拒绝（422）。 */
 export async function cancelAdminTask(taskId: string, reason: string): Promise<AdminTaskItem> {
-  return parseResponse<AdminTaskItem>(await fetch(`/api/v1/admin/tasks/${taskId}/cancel`, {
+  return parseResponse<AdminTaskItem>(await apiFetch(`/api/v1/admin/tasks/${taskId}/cancel`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify({ reason }),
@@ -164,12 +165,12 @@ export async function cancelAdminTask(taskId: string, reason: string): Promise<A
 export async function searchAdminUsers(keyword: string, limit = 20): Promise<{ items: AdminUserItem[]; limit: number }> {
   const query = new URLSearchParams({ limit: String(limit) })
   if (keyword.trim()) query.set('keyword', keyword.trim())
-  return parseResponse<{ items: AdminUserItem[]; limit: number }>(await fetch(`/api/v1/admin/users?${query.toString()}`, { headers: authHeaders() }))
+  return parseResponse<{ items: AdminUserItem[]; limit: number }>(await apiFetch(`/api/v1/admin/users?${query.toString()}`, { headers: authHeaders() }))
 }
 
 /** 运营操作审计（人工下架等），按时间倒序。 */
 export async function listAdminAudits(limit = 20): Promise<AdminAuditItem[]> {
-  return parseResponse<AdminAuditItem[]>(await fetch(`/api/v1/admin/audits?limit=${limit}`, { headers: authHeaders() }))
+  return parseResponse<AdminAuditItem[]>(await apiFetch(`/api/v1/admin/audits?limit=${limit}`, { headers: authHeaders() }))
 }
 
 export function adminTaskStatusLabel(status: string): string {
@@ -214,12 +215,12 @@ export function disputeResolutionLabel(resolution: string): string {
 export async function listDisputedOrders(status = '', limit = 20): Promise<AdminOrderList> {
   const query = new URLSearchParams({ limit: String(limit) })
   if (status.trim()) query.set('status', status.trim())
-  return parseResponse<AdminOrderList>(await fetch(`/api/v1/admin/orders?${query.toString()}`, { headers: authHeaders() }))
+  return parseResponse<AdminOrderList>(await apiFetch(`/api/v1/admin/orders?${query.toString()}`, { headers: authHeaders() }))
 }
 
 /** 处置争议：三选一 + 必填依据（依据会写进运营审计，并通知订单双方）。 */
 export async function resolveDispute(orderId: string, decision: DisputeDecision, note: string): Promise<AdminOrderItem> {
-  return parseResponse<AdminOrderItem>(await fetch(`/api/v1/admin/orders/${orderId}/resolve`, {
+  return parseResponse<AdminOrderItem>(await apiFetch(`/api/v1/admin/orders/${orderId}/resolve`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify({ decision, note }),
@@ -228,7 +229,7 @@ export async function resolveDispute(orderId: string, decision: DisputeDecision,
 
 /** 风险复核队列：等人工处置的任务，按创建时间升序（先来先处理）。 */
 export async function listRiskReviews(limit = 20): Promise<AdminRiskReviewList> {
-  return parseResponse<AdminRiskReviewList>(await fetch(`/api/v1/admin/risk/reviews?limit=${limit}`, { headers: authHeaders() }))
+  return parseResponse<AdminRiskReviewList>(await apiFetch(`/api/v1/admin/risk/reviews?limit=${limit}`, { headers: authHeaders() }))
 }
 
 /**
@@ -267,12 +268,12 @@ export type RiskAppealDecision = 'Accept' | 'Deny'
 
 /** 待处置的申诉队列，按提交时间升序。 */
 export async function listRiskAppeals(limit = 20): Promise<AdminRiskAppealList> {
-  return parseResponse<AdminRiskAppealList>(await fetch(`/api/v1/admin/risk/appeals?limit=${limit}`, { headers: authHeaders() }))
+  return parseResponse<AdminRiskAppealList>(await apiFetch(`/api/v1/admin/risk/appeals?limit=${limit}`, { headers: authHeaders() }))
 }
 
 /** 处置申诉：依据必填（写进运营审计），并通知任务所有者。 */
 export async function decideRiskAppeal(taskId: string, decision: RiskAppealDecision, note: string): Promise<AdminRiskAppealItem> {
-  return parseResponse<AdminRiskAppealItem>(await fetch(`/api/v1/admin/risk/appeals/${taskId}/decide`, {
+  return parseResponse<AdminRiskAppealItem>(await apiFetch(`/api/v1/admin/risk/appeals/${taskId}/decide`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify({ decision, note }),
@@ -291,7 +292,7 @@ export function riskAppealStatusLabel(status: string): string {
 
 /** 处置风险复核：放行或驳回 + 必填依据（依据写进运营审计，并通知任务所有者）。 */
 export async function decideRiskReview(taskId: string, decision: RiskReviewDecision, note: string): Promise<AdminRiskReviewItem> {
-  return parseResponse<AdminRiskReviewItem>(await fetch(`/api/v1/admin/risk/reviews/${taskId}/decide`, {
+  return parseResponse<AdminRiskReviewItem>(await apiFetch(`/api/v1/admin/risk/reviews/${taskId}/decide`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify({ decision, note }),
@@ -300,7 +301,7 @@ export async function decideRiskReview(taskId: string, decision: RiskReviewDecis
 
 /** 规则目录：现在按什么规则拦、哪一版；只给匹配词数量，不给匹配词本身。 */
 export async function getRiskRules(): Promise<RiskRuleCatalog> {
-  return parseResponse<RiskRuleCatalog>(await fetch('/api/v1/admin/risk/rules', { headers: authHeaders() }))
+  return parseResponse<RiskRuleCatalog>(await apiFetch('/api/v1/admin/risk/rules', { headers: authHeaders() }))
 }
 
 /** 规则明细里的一条：连匹配词一起给出（只有运营能读这个接口）。 */
@@ -356,17 +357,17 @@ export interface UpdateRiskRuleCatalogInput {
 }
 
 export async function getRiskRuleDetail(): Promise<RiskRuleCatalogDetail> {
-  return parseResponse<RiskRuleCatalogDetail>(await fetch('/api/v1/admin/risk/rules/detail', { headers: authHeaders() }))
+  return parseResponse<RiskRuleCatalogDetail>(await apiFetch('/api/v1/admin/risk/rules/detail', { headers: authHeaders() }))
 }
 
 export async function listRiskRuleVersions(limit = 20): Promise<{ items: RiskRuleCatalogVersion[]; limit: number }> {
   return parseResponse<{ items: RiskRuleCatalogVersion[]; limit: number }>(
-    await fetch(`/api/v1/admin/risk/rules/versions?limit=${limit}`, { headers: authHeaders() }))
+    await apiFetch(`/api/v1/admin/risk/rules/versions?limit=${limit}`, { headers: authHeaders() }))
 }
 
 /** 保存规则目录：版本号自动 +1，依据必填并写进运营审计；改动内容不合法时服务端返回可读的 422。 */
 export async function updateRiskRules(input: UpdateRiskRuleCatalogInput): Promise<RiskRuleCatalogDetail> {
-  return parseResponse<RiskRuleCatalogDetail>(await fetch('/api/v1/admin/risk/rules', {
+  return parseResponse<RiskRuleCatalogDetail>(await apiFetch('/api/v1/admin/risk/rules', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify(input),
@@ -375,7 +376,7 @@ export async function updateRiskRules(input: UpdateRiskRuleCatalogInput): Promis
 
 /** 恢复到代码内置目录：同样追加一版（版本历史不丢），依据必填并写进运营审计。 */
 export async function resetRiskRules(expectedVersion: number, reason: string): Promise<RiskRuleCatalogDetail> {
-  return parseResponse<RiskRuleCatalogDetail>(await fetch('/api/v1/admin/risk/rules/reset', {
+  return parseResponse<RiskRuleCatalogDetail>(await apiFetch('/api/v1/admin/risk/rules/reset', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify({ expectedVersion, reason }),

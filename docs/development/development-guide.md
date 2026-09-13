@@ -32,6 +32,8 @@
 
   提交后回读一次（例如 `GET /api/v1/admin/risk/rules/detail`）核对中文没有变成 `?`，再用 `curl.exe` 或 Postman 交叉验证一次；PowerShell 7 也建议显式写 `charset=utf-8`，不要依赖默认编码。
 - 数据库结构只通过 EF Core Migration 演进。
+- **前端不要自己拼 API 地址**：所有请求走 `frontend/src/api/base.ts` 的 `apiFetch()`（SignalR 用 `hubUrl()`），两个入口之间的跳转用 `APP_HOME_URL` / `OPS_HOME_URL`。默认是相对路径（同源 + 反向代理），跨域部署时才由构建期变量给出绝对地址：`VITE_API_BASE_URL`、`VITE_HUB_BASE_URL`、`VITE_APP_HOME_URL`、`VITE_OPS_HOME_URL`（声明在 `frontend/env.d.ts`）。
+- 跨源部署必须让后端放行来源：`Cors__AllowedOrigins=https://ops.example.com,https://app.example.com`（也接受数组写法）。策略里**必须保留 `AllowCredentials()`**：SignalR 协商默认带 credentials，漏掉它会出现“接口都正常、只有通知订阅报 CORS 错误”。想本地复现跨域，最简单的方式是 `npm run build` 后用 `npm run preview`（4173）当静态源、API 仍在本机 5188，再把 `http://localhost:4173` 填进 `Cors__AllowedOrigins`。
 - 早期 `EnsureCreated()` 生成的本地开发库没有迁移历史；Development 启动时会检测并按情况处理：表与当前模型一致时把已有迁移整体标记为已应用（打警告日志），表不齐时直接报错并提示重建，避免在错误的 schema 上运行。
 - 示例数据必须为合成数据。
 - 一条命令应能启动依赖，一条命令应能执行全部必要检查；真实外部依赖（PostgreSQL、Redis、S3 兼容存储）的回归用例在对应依赖不可用时都会自动跳过，不会挡住本地或 CI 的其余检查。

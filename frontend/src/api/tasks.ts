@@ -1,3 +1,5 @@
+import { apiFetch } from './base'
+
 export interface TaskApplication {
   id: string
   workerId: string
@@ -67,7 +69,7 @@ export interface TaskItem {
  * 注意申诉成立也**不会**让禁止类别的任务变成可发布——那是平台红线。
  */
 export async function openRiskAppeal(taskId: string, ownerId: string, reason: string): Promise<TaskItem> {
-  return parseResponse<TaskItem>(await fetch(`/api/v1/tasks/${taskId}/risk-appeals`, {
+  return parseResponse<TaskItem>(await apiFetch(`/api/v1/tasks/${taskId}/risk-appeals`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify({ ownerId, reason }),
@@ -187,22 +189,22 @@ export async function listPublishedTasks(query: TaskListQuery = {}): Promise<Tas
   if (query.maxReward !== undefined) params.set('maxReward', String(query.maxReward))
   params.set('limit', String(query.limit ?? 12))
   if (query.cursor) params.set('cursor', query.cursor)
-  return parseResponse<TaskListPage>(await fetch(`/api/v1/tasks?${params.toString()}`, { headers: authHeaders() }))
+  return parseResponse<TaskListPage>(await apiFetch(`/api/v1/tasks?${params.toString()}`, { headers: authHeaders() }))
 }
 
 /** 精确执行地址：只有所有者与被选中的服务者能读到值。 */
 export async function getExecutionAddress(taskId: string, userId: string): Promise<{ taskId: string; executionAddress: string | null }> {
   return parseResponse<{ taskId: string; executionAddress: string | null }>(
-    await fetch(`/api/v1/tasks/${taskId}/execution-address?userId=${encodeURIComponent(userId)}`, { headers: authHeaders() }),
+    await apiFetch(`/api/v1/tasks/${taskId}/execution-address?userId=${encodeURIComponent(userId)}`, { headers: authHeaders() }),
   )
 }
 
 export async function listMyTasks(ownerId: string): Promise<TaskItem[]> {
-  return parseResponse<TaskItem[]>(await fetch(`/api/v1/tasks/mine?ownerId=${encodeURIComponent(ownerId)}`, { headers: authHeaders() }))
+  return parseResponse<TaskItem[]>(await apiFetch(`/api/v1/tasks/mine?ownerId=${encodeURIComponent(ownerId)}`, { headers: authHeaders() }))
 }
 
 export async function createTask(input: CreateTaskInput): Promise<TaskItem> {
-  return parseResponse<TaskItem>(await fetch('/api/v1/tasks', {
+  return parseResponse<TaskItem>(await apiFetch('/api/v1/tasks', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify(input),
@@ -210,7 +212,7 @@ export async function createTask(input: CreateTaskInput): Promise<TaskItem> {
 }
 
 export async function publishTask(taskId: string, ownerId: string): Promise<TaskItem> {
-  return parseResponse<TaskItem>(await fetch(`/api/v1/tasks/${taskId}/publish?ownerId=${encodeURIComponent(ownerId)}`, {
+  return parseResponse<TaskItem>(await apiFetch(`/api/v1/tasks/${taskId}/publish?ownerId=${encodeURIComponent(ownerId)}`, {
     method: 'POST',
     headers: authHeaders(),
   }))
@@ -252,7 +254,7 @@ export interface TaskDraftFieldChange {
 /** 草稿历史（仅所有者可读）。 */
 export async function listTaskDraftRevisions(taskId: string, ownerId: string): Promise<TaskDraftRevision[]> {
   const response = await parseResponse<{ items: TaskDraftRevision[] }>(
-    await fetch(`/api/v1/tasks/${taskId}/revisions?ownerId=${encodeURIComponent(ownerId)}`, { headers: authHeaders() }),
+    await apiFetch(`/api/v1/tasks/${taskId}/revisions?ownerId=${encodeURIComponent(ownerId)}`, { headers: authHeaders() }),
   )
   return response.items
 }
@@ -262,7 +264,7 @@ export async function listTaskDraftRevisions(taskId: string, ownerId: string): P
  * 所以中间版本不会被抹掉（返回的是回滚后的任务）。
  */
 export async function restoreTaskDraftRevision(taskId: string, revision: number, ownerId: string): Promise<TaskItem> {
-  return parseResponse<TaskItem>(await fetch(
+  return parseResponse<TaskItem>(await apiFetch(
     `/api/v1/tasks/${taskId}/revisions/${revision}/restore?ownerId=${encodeURIComponent(ownerId)}`,
     { method: 'POST', headers: authHeaders() },
   ))
@@ -274,7 +276,7 @@ export async function restoreTaskDraftRevision(taskId: string, revision: number,
  * `riskReviewStatus` 可能从 Approved 变回 Pending——页面要按返回值刷新提示。
  */
 export async function updateTaskDraft(taskId: string, input: CreateTaskInput): Promise<TaskItem> {
-  return parseResponse<TaskItem>(await fetch(`/api/v1/tasks/${taskId}`, {
+  return parseResponse<TaskItem>(await apiFetch(`/api/v1/tasks/${taskId}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify(input),
@@ -282,7 +284,7 @@ export async function updateTaskDraft(taskId: string, input: CreateTaskInput): P
 }
 
 export async function increaseTaskReward(taskId: string, ownerId: string, reward: number): Promise<TaskItem> {
-  return parseResponse<TaskItem>(await fetch(`/api/v1/tasks/${taskId}/increase-reward?ownerId=${encodeURIComponent(ownerId)}`, {
+  return parseResponse<TaskItem>(await apiFetch(`/api/v1/tasks/${taskId}/increase-reward?ownerId=${encodeURIComponent(ownerId)}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify({ reward }),
@@ -290,7 +292,7 @@ export async function increaseTaskReward(taskId: string, ownerId: string, reward
 }
 
 export async function cancelTask(taskId: string, ownerId: string, reason: string): Promise<TaskItem> {
-  return parseResponse<TaskItem>(await fetch(`/api/v1/tasks/${taskId}/cancel`, {
+  return parseResponse<TaskItem>(await apiFetch(`/api/v1/tasks/${taskId}/cancel`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify({ ownerId, reason }),
@@ -298,10 +300,10 @@ export async function cancelTask(taskId: string, ownerId: string, reason: string
 }
 
 export async function listMyOrders(userId: string): Promise<OrderItem[]> {
-  return parseResponse<OrderItem[]>(await fetch(`/api/v1/orders?userId=${encodeURIComponent(userId)}`, { headers: authHeaders() }))
+  return parseResponse<OrderItem[]>(await apiFetch(`/api/v1/orders?userId=${encodeURIComponent(userId)}`, { headers: authHeaders() }))
 }
 async function orderAction(orderId: string, action: 'start' | 'submit' | 'approve' | 'reject' | 'resume' | 'cancel' | 'dispute', actorId: string, note?: string): Promise<OrderItem> {
-  return parseResponse<OrderItem>(await fetch(`/api/v1/orders/${orderId}/${action}`, {
+  return parseResponse<OrderItem>(await apiFetch(`/api/v1/orders/${orderId}/${action}`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ actorId, note }),
   }))
 }
@@ -321,21 +323,21 @@ export const cancelOrder = (orderId: string, actorId: string, reason: string) =>
 export const openDispute = (orderId: string, actorId: string, reason: string) => orderAction(orderId, 'dispute', actorId, reason)
 
 export async function listOrderReviews(orderId: string): Promise<ReviewItem[]> {
-  return parseResponse<ReviewItem[]>(await fetch(`/api/v1/orders/${orderId}/reviews`, { headers: authHeaders() }))
+  return parseResponse<ReviewItem[]>(await apiFetch(`/api/v1/orders/${orderId}/reviews`, { headers: authHeaders() }))
 }
 
 export async function createOrderReview(orderId: string, reviewerId: string, rating: number, comment: string): Promise<ReviewItem> {
-  return parseResponse<ReviewItem>(await fetch(`/api/v1/orders/${orderId}/reviews`, {
+  return parseResponse<ReviewItem>(await apiFetch(`/api/v1/orders/${orderId}/reviews`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ reviewerId, rating, comment }),
   }))
 }
 
 export async function getReviewSummary(userId: string): Promise<ReviewSummary> {
-  return parseResponse<ReviewSummary>(await fetch(`/api/v1/users/${userId}/review-summary`, { headers: authHeaders() }))
+  return parseResponse<ReviewSummary>(await apiFetch(`/api/v1/users/${userId}/review-summary`, { headers: authHeaders() }))
 }
 
 export async function applyForTask(taskId: string, workerId: string, note: string): Promise<TaskItem> {
-  return parseResponse<TaskItem>(await fetch(`/api/v1/tasks/${taskId}/applications`, {
+  return parseResponse<TaskItem>(await apiFetch(`/api/v1/tasks/${taskId}/applications`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify({ workerId, note }),
@@ -343,19 +345,19 @@ export async function applyForTask(taskId: string, workerId: string, note: strin
 }
 
 export async function listTaskApplications(taskId: string, ownerId: string): Promise<TaskApplication[]> {
-  return parseResponse<TaskApplication[]>(await fetch(`/api/v1/tasks/${taskId}/applications?ownerId=${encodeURIComponent(ownerId)}`, { headers: authHeaders() }))
+  return parseResponse<TaskApplication[]>(await apiFetch(`/api/v1/tasks/${taskId}/applications?ownerId=${encodeURIComponent(ownerId)}`, { headers: authHeaders() }))
 }
 
 /** 服务者视角的“我的报名”，含是否还能撤回（服务端判定）。 */
 export async function listMyApplications(workerId: string, limit = 20): Promise<MyApplicationItem[]> {
   const params = new URLSearchParams({ workerId, limit: String(limit) })
-  const result = await parseResponse<{ items: MyApplicationItem[] }>(await fetch(`/api/v1/tasks/applications/mine?${params.toString()}`, { headers: authHeaders() }))
+  const result = await parseResponse<{ items: MyApplicationItem[] }>(await apiFetch(`/api/v1/tasks/applications/mine?${params.toString()}`, { headers: authHeaders() }))
   return result.items
 }
 
 /** 撤回报名：只能在报名还处于待处理、且任务尚未选中别人时撤回；撤回后可以重新报名。 */
 export async function withdrawApplication(taskId: string, applicationId: string, workerId: string): Promise<TaskItem> {
-  return parseResponse<TaskItem>(await fetch(`/api/v1/tasks/${taskId}/applications/${applicationId}/withdraw`, {
+  return parseResponse<TaskItem>(await apiFetch(`/api/v1/tasks/${taskId}/applications/${applicationId}/withdraw`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify({ workerId }),
@@ -363,7 +365,7 @@ export async function withdrawApplication(taskId: string, applicationId: string,
 }
 
 export async function selectTaskApplication(taskId: string, applicationId: string, ownerId: string): Promise<SelectTaskResult> {
-  return parseResponse<SelectTaskResult>(await fetch(`/api/v1/tasks/${taskId}/applications/${applicationId}/select`, {
+  return parseResponse<SelectTaskResult>(await apiFetch(`/api/v1/tasks/${taskId}/applications/${applicationId}/select`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify({ ownerId }),

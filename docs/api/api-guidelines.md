@@ -179,6 +179,8 @@ GET /api/v1/tasks?category=pickup&district=chaoyang&limit=20&cursor=...
 
 具体 Token 存储方式在身份方案实现前通过安全评审确定。
 
+**跨域（CORS）**：默认部署下前端与 API 同源，浏览器只发相对路径请求，不需要 CORS。把运营后台或整个前端放到别的域名/子域时，允许来源由部署配置给出：`Cors__AllowedOrigins=https://ops.example.com,https://app.example.com`（逗号/分号/空格分隔，也接受 `Cors__AllowedOrigins__0=` 数组写法；未配置时只放行本机 `http://localhost:5173` 与 `http://127.0.0.1:5173`）。策略是「列出明确来源 + 允许任意请求头/方法 + `AllowCredentials`」：最后一项是必需的，因为 SignalR 的 JS 客户端协商时默认带 credentials，缺它会出现“接口都正常、只有通知订阅被预检拦掉”。接口认证走 `Authorization: Bearer`（不用 Cookie），来源又是白名单，因此这不额外扩大跨站请求面。
+
 ## 7. 幂等与并发
 
 - 创建任务、提高悬赏、提交报名、选择报名者、提交评价、状态转换和未来支付接口支持 `Idempotency-Key`（已实现，细则见本节末尾）。

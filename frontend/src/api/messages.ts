@@ -1,3 +1,4 @@
+import { apiFetch } from './base'
 import { getAccessToken } from './auth'
 
 export interface OrderMessage {
@@ -26,11 +27,11 @@ function authHeaders(): HeadersInit {
 }
 
 export async function listOrderMessages(orderId: string, userId: string, limit = 50): Promise<OrderMessageList> {
-  return parseResponse<OrderMessageList>(await fetch(`/api/v1/orders/${orderId}/messages?userId=${encodeURIComponent(userId)}&limit=${limit}`, { headers: authHeaders() }))
+  return parseResponse<OrderMessageList>(await apiFetch(`/api/v1/orders/${orderId}/messages?userId=${encodeURIComponent(userId)}&limit=${limit}`, { headers: authHeaders() }))
 }
 
 export async function sendOrderMessage(orderId: string, senderId: string, content: string): Promise<OrderMessage> {
-  return parseResponse<OrderMessage>(await fetch(`/api/v1/orders/${orderId}/messages`, {
+  return parseResponse<OrderMessage>(await apiFetch(`/api/v1/orders/${orderId}/messages`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify({ senderId, content }),
@@ -39,7 +40,7 @@ export async function sendOrderMessage(orderId: string, senderId: string, conten
 
 /** 标记该订单会话里对方发来的消息为已读，返回最新未读数。 */
 export async function markOrderMessagesRead(orderId: string, userId: string): Promise<number> {
-  const result = await parseResponse<{ unreadCount: number }>(await fetch(`/api/v1/orders/${orderId}/messages/read?userId=${encodeURIComponent(userId)}`, {
+  const result = await parseResponse<{ unreadCount: number }>(await apiFetch(`/api/v1/orders/${orderId}/messages/read?userId=${encodeURIComponent(userId)}`, {
     method: 'POST',
     headers: authHeaders(),
   }))

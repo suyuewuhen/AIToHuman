@@ -187,10 +187,25 @@ builder.Services.AddSingleton(adminAccess);
 builder.Services.AddAuthorization(options => options.AddPolicy(
     AdminAccess.PolicyName,
     policy => policy.RequireAssertion(context => adminAccess.IsAdmin(context.User))));
-builder.Services.AddCors(options => options.AddPolicy("development", policy => policy
-    .WithOrigins("http://localhost:5173")
+// 前端与 API 不同源时（例如运营后台挂在 ops.example.com、API 在 api.example.com），浏览器会先发 CORS 预检，
+// 必须在部署配置里显式列出允许的来源：
+//   Cors__AllowedOrigins=https://ops.example.com,https://app.example.com
+// （逗号/分号/空格分隔，也接受 Cors__AllowedOrigins__0=... 的数组写法。）
+// 没有配置时只放行本机开发地址（Vite 开发服务器 5173），因为默认部署是同源 + 反向代理，根本不需要 CORS。
+//
+// 为什么还要 AllowCredentials：SignalR 的 JS 客户端协商时默认带 credentials（mode: 'include'），
+// 浏览器要求此时响应里必须有 Access-Control-Allow-Credentials: true，否则订阅会被预检直接拦掉
+// （实测：跨域但不带这一项时，页面功能都正常，只有通知订阅在控制台报 CORS 错误）。
+// 它要求来源必须是明确列出的（不能用 *），也正是我们这里的写法；接口认证走 Bearer 令牌、不用 Cookie，
+// 所以放开凭据不会多给已经不在名单里的站点任何权限。
+const string FrontendCorsPolicy = "frontend";
+var allowedOrigins = ReadList(builder.Configuration, "Cors:AllowedOrigins",
+    ["http://localhost:5173", "http://127.0.0.1:5173"]);
+builder.Services.AddCors(options => options.AddPolicy(FrontendCorsPolicy, policy => policy
+    .WithOrigins(allowedOrigins)
     .AllowAnyHeader()
-    .AllowAnyMethod()));
+    .AllowAnyMethod()
+    .AllowCredentials()));
 
 var app = builder.Build();
 
@@ -254,7 +269,8 @@ app.UseExceptionHandler(errorApp => errorApp.Run(async context =>
     });
 }));
 
-if (app.Environment.IsDevelopment()) app.UseCors("development");
+// 跨域部署时前端会在预检与正式请求上带 Origin，所以这个中间件在所有环境都要挂上（同源请求不受影响）。
+app.UseCors(FrontendCorsPolicy);
 app.UseAuthentication();
 app.UseAuthorization();
 // 写接口的幂等键：带 Idempotency-Key 的请求会回放上次的响应，避免重试把动作做两遍。
@@ -607,9 +623,31 @@ adminConsole.MapPost("/risk/appeals/{taskId:guid}/decide", (Guid taskId, AdminRi
 
 app.Run();
 
+/// <summary>
+/// 读一组字符串配置：既支持 <c>Key=a,b</c> 的标量写法，也支持 <c>Key__0=a</c> 的数组写法。
+/// 标量优先——环境变量比 appsettings 优先级高，但它们在配置系统里是同一个键，
+/// 先看数组子项会让 appsettings 里的数组把环境变量的覆盖悄悄吃掉（AdminAccess 里也是同一套处理）。
+/// </summary>
+static string[] ReadList(IConfiguration configuration, string key, string[] fallback)
+{
+    var single = configuration[key];
+    if (!string.IsNullOrWhiteSpace(single))
+    {
+        var values = single.Split([',', ';', ' '], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (values.Length > 0) return values;
+    }
+
+    var children = configuration.GetSection(key).GetChildren()
+        .Select(child => child.Value)
+        .Where(value => !string.IsNullOrWhiteSpace(value))
+        .Select(value => value!)
+        .ToArray();
+
+    return children.Length > 0 ? children : fallback;
+}
+
 /// <summary>运营接口的操作人：管理员策略已经放行，这里取出用于审计的用户标识。</summary>
-static Guid ResolveAdminId(ClaimsPrincipal user) =>
-    Guid.TryParse(user.FindFirstValue(ClaimTypes.NameIdentifier), out var userId)
+static Guid ResolveAdminId(ClaimsPrincipal user) =>    Guid.TryParse(user.FindFirstValue(ClaimTypes.NameIdentifier), out var userId)
         ? userId
         : throw new UnauthorizedAccessException("运营接口必须携带可识别的管理员身份。");
 

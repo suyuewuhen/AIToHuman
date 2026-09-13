@@ -6,7 +6,7 @@
 
 当前分支：`main`
 
-最新已提交基线：本轮之前 `main` 与 `origin/main` 同步在 `3e43d7b`（运营后台可编辑风险规则目录）；本轮「运营后台独立成页」是紧随其后的一个提交，并已推送保持两边一致（见第 2 节）。
+最新已提交基线：本轮之前 `main` 与 `origin/main` 同步在 `5effb4b`（运营后台独立成页及其文档计数修正）；本轮「运营后台跨域/子路径部署」是紧随其后的一个提交，并已推送保持两边一致（见第 2 节）。
 
 本文面向接手开发、代码评审和本地联调人员。内容以已提交代码为准；上一版文档里“已提交基线 / 当前未提交实现”的双轨描述已经过时——所有多轮 AI、通知、会话与凭证实现都已提交。文中每条“已实现 / 未实现”的结论都对应第 11 节可复现的验证步骤。
 
@@ -33,7 +33,7 @@ AI 多轮澄清（每轮一个问题）
 
 ## 2. 当前工作区状态
 
-工作区状态：`main` 与 `origin/main` 同步；本轮的「运营后台独立成页」随本轮提交一起进入 `main` 并推送（`git log -1` 可见）。上一版交接文档描述的“多轮 AI 未提交实现”已经全部提交，本文不再区分“基线 / 未提交”两种状态。
+工作区状态：`main` 与 `origin/main` 同步；本轮的「运营后台跨域/子路径部署」随本轮提交一起进入 `main` 并推送（`git log -1` 可见）。上一版交接文档描述的“多轮 AI 未提交实现”已经全部提交，本文不再区分“基线 / 未提交”两种状态。
 
 从基线 `f196850` 到 `e45da76`（多轮 AI 与会话持久化那一轮）的主要变化：
 
@@ -405,6 +405,32 @@ npm run dev
 访问 <http://localhost:5173>（主应用：对话工作台、任务大厅、订单）。**运营后台是同一套前端里的独立页面**：<http://localhost:5173/ops.html>；也可以从主应用顶栏的“运营后台 ↗”进入（只对管理员显示）。Vite 将 `/api`、`/health` 和 `/hubs` 代理到 `http://127.0.0.1:5188`，两个页面共用这个代理。必须先启动后端，否则会出现 `ECONNREFUSED 127.0.0.1:5188`，AI、登录、任务和 SignalR 都不可用。
 
 `npm run build` 会同时产出两个入口：`dist/index.html` 与 `dist/ops.html`（外加共享的分包），所以静态托管时两个文件都要部署；运营后台不依赖主应用，单独打开也能用。
+
+### 把运营后台放到自己的域名或子路径
+
+默认部署是**同源**：前端与 API 在同一个域名下，`/api`、`/hubs` 由反向代理转发到后端，前端不需要任何配置（所有请求都走相对路径）。要拆开时按下面的方式做。
+
+两种放法（构建产物相同，区别只在托管与配置）：
+
+| 放法 | 访问地址 | 构建时的变量 | 后端要放行的来源 |
+| --- | --- | --- | --- |
+| 子域名（推荐） | `https://ops.example.com/` | `VITE_API_BASE_URL=https://api.example.com`<br>`VITE_APP_HOME_URL=https://app.example.com/`<br>`VITE_OPS_HOME_URL=https://ops.example.com/` | `Cors__AllowedOrigins=https://ops.example.com,https://app.example.com` |
+| 子路径（同域） | `https://example.com/ops/` | 一般不需要（同源相对路径）<br>跨源时才填 `VITE_API_BASE_URL` | 同源不需要 CORS；跨源时列出前端来源 |
+
+- 变量在**构建前**通过环境变量传入，例如：`$env:VITE_API_BASE_URL='https://api.example.com'; npm run build`。全部变量与默认值见 `frontend/src/api/base.ts` 顶部与 `frontend/env.d.ts`：`VITE_API_BASE_URL`（API 基地址，留空 = 同源）、`VITE_HUB_BASE_URL`（SignalR Hub，默认跟随 API）、`VITE_APP_HOME_URL`（运营后台里“返回任务工作台”的目标）、`VITE_OPS_HOME_URL`（主应用顶栏“运营后台”的目标）。前端所有请求都经过 `apiFetch()`，不存在“漏改一处、线上 404”的散落拼接。
+- 跨源时后端必须放行来源，否则浏览器在预检阶段就拦掉请求：`Cors__AllowedOrigins`（逗号/分号/空格分隔，也接受 `Cors__AllowedOrigins__0=` 数组写法，规则见 `Program.cs` 里的 `ReadList`）。策略同时开了 `AllowCredentials`：SignalR 的 JS 客户端协商默认带 credentials，不开这一项会出现“页面功能都正常、只有通知订阅在控制台报 CORS 错误”。接口认证走 Bearer 令牌、不用 Cookie，来源又是明确列出的，所以这不构成额外的跨站请求伪造面。
+- 子路径托管只要让 `/ops/` 指向 `ops.html` 即可：构建产物里的资源地址是根路径绝对的（`/assets/...`），因此 `dist` 放在根目录、再加一条改写就能用。nginx 例：
+
+```nginx
+root /srv/aitohuman/dist;
+location /ops/ { try_files $uri /ops.html; }        # 运营后台在子路径
+location / { try_files $uri /index.html; }          # 主应用（前端自带兜底，可按需换成 =404）
+location /api/ { proxy_pass http://127.0.0.1:5188; }
+location /hubs/ { proxy_pass http://127.0.0.1:5188; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection "upgrade"; }
+```
+
+- 本地也能按子路径试：`npm run dev` / `npm run preview` 已内置 `/ops` 与 `/ops/` → `/ops.html` 的改写（见 `vite.config.ts` 的 `opsSubpath` 插件），所以“本地怎么访问、线上就怎么访问”。
+- 两个入口的登录态是**按来源隔离**的（JWT 存在 `localStorage`）：运营后台在自己的域名下有自己的登录卡片，不需要、也不会共享主应用的会话。这正是独立页面该有的行为，部署时不必额外做单点登录。
 
 如果端口已占用：
 
@@ -796,6 +822,17 @@ npm run build
 - 两条自己踩过的坑（如实记录，避免后来者重犯）：① 过期那条第一版用假时钟把"现在"推到有效期之后，结果服务端照样返回 `200`——**有效期是服务端按 `X-Amz-Date + X-Amz-Expires` 与它自己的时钟判定的，改客户端时钟没有意义**，现在改成真等 7 秒；② 路径替换那条一开始用 `Uri.EscapeDataString(key)` 去替换 URL，而 URL 里是未转义的路径片段，替换没生效、地址根本没变，于是"因为没改而通过"（`200`），现在加了 `Assert.NotEqual(presigned, swapped)` 防止这种假通过。
 - CI：backend job 现在同时起 `postgres:16`、`redis:7`、`minio/minio`（都带 healthcheck），并在测试前用 `minio/mc` 容器建出测试用的桶——MinIO 起来是空实例，不建桶对象存储用例会跳过。
 
+本轮（运营后台跨域/子路径部署）新增验证：
+
+- 前端：`npm run typecheck` 与 `npm run build` 通过；默认构建里**没有绝对 API 地址**（全部走相对路径），跨域构建会把 `VITE_API_BASE_URL` 等值内联进共享分包。
+- 跨域 + 子路径真机检查（Playwright + Chromium；页面来自 `http://localhost:4173/ops/`，API 在 `http://127.0.0.1:5188`，两个不同的源；10 项断言全通过、页面无 console 错误）：
+  - 子路径可用：`/ops/` 与 `/ops` 都返回运营后台（`vite preview` 里的 `/ops/` → `ops.html` 改写），地址栏停在 `/ops/`，资源仍从根路径 `/assets/...` 加载。
+  - 跨域可用：在页面上用管理员账号登录成功并进入后台（页签「配置项 26 / 变更记录 / 任务检索 / 用户检索 / 争议处置 / 风险复核 / 误拦申诉 / 规则目录 v5」），确实打了 4 个到另一个源的请求（例如 `http://127.0.0.1:5188/api/v1/auth/login`）。
+  - 配置生效：「返回任务工作台」指向 `VITE_APP_HOME_URL`（`http://localhost:4173/`），主应用顶栏的运营入口指向 `VITE_OPS_HOME_URL`（`http://localhost:4173/ops/`）。
+  - SignalR 跨域：主应用在另一个源上订阅通知时 `POST /hubs/notifications/negotiate` 返回 `200`，控制台 0 错误——这是本轮唯一一处**必须先修才有**的行为：只写 `WithOrigins + AllowAnyHeader + AllowAnyMethod` 时，SignalR 协商因“响应缺少 `Access-Control-Allow-Credentials: true`”被预检拦掉（当时实测控制台 4 条错误），补上 `AllowCredentials()` 后消失。
+  - 反向验证（确认 CORS 真的在拦，而不是形同虚设）：把 API 的 `Cors__AllowedOrigins` 留空（只放行本机 5173）后重跑同一个页面，登录请求在预检阶段被浏览器拒绝——`No 'Access-Control-Allow-Origin' header is present on the requested resource`，页面停在登录卡片并显示“Failed to fetch”。
+- 回归：同源默认配置下重跑上一轮的 20 项运营后台浏览器检查，全部仍然通过（说明把 62 处 `fetch('/api/v1...')` 统一换成 `apiFetch()` 没有改变同源行为）。
+
 本轮（运营后台独立成页）新增验证：
 
 - 前端：`npm run typecheck` 与 `npm run build` 通过；构建产出**两个入口**——主应用 `dist/index.html`（JS 从 233.42 kB 降到 127.97 kB，运营后台整块搬走）+ 运营后台 `dist/ops.html`（`ops-*.js` 36.51 kB）+ 共享分包 `styles-*.js` 71.73 kB；后端未改动，`dotnet test` 仍是领域 283 + 集成 331 = 614 全通过。
@@ -948,6 +985,13 @@ npm run build
 - 测试基建：`backend/tests/AIToHuman.IntegrationTests/External/ExternalTestEnvironment.cs`（探测 + `[RedisFact]`/`[MinioFact]` + 字典版设置提供者，对象存储的可用性靠"写一条探针对象再删掉"判定）；`RedisFanoutTests.cs`（5 条）；`S3StorageTests.cs`（5 条）。
 - CI：三个依赖服务 + 建桶步骤（见 `.github/workflows/ci.yml`）。
 
+本轮追加（运营后台跨域/子路径部署）：
+
+- 前端地址口子：新增 `frontend/src/api/base.ts`（`apiFetch` / `apiUrl` / `hubUrl` / `API_BASE_URL` / `HUB_BASE_URL` / `APP_HOME_URL` / `OPS_HOME_URL`），把 12 个 api 模块里 62 处 `fetch('/api/v1...')`、SignalR 的 `/hubs/notifications` 以及两个入口之间的跳转链接统一收口；默认全部是相对路径，跨域部署时才由构建期变量给出绝对地址（`env.d.ts` 里声明了这四个键）。
+- 后端：CORS 策略从“只在 Development 放行 `http://localhost:5173`”改成**所有环境统一挂载、允许来源由部署配置决定**（`Cors__AllowedOrigins`，逗号/分号/空格分隔或数组写法，未配置时回退到本机 5173），并补上 `AllowCredentials()`——SignalR 协商默认带 credentials，缺这一项跨域时只有通知订阅会失败。
+- 本地开发：`vite.config.ts` 增加 `opsSubpath` 插件，把 `/ops` 与 `/ops/` 改写到 `/ops.html`，让开发/预览服务器也能按线上的子路径方式访问。
+- 文档：第 7 节新增《把运营后台放到自己的域名或子路径》（两种放法对照表、四个构建变量、`Cors__AllowedOrigins`、nginx 例、登录态按来源隔离的说明）。
+
 本轮追加（运营后台独立成页）：
 
 - 前端结构：新增 `frontend/ops.html` + `frontend/src/ops/main.ts` + `frontend/src/ops/OpsConsole.vue`，把原先塞在 `App.vue` 里的运营弹窗整块搬过去（`App.vue` 从 2440 行降到 1641 行）；`frontend/vite.config.ts` 声明两个入口，构建产出 `dist/index.html` 与 `dist/ops.html`。
@@ -1030,6 +1074,9 @@ npm run build
 - [ ] 用一条禁止类任务（例如“帮我代考××考试”）走完创建与发布：草稿能建出来但 `riskVerdict=Blocked`，发布返回 `422` 且大厅里查不到；对同一条任务调用运营复核接口应返回 `422`（人工无权放行禁止类别）。
 - [ ] 用一条敏感任务（例如“帮我把身份证送到××”）走完复核：`riskReviewStatus=Pending`、发布 `422`；运营在“风险复核”页签写依据放行后可以发布；驳回后发布 `422` 并显示驳回依据；需求方收件箱出现 `task.riskReviewed`。
 - [ ] `GET /api/v1/admin/risk/rules` 返回规则版本与规则清单，但**只有匹配词数量、没有匹配词本身**；非管理员访问返回 `403`。
+- [ ] 跨域部署：在一台静态托管（另一个端口/域名）上打开运营后台，用管理员账号登录应一切正常；同时把后端 `Cors__AllowedOrigins` 里的来源去掉再试一次，浏览器应该在预检阶段就报 CORS 错误（页面显示“Failed to fetch”），说明这份名单真的在拦。
+- [ ] 跨域下通知订阅：主应用与 API 不同源时，登录后 `POST /hubs/notifications/negotiate` 应返回 `200`、控制台没有 CORS 报错；如果这里报“缺少 Access-Control-Allow-Credentials”，检查 CORS 策略是不是漏了 `AllowCredentials()`。
+- [ ] 子路径部署：让 `/ops/` 指向 `ops.html`（本地可直接用 `npm run preview` 访问 `/ops/`），页面应正常加载、资源从 `/assets/...` 取；主应用顶栏的“运营后台”入口与运营页的“返回任务工作台”都应跳到配置好的地址。
 - [ ] 运营后台是独立页面：用管理员账户打开主应用，顶栏应有“运营后台 ↗”链接（普通账户没有），点开新标签页落在 `/ops.html`；`npm run build` 之后 `dist/` 里应同时有 `index.html` 与 `ops.html`，把 `dist` 整体托管时两个地址都能打开。
 - [ ] 运营后台的会话处理：清掉浏览器本地存储后打开 `/ops.html` 应看到登录卡片（而不是空白或报错）；`GET /api/v1/tasks` 之类的前台接口在这个页面上不应该被调用；点“退出登录”回到登录卡片。
 - [ ] 编辑一条草稿（改标题、悬赏、验收标准与截止时间后保存）：`GET /api/v1/tasks/{id}` 返回的字段应与提交一致，随后能发布；编辑已发布的任务应返回 `422`。

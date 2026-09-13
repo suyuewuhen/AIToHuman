@@ -1,3 +1,4 @@
+import { apiFetch } from './base'
 import { getAccessToken } from './auth'
 
 export interface AiTaskPlan {
@@ -31,7 +32,7 @@ export async function continueTaskConversation(
   onDelta?: (delta: string, accumulated: string) => void,
 ): Promise<AiConversationTurn> {
   const token = getAccessToken()
-  const response = await fetch('/api/v1/ai/plan/stream', {
+  const response = await apiFetch('/api/v1/ai/plan/stream', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

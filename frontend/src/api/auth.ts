@@ -1,3 +1,5 @@
+import { apiFetch } from './base'
+
 export interface AuthResponse {
   userId: string
   email: string
@@ -26,7 +28,7 @@ async function parseAuth(response: Response): Promise<AuthResponse> {
 }
 
 export async function login(request: LoginRequest): Promise<AuthResponse> {
-  const response = await fetch('/api/v1/auth/login', {
+  const response = await apiFetch('/api/v1/auth/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(request),
@@ -37,7 +39,7 @@ export async function login(request: LoginRequest): Promise<AuthResponse> {
 }
 
 export async function register(request: RegisterRequest): Promise<AuthResponse> {
-  const response = await fetch('/api/v1/auth/register', {
+  const response = await apiFetch('/api/v1/auth/register', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(request),
@@ -50,7 +52,7 @@ export async function register(request: RegisterRequest): Promise<AuthResponse> 
 export async function switchRole(role: ActiveRole): Promise<AuthResponse> {
   const token = getAccessToken()
   if (!token) throw new Error('未登录')
-  const response = await fetch('/api/v1/auth/switch-role', {
+  const response = await apiFetch('/api/v1/auth/switch-role', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
     body: JSON.stringify({ role }),
@@ -72,7 +74,7 @@ export interface CurrentUser {
 export async function getCurrentUser(): Promise<CurrentUser> {
   const token = getAccessToken()
   if (!token) throw new Error('未登录')
-  const response = await fetch('/api/v1/auth/me', { headers: { Authorization: `Bearer ${token}` } })
+  const response = await apiFetch('/api/v1/auth/me', { headers: { Authorization: `Bearer ${token}` } })
   if (!response.ok) {
     clearAccessToken()
     throw new Error('登录已过期，请重新登录。')

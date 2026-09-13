@@ -10,6 +10,7 @@ import { continueTaskConversation, type AiTaskPlan } from './api/ai'
 import { createConversation, getConversation, type Conversation } from './api/conversations'
 import { disputeResolutionLabel, riskAppealStatusLabel, riskReviewStatusLabel, riskVerdictLabel } from './api/admin'
 import { formatDeadline } from './utils/format'
+import { OPS_HOME_URL } from './api/base'
 
 type Step = { label: string; done: boolean }
 type ChatMessage = { id: string; role: 'user' | 'assistant'; content: string }
@@ -1219,7 +1220,7 @@ onMounted(async () => {
         <a href="#orders">我的订单</a>
       </div>
       <div class="profile-wrap">
-        <a v-if="isAdmin" class="notify admin-entry" href="/ops.html" target="_blank" rel="noopener">运营后台 ↗</a>
+        <a v-if="isAdmin" class="notify admin-entry" :href="OPS_HOME_URL" target="_blank" rel="noopener">运营后台 ↗</a>
         <div class="notify-wrap">
           <button class="notify" type="button" @click="toggleNotifications">通知 <b v-if="unreadCount > 0">{{ unreadCount > 99 ? '99+' : unreadCount }}</b></button>
           <div v-if="notificationsOpen" class="notify-menu">

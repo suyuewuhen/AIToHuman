@@ -1,3 +1,4 @@
+import { apiFetch } from './base'
 import { getAccessToken } from './auth'
 
 export interface EvidenceItem {
@@ -53,13 +54,13 @@ function authHeaders(): HeadersInit {
 }
 
 export async function listOrderEvidence(orderId: string, userId: string): Promise<EvidenceItem[]> {
-  return parseResponse<EvidenceItem[]>(await fetch(`/api/v1/orders/${orderId}/evidence?userId=${encodeURIComponent(userId)}`, { headers: authHeaders() }))
+  return parseResponse<EvidenceItem[]>(await apiFetch(`/api/v1/orders/${orderId}/evidence?userId=${encodeURIComponent(userId)}`, { headers: authHeaders() }))
 }
 
 export async function uploadOrderEvidence(orderId: string, userId: string, file: File): Promise<EvidenceItem> {
   const form = new FormData()
   form.append('file', file)
-  return parseResponse<EvidenceItem>(await fetch(`/api/v1/orders/${orderId}/evidence?userId=${encodeURIComponent(userId)}`, {
+  return parseResponse<EvidenceItem>(await apiFetch(`/api/v1/orders/${orderId}/evidence?userId=${encodeURIComponent(userId)}`, {
     method: 'POST',
     headers: authHeaders(),
     body: form,
@@ -68,7 +69,7 @@ export async function uploadOrderEvidence(orderId: string, userId: string, file:
 
 /** 申请短时直连下载地址；只有对象存储支持，本机目录会返回可读错误。 */
 export async function getEvidenceDownloadUrl(item: EvidenceItem, userId: string): Promise<EvidenceDownloadUrl> {
-  return parseResponse<EvidenceDownloadUrl>(await fetch(`/api/v1/evidence/${item.id}/download-url?userId=${encodeURIComponent(userId)}`, { headers: authHeaders() }))
+  return parseResponse<EvidenceDownloadUrl>(await apiFetch(`/api/v1/evidence/${item.id}/download-url?userId=${encodeURIComponent(userId)}`, { headers: authHeaders() }))
 }
 
 /**
@@ -86,7 +87,7 @@ export async function downloadEvidence(item: EvidenceItem, userId: string): Prom
     return
   }
 
-  const response = await fetch(`/api/v1/evidence/${item.id}/content?userId=${encodeURIComponent(userId)}`, { headers: authHeaders() })
+  const response = await apiFetch(`/api/v1/evidence/${item.id}/content?userId=${encodeURIComponent(userId)}`, { headers: authHeaders() })
   if (!response.ok) {
     const problem = await response.json().catch(() => null) as { detail?: string } | null
     throw new Error(problem?.detail ?? `下载失败（${response.status}）`)

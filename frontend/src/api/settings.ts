@@ -1,3 +1,4 @@
+import { apiFetch } from './base'
 import { getAccessToken } from './auth'
 
 export type SettingKind = 'String' | 'Bool' | 'Int' | 'Url' | 'Choice'
@@ -55,7 +56,7 @@ function jsonHeaders(): HeadersInit {
 }
 
 export async function listSettings(): Promise<AdminSetting[]> {
-  return parseResponse<AdminSetting[]>(await fetch('/api/v1/admin/settings', { headers: authHeaders() }))
+  return parseResponse<AdminSetting[]>(await apiFetch('/api/v1/admin/settings', { headers: authHeaders() }))
 }
 
 /**
@@ -63,7 +64,7 @@ export async function listSettings(): Promise<AdminSetting[]> {
  * 版本对不上服务端会返回 409，提示“已被其他人修改”。
  */
 export async function updateSetting(key: string, value: string, expectedVersion: number | null): Promise<AdminSetting> {
-  return parseResponse<AdminSetting>(await fetch(`/api/v1/admin/settings/${encodeURIComponent(key)}`, {
+  return parseResponse<AdminSetting>(await apiFetch(`/api/v1/admin/settings/${encodeURIComponent(key)}`, {
     method: 'PUT',
     headers: jsonHeaders(),
     body: JSON.stringify({ value, expectedVersion }),
@@ -72,7 +73,7 @@ export async function updateSetting(key: string, value: string, expectedVersion:
 
 /** 删除覆盖，恢复环境变量或代码默认值。 */
 export async function resetSetting(key: string): Promise<AdminSetting> {
-  return parseResponse<AdminSetting>(await fetch(`/api/v1/admin/settings/${encodeURIComponent(key)}`, {
+  return parseResponse<AdminSetting>(await apiFetch(`/api/v1/admin/settings/${encodeURIComponent(key)}`, {
     method: 'DELETE',
     headers: authHeaders(),
   }))
@@ -80,14 +81,14 @@ export async function resetSetting(key: string): Promise<AdminSetting> {
 
 /** 只读自检：本机目录是否可写、模型服务与扫描服务是否可达。 */
 export async function testSetting(key: string): Promise<SettingTestResult> {
-  return parseResponse<SettingTestResult>(await fetch(`/api/v1/admin/settings/${encodeURIComponent(key)}/test`, {
+  return parseResponse<SettingTestResult>(await apiFetch(`/api/v1/admin/settings/${encodeURIComponent(key)}/test`, {
     method: 'POST',
     headers: authHeaders(),
   }))
 }
 
 export async function listSettingAudits(limit = 20): Promise<SettingAudit[]> {
-  return parseResponse<SettingAudit[]>(await fetch(`/api/v1/admin/settings/audits?limit=${limit}`, { headers: authHeaders() }))
+  return parseResponse<SettingAudit[]>(await apiFetch(`/api/v1/admin/settings/audits?limit=${limit}`, { headers: authHeaders() }))
 }
 
 export function settingSourceLabel(source: SettingSource): string {

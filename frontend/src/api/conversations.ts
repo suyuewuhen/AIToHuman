@@ -1,3 +1,4 @@
+import { apiFetch } from './base'
 import type { AiTaskPlan } from './ai'
 import { getAccessToken } from './auth'
 
@@ -40,7 +41,7 @@ function authHeaders(): HeadersInit {
 }
 
 export async function createConversation(userId: string): Promise<Conversation> {
-  return parseResponse<Conversation>(await fetch('/api/v1/conversations', {
+  return parseResponse<Conversation>(await apiFetch('/api/v1/conversations', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify({ userId }),
@@ -48,9 +49,9 @@ export async function createConversation(userId: string): Promise<Conversation> 
 }
 
 export async function getConversation(conversationId: string, userId: string): Promise<Conversation> {
-  return parseResponse<Conversation>(await fetch(`/api/v1/conversations/${conversationId}?userId=${encodeURIComponent(userId)}`, { headers: authHeaders() }))
+  return parseResponse<Conversation>(await apiFetch(`/api/v1/conversations/${conversationId}?userId=${encodeURIComponent(userId)}`, { headers: authHeaders() }))
 }
 
 export async function listConversations(userId: string, limit = 20): Promise<ConversationSummary[]> {
-  return parseResponse<ConversationSummary[]>(await fetch(`/api/v1/conversations?userId=${encodeURIComponent(userId)}&limit=${limit}`, { headers: authHeaders() }))
+  return parseResponse<ConversationSummary[]>(await apiFetch(`/api/v1/conversations?userId=${encodeURIComponent(userId)}&limit=${limit}`, { headers: authHeaders() }))
 }

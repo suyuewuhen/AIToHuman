@@ -1,3 +1,5 @@
+import { apiFetch } from './base'
+import { hubUrl } from './base'
 import { HubConnectionBuilder, HubConnectionState, type HubConnection } from '@microsoft/signalr'
 import { getAccessToken } from './auth'
 
@@ -61,7 +63,7 @@ export async function connectNotifications(userId: string, onNotification: (enve
   await disconnectNotifications()
   const token = getAccessToken()
   connection = new HubConnectionBuilder()
-    .withUrl(`/hubs/notifications?userId=${encodeURIComponent(userId)}`, { accessTokenFactory: () => token ?? '' })
+    .withUrl(hubUrl(`/hubs/notifications?userId=${encodeURIComponent(userId)}`), { accessTokenFactory: () => token ?? '' })
     .withAutomaticReconnect()
     .build()
   connection.on('notification.created', (envelope: NotificationEnvelope) => {
@@ -89,12 +91,12 @@ function authHeaders(): HeadersInit {
 }
 
 export async function listNotifications(userId: string, limit = 20): Promise<NotificationList> {
-  return parseResponse<NotificationList>(await fetch(`/api/v1/notifications?userId=${encodeURIComponent(userId)}&limit=${limit}`, { headers: authHeaders() }))
+  return parseResponse<NotificationList>(await apiFetch(`/api/v1/notifications?userId=${encodeURIComponent(userId)}&limit=${limit}`, { headers: authHeaders() }))
 }
 
 /** 标记已读：不传 ids 表示全部标记为已读，返回最新未读数。 */
 export async function markNotificationsRead(userId: string, ids?: string[]): Promise<number> {
-  const result = await parseResponse<{ unreadCount: number }>(await fetch('/api/v1/notifications/read', {
+  const result = await parseResponse<{ unreadCount: number }>(await apiFetch('/api/v1/notifications/read', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify({ userId, ids: ids ?? null }),

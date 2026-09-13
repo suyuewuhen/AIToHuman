@@ -10,6 +10,7 @@
 -->
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { APP_HOME_URL } from '../api/base'
 import { clearAccessToken, getAccessToken, getCurrentUser, login, type CurrentUser } from '../api/auth'
 import { adminOrderStatusLabel, adminTaskStatusLabel, cancelAdminTask, decideRiskAppeal, decideRiskReview, disputeResolutionLabel, getRiskRuleDetail, getRiskRules, listAdminAudits, listDisputedOrders, listRiskAppeals, listRiskReviews, listRiskRuleVersions, resetRiskRules, resolveDispute, riskAppealStatusLabel, riskReviewStatusLabel, riskVerdictLabel, searchAdminTasks, searchAdminUsers, updateRiskRules, type AdminAuditItem, type AdminOrderItem, type AdminRiskAppealItem, type AdminRiskReviewItem, type AdminTaskItem, type AdminUserItem, type DisputeDecision, type RiskAppealDecision, type RiskReviewDecision, type RiskRuleCatalog, type RiskRuleCatalogDetail, type RiskRuleCatalogVersion } from '../api/admin'
 import { listSettingAudits, listSettings, resetSetting, settingChoiceLabel, settingSourceLabel, testSetting, updateSetting, type AdminSetting, type SettingAudit, type SettingTestResult } from '../api/settings'
@@ -603,7 +604,7 @@ async function confirmResetRiskRules() {
         <h1>运营后台</h1>
       </div>
       <div class="ops-header-actions">
-        <a class="settings-secondary" href="/">← 返回任务工作台</a>
+        <a class="settings-secondary" :href="APP_HOME_URL">← 返回任务工作台</a>
         <template v-if="operator">
           <span class="ops-operator">{{ operator.displayName }} · {{ operator.email }}</span>
           <button type="button" class="settings-secondary" @click="signOut()">退出登录</button>
