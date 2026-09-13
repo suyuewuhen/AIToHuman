@@ -166,6 +166,10 @@ public sealed class PostgresWorld : IDisposable
         services.AddSingleton<IPaymentGateway>(provider => provider.GetRequiredService<SimulatedPaymentGateway>());
         services.AddScoped<ILedgerRepository, EfLedgerRepository>();
         services.AddScoped<PaymentService>();
+        services.AddScoped<IRiskDecisionRepository, EfRiskDecisionRepository>();
+        services.AddScoped<EfRiskAppealStatistics>();
+        services.AddScoped<IRiskAppealStatistics>(provider => provider.GetRequiredService<EfRiskAppealStatistics>());
+        services.AddScoped<RiskDecisionService>();
         provider = services.BuildServiceProvider();
         scope = provider.CreateScope();
     }
@@ -188,6 +192,7 @@ public sealed class PostgresWorld : IDisposable
     public PaymentService Payments => Services.GetRequiredService<PaymentService>();
     public ILedgerRepository Ledger => Services.GetRequiredService<ILedgerRepository>();
     public SimulatedPaymentGateway Gateway => Services.GetRequiredService<SimulatedPaymentGateway>();
+    public RiskDecisionService RiskDecisions => Services.GetRequiredService<RiskDecisionService>();
     public NotificationService Notifications => Services.GetRequiredService<NotificationService>();
     public ITaskRepository Tasks => Services.GetRequiredService<ITaskRepository>();
     public IOrderRepository Orders => Services.GetRequiredService<IOrderRepository>();

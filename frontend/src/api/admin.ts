@@ -393,6 +393,68 @@ export function addressAccessOutcomeLabel(outcome: string): string {
   return labels[outcome] ?? outcome
 }
 
+/** 一次风险判定的留痕：因为什么动作跑的、判成什么、命中哪条规则与哪一版。 */
+export interface RiskDecisionEntry {
+  id: string
+  taskId: string
+  reason: string
+  verdict: string
+  ruleCode: string | null
+  category: string | null
+  ruleVersion: number
+  rewardAmount: number
+  occurredAt: string
+}
+
+/** 一条规则的命中统计（窗口内）。 */
+export interface RiskRuleHit {
+  code: string
+  category: string
+  verdict: string
+  hits: number
+  recheckedHits: number
+  firstHitAt: string
+  lastHitAt: string
+  /** 同一窗口内被认定为误伤的申诉次数。 */
+  acceptedAppeals: number
+}
+
+/** 规则命中看板：窗口内判定总数与按结论的分布，外加逐条规则的明细。 */
+export interface RiskDecisionStats {
+  from: string
+  to: string
+  windowDays: number
+  totalDecisions: number
+  allowedCount: number
+  needsReviewCount: number
+  blockedCount: number
+  recheckedCount: number
+  rules: RiskRuleHit[]
+}
+
+/** 规则命中统计（运营调参依据）：哪条规则拦了多少、其中多少被判成误伤。 */
+export async function getRiskDecisionStats(days = 30): Promise<RiskDecisionStats> {
+  return parseResponse<RiskDecisionStats>(await apiFetch(`/api/v1/admin/risk/stats?days=${days}`, { headers: authHeaders() }))
+}
+
+/** 某条任务的判定轨迹（按时间升序）：运营排查"这条任务为什么被拦"时看它。 */
+export async function listRiskDecisions(taskId: string, limit = 50): Promise<RiskDecisionEntry[]> {
+  return parseResponse<RiskDecisionEntry[]>(await apiFetch(`/api/v1/admin/risk/decisions?taskId=${encodeURIComponent(taskId)}&limit=${limit}`, { headers: authHeaders() }))
+}
+
+/** 判定原因中文。 */
+export function riskDecisionReasonLabel(reason: string): string {
+  const labels: Record<string, string> = {
+    Created: '创建草稿',
+    Edited: '编辑草稿',
+    Restored: '回滚版本',
+    Published: '发布',
+    RewardRaised: '加价重判',
+    Rechecked: '发布后复检',
+  }
+  return labels[reason] ?? reason
+}
+
 /** 一轮发布后风险复检的结果（运营手动触发时看的统计）。 */
 export interface AdminRiskRecheckResult {
   ruleVersion: number

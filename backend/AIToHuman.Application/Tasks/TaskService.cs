@@ -15,7 +15,7 @@ using DomainTaskStatus = AIToHuman.Domain.Tasks.TaskStatus;
 
 namespace AIToHuman.Application.Tasks;
 
-public sealed class TaskService(ITaskRepository repository, IOrderRepository orderRepository, IReviewRepository reviewRepository, ITaskRevisionRepository revisionRepository, AIToHuman.Application.Admin.IUserDirectory userDirectory, TimeProvider timeProvider, NotificationService notifications, IUnitOfWork unitOfWork, IRiskRuleCatalogProvider? riskRuleCatalog = null, RiskEnforcementService? riskEnforcement = null, IRiskAppealRepository? riskAppeals = null, PaymentService? payments = null)
+public sealed class TaskService(ITaskRepository repository, IOrderRepository orderRepository, IReviewRepository reviewRepository, ITaskRevisionRepository revisionRepository, AIToHuman.Application.Admin.IUserDirectory userDirectory, TimeProvider timeProvider, NotificationService notifications, IUnitOfWork unitOfWork, IRiskRuleCatalogProvider? riskRuleCatalog = null, RiskEnforcementService? riskEnforcement = null, IRiskAppealRepository? riskAppeals = null, PaymentService? payments = null, RiskDecisionService? riskDecisions = null)
 {
     /// <summary>
     /// 这次写入该用哪一版风险规则：运营在后台改过就是最新那一版，否则是代码里的内置目录。
@@ -36,16 +36,25 @@ public sealed class TaskService(ITaskRepository repository, IOrderRepository ord
         {
             repository.Add(task);
             revisionRepository.Add(TaskDraftRevision.Initial(task, request.OwnerId, now));
+            riskDecisions?.Record(task, RiskDecisionReason.Created, now);
         });
 
         return Map(task);
     }
 
+    /// <summary>发布：判定的最后一道门禁通过后，把这次判定也记进留痕（统计"哪条规则在发布这一关拦了多少"）。</summary>
     public TaskResponse Publish(Guid id, Guid ownerId)
     {
         var task = GetOwned(id, ownerId);
-        task.Publish(timeProvider.GetUtcNow(), RiskRules);
-        repository.Save(task);
+        var now = timeProvider.GetUtcNow();
+        task.Publish(now, RiskRules);
+
+        unitOfWork.Execute(() =>
+        {
+            repository.Save(task);
+            riskDecisions?.Record(task, RiskDecisionReason.Published, now);
+        });
+
         return Map(task);
     }
 
@@ -74,6 +83,7 @@ public sealed class TaskService(ITaskRepository repository, IOrderRepository ord
         {
             repository.Save(task);
             revisionRepository.Add(TaskDraftRevision.FromEdit(task, revisionRepository.LatestRevision(task.Id) + 1, ownerId, changedFields, now));
+            riskDecisions?.Record(task, RiskDecisionReason.Edited, now);
         });
 
         return Map(task);
@@ -117,6 +127,7 @@ public sealed class TaskService(ITaskRepository repository, IOrderRepository ord
             repository.Save(task);
             revisionRepository.Add(TaskDraftRevision.FromRestore(
                 task, revisionRepository.LatestRevision(task.Id) + 1, revision, ownerId, changedFields, now));
+            riskDecisions?.Record(task, RiskDecisionReason.Restored, now);
         });
 
         return Map(task);
@@ -182,6 +193,7 @@ public sealed class TaskService(ITaskRepository repository, IOrderRepository ord
         {
             repository.Save(task);
             riskEnforcement?.ApplyOutcome(task, outcome, now);
+            riskDecisions?.Record(task, RiskDecisionReason.RewardRaised, now);
         });
 
         return Map(task);

@@ -30,6 +30,7 @@ public sealed class TaskDbContext(DbContextOptions<TaskDbContext> options) : DbC
     public DbSet<RiskAppealRecordRecord> RiskAppeals => Set<RiskAppealRecordRecord>();
     public DbSet<AddressAccessRecord> AddressAccessEntries => Set<AddressAccessRecord>();
     public DbSet<LedgerEntryRecord> LedgerEntries => Set<LedgerEntryRecord>();
+    public DbSet<RiskDecisionRecord> RiskDecisionEntries => Set<RiskDecisionRecord>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -132,6 +133,21 @@ public sealed class TaskDbContext(DbContextOptions<TaskDbContext> options) : DbC
             // 对账按订单读流水，排查按时间倒序读最近流水，两条索引各服务一边。
             entity.HasIndex(item => new { item.OrderId, item.OccurredAt });
             entity.HasIndex(item => item.OccurredAt);
+        });
+
+        modelBuilder.Entity<RiskDecisionRecord>(entity =>
+        {
+            entity.ToTable("risk_decision_entries");
+            entity.HasKey(item => item.Id);
+            // 判定留痕只追加：一行 = 某条任务在某次动作后被判成什么。
+            entity.Property(item => item.Reason).HasConversion<string>().HasMaxLength(20).IsRequired();
+            entity.Property(item => item.Verdict).HasConversion<string>().HasMaxLength(16).IsRequired();
+            entity.Property(item => item.RuleCode).HasMaxLength(80);
+            entity.Property(item => item.Category).HasMaxLength(60);
+            entity.Property(item => item.RewardAmount).HasPrecision(18, 2);
+            // 看某条任务的判定轨迹、按时间窗口做统计，各一条索引。
+            entity.HasIndex(item => new { item.TaskId, item.OccurredAt });
+            entity.HasIndex(item => new { item.OccurredAt, item.RuleCode });
         });
 
         modelBuilder.Entity<ReviewRecord>(entity =>
@@ -424,8 +440,7 @@ public sealed class OrderRecord
 }
 
 /// <summary>资金流水：一行一次账户间转账，只追加。</summary>
-public sealed class LedgerEntryRecord
-{
+public sealed class LedgerEntryRecord{
     public Guid Id { get; set; }
     public Guid OrderId { get; set; }
     public Guid TaskId { get; set; }
@@ -435,6 +450,20 @@ public sealed class LedgerEntryRecord
     public string Currency { get; set; } = "CNY";
     public string Kind { get; set; } = "Hold";
     public string? Note { get; set; }
+    public DateTimeOffset OccurredAt { get; set; }
+}
+
+/// <summary>风险判定留痕：一行一次判定（因为什么动作跑的、判成什么、命中哪条规则与哪一版），只追加。</summary>
+public sealed class RiskDecisionRecord
+{
+    public Guid Id { get; set; }
+    public Guid TaskId { get; set; }
+    public string Reason { get; set; } = "Created";
+    public string Verdict { get; set; } = "Allowed";
+    public string? RuleCode { get; set; }
+    public string? Category { get; set; }
+    public int RuleVersion { get; set; }
+    public decimal RewardAmount { get; set; }
     public DateTimeOffset OccurredAt { get; set; }
 }
 

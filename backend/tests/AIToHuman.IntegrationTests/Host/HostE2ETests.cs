@@ -197,16 +197,44 @@ public sealed class HostE2ETests(HostE2EFixture host)
         Assert.Equal("RecheckRequired", raised.GetProperty("riskEnforcementStatus").GetString());
     }
 
+    [HostFact]
+    public async Task The_rule_statistics_endpoint_is_admin_only_and_returns_the_dashboard_shape()
+    {
+        using var client = NewClient();
+        var owner = await Register(client, "host-stats-owner", "owner");
+
+        // 非管理员：运营看板不给看（策略挂在真管线上）。
+        var forbidden = await Send(client, HttpMethod.Get, "/api/v1/admin/risk/stats?days=7", null, owner.Token);
+        Assert.Equal(HttpStatusCode.Forbidden, forbidden.StatusCode);
+
+        // 管理员：拿得到看板结构（窗口、总数、按规则的明细）。
+        var admin = await Register(client, "host-e2e-admin", "owner", uniqueEmail: false);
+        var stats = await Get(client, "/api/v1/admin/risk/stats?days=7", admin.Token);
+
+        Assert.Equal(7, stats.GetProperty("windowDays").GetInt32());
+        Assert.True(stats.GetProperty("totalDecisions").GetInt32() >= 0);
+        Assert.Equal(JsonValueKind.Array, stats.GetProperty("rules").ValueKind);
+    }
+
     private HttpClient NewClient() => new() { BaseAddress = new Uri(host.BaseUrl), Timeout = TimeSpan.FromSeconds(30) };
 
     private sealed record TestUser(string EmailPrefix, Guid UserId, string Token);
 
-    /// <summary>注册一个账号（默认邮箱带随机后缀；需要命中管理员名单时必须用固定邮箱）。</summary>
+    /// <summary>
+    /// 注册一个账号（默认邮箱带随机后缀；需要命中管理员名单时必须用固定邮箱）。
+    /// 固定邮箱在同一批用例里可能被注册两次：第二次改为登录，让用例彼此独立。
+    /// </summary>
     private static async Task<TestUser> Register(HttpClient client, string prefix, string role, bool uniqueEmail = true)
     {
         var emailPrefix = uniqueEmail ? $"{prefix}-{Guid.NewGuid():N}" : prefix;
+        var email = $"{emailPrefix}@aitohuman.local";
         var response = await Send(client, HttpMethod.Post, "/api/v1/auth/register",
-            new { email = $"{emailPrefix}@aitohuman.local", password = "Host!2026e2e", displayName = prefix, role }, null);
+            new { email, password = "Host!2026e2e", displayName = prefix, role }, null);
+
+        if (response.StatusCode == HttpStatusCode.Conflict)
+        {
+            response = await Send(client, HttpMethod.Post, "/api/v1/auth/login", new { email, password = "Host!2026e2e" }, null);
+        }
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var payload = await response.Content.ReadFromJsonAsync<JsonElement>();

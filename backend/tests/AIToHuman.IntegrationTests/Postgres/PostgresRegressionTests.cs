@@ -748,6 +748,46 @@ public sealed class PostgresRegressionTests(PostgresRegressionFixture fixture) :
         Assert.Contains(entries, item => item.Kind == "PartialRefund" && item.Amount == 60m);
     }
 
+    /// <summary>
+    /// 判定留痕与命中统计在真库上的往返：每条判定落一行、统计（含"误伤"计数）在数据库上算得出来。
+    /// 误伤统计是跨两张表（判定留痕 + 申诉留档）的聚合，只有真库能验证它真的能跑。
+    /// </summary>
+    [PostgresFact]
+    public async Task Risk_decision_history_and_rule_statistics_round_trip()
+    {
+        using var world = new PostgresWorld(fixture.ConnectionString, Now);
+        var taskId = world.CreateDraft("帮我代考英语四级");
+
+        // 创建时判定一次（Blocked）；再提交一次申诉并由运营认定为误伤。
+        world.Service.OpenRiskAppeal(taskId, world.Owner, "其实只是帮家里人跑腿");
+        world.Appeals.DecideAppeal(taskId, accepted: true, "确认是误判", world.AdminId);
+
+        using (var freshScope = world.NewScope())
+        {
+            var history = freshScope.ServiceProvider.GetRequiredService<IRiskDecisionRepository>().ListByTask(taskId, 20);
+            var entry = Assert.Single(history);
+            Assert.Equal("prohibited.exam_impersonation", entry.RuleCode);
+            Assert.Equal("Created", entry.Reason.ToString());
+            Assert.Equal("Blocked", entry.Verdict.ToString());
+        }
+
+        var stats = world.RiskDecisions.Summarize(30, Now.AddHours(1));
+        Assert.Equal(1, stats.TotalDecisions);
+        Assert.Equal(1, stats.BlockedCount);
+        var rule = Assert.Single(stats.Rules);
+        Assert.Equal("prohibited.exam_impersonation", rule.Code);
+        Assert.Equal(1, rule.Hits);
+        // 这一条正是"命中 → 误伤"的闭环：拦了 1 次、其中 1 次申诉被判成误伤。
+        Assert.Equal(1, rule.AcceptedAppeals);
+
+        await using var context = fixture.CreateContext();
+        var row = await context.RiskDecisionEntries.AsNoTracking().SingleAsync(item => item.TaskId == taskId);
+        Assert.Equal("Created", row.Reason);
+        Assert.Equal("Blocked", row.Verdict);
+        Assert.Equal(50m, row.RewardAmount);
+        Assert.NotNull(row.Category);
+    }
+
     /// <summary>带时区偏移的截止时间与中文文本在真库上的往返：领域层统一归一化成 UTC，文本原样保存。</summary>
     [PostgresFact]
     public async Task Utc_offsets_and_chinese_text_round_trip_through_the_database()

@@ -3,8 +3,11 @@ using AIToHuman.Domain.Risk;
 
 namespace AIToHuman.Infrastructure.Risk;
 
-/// <summary>申诉留档的内存实现（无 PostgreSQL 时使用，也用在同一进程的测试里）。</summary>
-public sealed class InMemoryRiskAppealRepository : IRiskAppealRepository
+/// <summary>
+/// 申诉留档的内存实现（无 PostgreSQL 时使用，也用在同一进程的测试里）。
+/// 它顺带实现误伤统计：统计本来就是从申诉留档里数出来的（EF 实现读同一张表，语义一致）。
+/// </summary>
+public sealed class InMemoryRiskAppealRepository : IRiskAppealRepository, IRiskAppealStatistics
 {
     private readonly List<RiskAppealRecord> records = [];
     private readonly Lock gate = new();
@@ -68,6 +71,18 @@ public sealed class InMemoryRiskAppealRepository : IRiskAppealRepository
                 .Where(item => item.TaskId == taskId && item.Status == RiskAppealStatus.Pending)
                 .OrderBy(item => item.SubmittedAt)
                 .FirstOrDefault();
+        }
+    }
+
+    /// <summary>误伤统计：窗口内被认定为误伤（Accepted）的申诉，按原因代码分组计数。</summary>
+    public IReadOnlyDictionary<string, int> CountAcceptedByRuleCode(DateTimeOffset since)
+    {
+        lock (gate)
+        {
+            return records
+                .Where(item => item.Status == RiskAppealStatus.Accepted && item.DecidedAt is { } decided && decided >= since && item.RuleCode is not null)
+                .GroupBy(item => item.RuleCode!)
+                .ToDictionary(group => group.Key, group => group.Count());
         }
     }
 }

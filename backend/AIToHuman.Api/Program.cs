@@ -92,6 +92,10 @@ if (usePostgres)
     builder.Services.AddScoped<IAdminAuditRepository, EfAdminAuditRepository>();
     builder.Services.AddScoped<IAddressAccessRepository, EfAddressAccessRepository>();
     builder.Services.AddScoped<ILedgerRepository, EfLedgerRepository>();
+    builder.Services.AddScoped<IRiskDecisionRepository, EfRiskDecisionRepository>();
+    builder.Services.AddScoped<IRiskAppealStatistics>(provider => provider.GetRequiredService<EfRiskAppealStatistics>());
+    builder.Services.AddScoped<EfRiskAppealStatistics>();
+    builder.Services.AddScoped<RiskDecisionService>();
     builder.Services.AddScoped<IIdempotencyStore, EfIdempotencyStore>();
     builder.Services.AddScoped<IRiskRuleCatalogStore, EfRiskRuleCatalogStore>();
     builder.Services.AddScoped<IRiskAppealRepository, EfRiskAppealRepository>();
@@ -124,6 +128,11 @@ else
     builder.Services.AddSingleton<IAdminAuditRepository, InMemoryAdminAuditRepository>();
     builder.Services.AddSingleton<IAddressAccessRepository, InMemoryAddressAccessRepository>();
     builder.Services.AddSingleton<ILedgerRepository, InMemoryLedgerRepository>();
+    // 内存装配：同一条实例同时完成"记判定"与"数误伤"（误伤是从申诉留档里数出来的）。
+    builder.Services.AddSingleton<InMemoryRiskDecisionRepository>();
+    builder.Services.AddSingleton<IRiskDecisionRepository>(provider => provider.GetRequiredService<InMemoryRiskDecisionRepository>());
+    builder.Services.AddSingleton<IRiskAppealStatistics>(provider => provider.GetRequiredService<InMemoryRiskAppealRepository>());
+    builder.Services.AddScoped<RiskDecisionService>();
     builder.Services.AddSingleton<IIdempotencyStore, InMemoryIdempotencyStore>();
     builder.Services.AddSingleton<IRiskRuleCatalogStore, InMemoryRiskRuleCatalogStore>();
     builder.Services.AddSingleton<IRiskAppealRepository, InMemoryRiskAppealRepository>();
@@ -663,6 +672,10 @@ adminConsole.MapPost("/risk/recheck", (int? limit, ClaimsPrincipal user, RiskEnf
     return Results.Ok(result.ToResponse());
 });
 
+// 规则命中统计与判定留痕：让"这条规则拦了多少、误伤多少"有数据依据（运营调参用）。
+adminConsole.MapGet("/risk/stats", (int? days, TimeProvider clock, RiskDecisionService service) => Results.Ok(service.Summarize(days, clock.GetUtcNow())));
+adminConsole.MapGet("/risk/decisions", (Guid? taskId, int? limit, RiskDecisionService service) =>
+    taskId is { } id ? Results.Ok(service.ListByTask(id, limit)) : Results.Ok(Array.Empty<RiskDecisionEntryResponse>()));
 // 误拦申诉：被拦的所有者提交的申诉排在这里。转人工被驳回的可以申诉成立并放行；
 // 禁止类别命中的即使申诉成立也只会记录"规则误伤"的结论，任务依旧不能发布（人工无权放行红线）。
 adminConsole.MapGet("/risk/appeals", (int? limit, RiskAppealService service) =>

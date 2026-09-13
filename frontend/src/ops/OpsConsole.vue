@@ -12,7 +12,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { APP_HOME_URL } from '../api/base'
 import { clearAccessToken, getAccessToken, getCurrentUser, login, type CurrentUser } from '../api/auth'
-import { adminAuditActorLabel, addressAccessOutcomeLabel, addressAccessRoleLabel, adminOrderStatusLabel, adminTaskStatusLabel, cancelAdminTask, decideRiskAppeal, decideRiskReview, disputeResolutionLabel, getRiskRuleDetail, getRiskRules, listAddressAccess, listAdminAudits, listDisputedOrders, listRiskAppealHistory, listRiskAppeals, listRiskReviews, listRiskRuleVersions, resetRiskRules, resolveDispute, riskAppealStatusLabel, riskReviewStatusLabel, riskVerdictLabel, runRiskRecheck, searchAdminTasks, searchAdminUsers, updateRiskRules, type AdminAddressAccessItem, type AdminAuditItem, type AdminOrderItem, type AdminRiskAppealItem, type AdminRiskAppealRecord, type AdminRiskReviewItem, type AdminTaskItem, type AdminUserItem, type DisputeDecision, type RiskAppealDecision, type RiskReviewDecision, type RiskRuleCatalog, type RiskRuleCatalogDetail, type RiskRuleCatalogVersion } from '../api/admin'
+import { adminAuditActorLabel, addressAccessOutcomeLabel, addressAccessRoleLabel, adminOrderStatusLabel, adminTaskStatusLabel, cancelAdminTask, decideRiskAppeal, decideRiskReview, disputeResolutionLabel, getRiskDecisionStats, getRiskRuleDetail, getRiskRules, listAddressAccess, listAdminAudits, listDisputedOrders, listRiskAppealHistory, listRiskAppeals, listRiskDecisions, listRiskReviews, listRiskRuleVersions, resetRiskRules, resolveDispute, riskAppealStatusLabel, riskDecisionReasonLabel, riskReviewStatusLabel, riskVerdictLabel, runRiskRecheck, searchAdminTasks, searchAdminUsers, updateRiskRules, type AdminAddressAccessItem, type AdminAuditItem, type AdminOrderItem, type AdminRiskAppealItem, type AdminRiskAppealRecord, type AdminRiskReviewItem, type AdminTaskItem, type AdminUserItem, type DisputeDecision, type RiskAppealDecision, type RiskDecisionEntry, type RiskDecisionStats, type RiskReviewDecision, type RiskRuleCatalog, type RiskRuleCatalogDetail, type RiskRuleCatalogVersion } from '../api/admin'
 import { listSettingAudits, listSettings, resetSetting, settingChoiceLabel, settingSourceLabel, testSetting, updateSetting, type AdminSetting, type SettingAudit, type SettingTestResult } from '../api/settings'
 import { formatDeadline } from '../utils/format'
 
@@ -110,7 +110,7 @@ onMounted(async () => {
 })
 
 // 运营配置：入口只对管理员展示，真正的授权在服务端（/api/v1/admin/settings 需要管理员身份）。
-const settingsTab = ref<'values' | 'audits' | 'tasks' | 'users' | 'disputes' | 'risk' | 'appeals' | 'rules' | 'addresses'>('values')
+const settingsTab = ref<'values' | 'audits' | 'tasks' | 'users' | 'disputes' | 'risk' | 'appeals' | 'rules' | 'addresses' | 'stats'>('values')
 const settingsLoading = ref(false)
 const settingsError = ref('')
 const settingsNotice = ref('')
@@ -157,6 +157,11 @@ const addressAccessItems = ref<AdminAddressAccessItem[]>([])
 const addressAccessDenied = ref(0)
 const addressAccessTaskId = ref('')
 const addressAccessViewerId = ref('')
+// 命中统计：哪条规则拦了多少、其中多少被判成误伤——规则调参的唯一数据依据。
+const riskStats = ref<RiskDecisionStats | null>(null)
+const riskStatsDays = ref(30)
+const riskDecisionTaskId = ref('')
+const riskDecisions = ref<RiskDecisionEntry[]>([])
 // 规则目录：查看当前生效的规则（连匹配词）+ 版本历史，并整份替换出一版新目录。
 // 编辑态单独放一份草稿（匹配词在界面上是一行一个的文本框），点“保存为新版本”才提交。
 const adminRuleDetail = ref<RiskRuleCatalogDetail | null>(null)
@@ -570,6 +575,42 @@ async function loadAddressAccess() {
   }
 }
 
+/**
+ * 命中统计：窗口内的判定总数、按结论的分布，以及逐条规则的命中与误伤。
+ * 这是规则调参的唯一客观依据——"改了词表之后这条规则还拦不拦得住"就靠它。
+ */
+async function loadRiskStats() {
+  settingsTab.value = 'stats'
+  adminTaskBusy.value = true
+  adminTaskError.value = ''
+  try {
+    riskStats.value = await getRiskDecisionStats(riskStatsDays.value)
+  } catch (error) {
+    adminTaskError.value = error instanceof Error ? error.message : '读取命中统计失败'
+  } finally {
+    adminTaskBusy.value = false
+  }
+}
+
+/** 按任务查判定轨迹：运营排查"这条任务为什么被拦/为什么又放行了"。 */
+async function loadRiskDecisions() {
+  if (!riskDecisionTaskId.value.trim()) {
+    adminTaskError.value = '请先填写任务 ID。'
+    return
+  }
+
+  adminTaskBusy.value = true
+  adminTaskError.value = ''
+  try {
+    riskDecisions.value = await listRiskDecisions(riskDecisionTaskId.value.trim())
+    if (riskDecisions.value.length === 0) adminTaskNotice.value = '这条任务没有判定留痕（留痕功能上线之前创建的任务查不到轨迹）。'
+  } catch (error) {
+    adminTaskError.value = error instanceof Error ? error.message : '读取判定轨迹失败'
+  } finally {
+    adminTaskBusy.value = false
+  }
+}
+
 // 规则目录：读取当前生效的一版 + 版本历史，编辑后整份提交（服务端把版本号 +1 并写运营审计）。
 async function loadRiskRuleCatalog() {  settingsTab.value = 'rules'
   adminRuleBusy.value = true
@@ -730,7 +771,8 @@ async function confirmResetRiskRules() {
           <button type="button" :class="{ selected: settingsTab === 'appeals' }" @click="loadAdminRiskAppeals()">误拦申诉 <b>{{ adminRiskAppeals.length }}</b></button>
           <button type="button" :class="{ selected: settingsTab === 'rules' }" @click="loadRiskRuleCatalog()">规则目录 <b>v{{ adminRuleDetail?.version ?? adminRiskRules?.version ?? 1 }}</b></button>
           <button type="button" :class="{ selected: settingsTab === 'addresses' }" @click="loadAddressAccess()">地址留痕 <b>{{ addressAccessDenied }}</b></button>
-          <button type="button" class="settings-refresh" :disabled="settingsLoading || adminTaskBusy" @click="settingsTab === 'audits' ? loadAdminAudits() : (settingsTab === 'tasks' ? loadAdminTasks() : (settingsTab === 'users' ? loadAdminUsers() : (settingsTab === 'disputes' ? loadAdminOrders() : (settingsTab === 'risk' ? loadAdminRiskReviews() : (settingsTab === 'appeals' ? loadAdminRiskAppeals() : (settingsTab === 'rules' ? loadRiskRuleCatalog() : (settingsTab === 'addresses' ? loadAddressAccess() : loadSettings())))))))">{{ settingsLoading || adminTaskBusy ? '读取中…' : '刷新 ↻' }}</button>
+          <button type="button" :class="{ selected: settingsTab === 'stats' }" @click="loadRiskStats()">命中统计 <b>{{ riskStats?.totalDecisions ?? 0 }}</b></button>
+          <button type="button" class="settings-refresh" :disabled="settingsLoading || adminTaskBusy" @click="settingsTab === 'audits' ? loadAdminAudits() : (settingsTab === 'tasks' ? loadAdminTasks() : (settingsTab === 'users' ? loadAdminUsers() : (settingsTab === 'disputes' ? loadAdminOrders() : (settingsTab === 'risk' ? loadAdminRiskReviews() : (settingsTab === 'appeals' ? loadAdminRiskAppeals() : (settingsTab === 'rules' ? loadRiskRuleCatalog() : (settingsTab === 'addresses' ? loadAddressAccess() : (settingsTab === 'stats' ? loadRiskStats() : loadSettings()))))))))">{{ settingsLoading || adminTaskBusy ? '读取中…' : '刷新 ↻' }}</button>
         </div>
         <p v-if="settingsError" class="auth-error">{{ settingsError }}</p>
         <p v-if="settingsNotice" class="settings-notice">{{ settingsNotice }}</p>
@@ -866,6 +908,43 @@ async function confirmResetRiskRules() {
               <strong>{{ addressAccessOutcomeLabel(item.outcome) }} · {{ addressAccessRoleLabel(item.viewerRole) }}</strong>
               <small>{{ formatDeadline(item.occurredAt) }} · 任务 {{ item.taskId.slice(0, 8) }} · 查看者 {{ item.viewerEmail ?? (item.viewerId ? item.viewerId.slice(0, 8) : '匿名') }}</small>
               <small v-if="!item.disclosed" class="evidence-note">这次没有把地址给出去。</small>
+            </div>
+          </div>
+        </div>
+
+        <div v-else-if="settingsTab === 'stats'" class="settings-body">
+          <p class="settings-hint">每一次风险判定都会留档（创建、编辑、回滚、发布、加价重判、发布后复检各记一条），所以"哪条规则拦了多少、其中多少被判成误伤"是有数据可查的。误伤次数来自申诉留档里被认定为误伤（Accept）的那些申诉；调词表前先看这张表，比凭感觉改要靠谱。</p>
+          <div class="setting-control">
+            <select v-model.number="riskStatsDays" @change="loadRiskStats()">
+              <option :value="7">最近 7 天</option>
+              <option :value="30">最近 30 天</option>
+              <option :value="90">最近 90 天</option>
+              <option :value="365">最近 365 天</option>
+            </select>
+            <button type="button" class="settings-primary" :disabled="adminTaskBusy" @click="loadRiskStats()">刷新统计</button>
+          </div>
+          <p v-if="adminTaskError" class="auth-error">{{ adminTaskError }}</p>
+          <p v-if="riskStats" class="settings-hint">
+            窗口内共判定 <b>{{ riskStats.totalDecisions }}</b> 次：放行 {{ riskStats.allowedCount }} · 转人工 {{ riskStats.needsReviewCount }} · 禁止 {{ riskStats.blockedCount }}；其中 {{ riskStats.recheckedCount }} 次是发布后复检触发的。窗口 {{ formatDeadline(riskStats.from) }} 至 {{ formatDeadline(riskStats.to) }}。
+          </p>
+          <span v-if="riskStats && riskStats.rules.length === 0" class="settings-empty">窗口内没有任何规则命中。</span>
+          <div v-for="rule in riskStats?.rules ?? []" v-else :key="rule.code + rule.verdict" class="admin-row">
+            <div>
+              <strong>{{ rule.category }} · {{ riskVerdictLabel(rule.verdict) }} · 命中 {{ rule.hits }} 次</strong>
+              <small>{{ rule.code }}<template v-if="rule.recheckedHits"> · 其中复检触发 {{ rule.recheckedHits }} 次</template> · 被认定为误伤 {{ rule.acceptedAppeals }} 次</small>
+              <small>首次命中 {{ formatDeadline(rule.firstHitAt) }} · 最近命中 {{ formatDeadline(rule.lastHitAt) }}</small>
+            </div>
+          </div>
+
+          <p class="settings-hint"><b>按任务查判定轨迹</b>（排查"这条任务为什么被拦、后来又为什么放行"）</p>
+          <div class="setting-control">
+            <input v-model.trim="riskDecisionTaskId" type="text" placeholder="任务 ID" @keyup.enter="loadRiskDecisions()" />
+            <button type="button" class="settings-secondary" :disabled="adminTaskBusy" @click="loadRiskDecisions()">查轨迹</button>
+          </div>
+          <div v-for="entry in riskDecisions" :key="entry.id" class="admin-row">
+            <div>
+              <strong>{{ riskDecisionReasonLabel(entry.reason) }} → {{ riskVerdictLabel(entry.verdict) }}</strong>
+              <small>{{ formatDeadline(entry.occurredAt) }}<template v-if="entry.ruleCode"> · {{ entry.ruleCode }} · {{ entry.category }} · 规则第 {{ entry.ruleVersion }} 版</template><template v-else> · 未命中规则</template> · 悬赏 ¥{{ entry.rewardAmount }}</small>
             </div>
           </div>
         </div>

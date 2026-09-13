@@ -274,3 +274,41 @@ public sealed record AdminAddressAccessListResponse(
     IReadOnlyList<AdminAddressAccessItemResponse> Items,
     int Limit,
     int DeniedCount);
+
+/// <summary>一次风险判定的留痕：因为什么动作跑的、判成什么、命中了哪条规则与哪一版。</summary>
+public sealed record RiskDecisionEntryResponse(
+    Guid Id,
+    Guid TaskId,
+    string Reason,
+    string Verdict,
+    string? RuleCode,
+    string? Category,
+    int RuleVersion,
+    decimal RewardAmount,
+    DateTimeOffset OccurredAt);
+
+/// <summary>
+/// 一条规则的命中统计（窗口内）。<paramref name="RecheckedHits"/> 是其中由"发布后复检"产生的次数，
+/// <paramref name="AcceptedAppeals"/> 是同一窗口内被认定为误伤的申诉次数——两者放在一起才能看清规则的松紧。
+/// </summary>
+public sealed record RiskRuleHitResponse(
+    string Code,
+    string Category,
+    string Verdict,
+    int Hits,
+    int RecheckedHits,
+    DateTimeOffset FirstHitAt,
+    DateTimeOffset LastHitAt,
+    int AcceptedAppeals);
+
+/// <summary>规则命中看板：窗口内判定总数与按结论的分布，外加逐条规则的明细。</summary>
+public sealed record RiskDecisionStatsResponse(
+    DateTimeOffset From,
+    DateTimeOffset To,
+    int WindowDays,
+    int TotalDecisions,
+    int AllowedCount,
+    int NeedsReviewCount,
+    int BlockedCount,
+    int RecheckedCount,
+    IReadOnlyList<RiskRuleHitResponse> Rules);

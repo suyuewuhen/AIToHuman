@@ -35,7 +35,8 @@ public sealed class RiskEnforcementService(
     NotificationService notifications,
     IRiskRuleCatalogProvider catalogs,
     TimeProvider timeProvider,
-    IUnitOfWork unitOfWork)
+    IUnitOfWork unitOfWork,
+    RiskDecisionService? riskDecisions = null)
 {
     /// <summary>自动下架的审计动作。</summary>
     public const string UnpublishAction = "task.risk.recheck.unpublish";
@@ -96,7 +97,12 @@ public sealed class RiskEnforcementService(
             {
                 case RiskEnforcementOutcome.Unchanged:
                     refreshed++;
-                    unitOfWork.Execute(() => taskRepository.Save(task));
+                    unitOfWork.Execute(() =>
+                    {
+                        taskRepository.Save(task);
+                        // 复检也算一次判定：统计里能看出"规则升级后重判了多少条、其中命中多少"。
+                        riskDecisions?.Record(task, RiskDecisionReason.Rechecked, now);
+                    });
                     break;
 
                 case RiskEnforcementOutcome.FlaggedForRecheck:
@@ -104,6 +110,7 @@ public sealed class RiskEnforcementService(
                     unitOfWork.Execute(() =>
                     {
                         taskRepository.Save(task);
+                        riskDecisions?.Record(task, RiskDecisionReason.Rechecked, now);
                         notifications.EnqueueTaskRiskEnforced(task, task.OwnerId, now);
                     });
                     break;
@@ -117,6 +124,7 @@ public sealed class RiskEnforcementService(
                     unitOfWork.Execute(() =>
                     {
                         taskRepository.Save(task);
+                        riskDecisions?.Record(task, RiskDecisionReason.Rechecked, now);
                         auditRepository.Add(AdminAuditEntry.Record(
                             AdminAuditEntry.SystemActorId, UnpublishAction, TargetType, task.Id, task.RiskEnforcementReason ?? "风险复检", now));
                         notifications.EnqueueTaskRiskEnforced(task, task.OwnerId, now);
@@ -132,6 +140,7 @@ public sealed class RiskEnforcementService(
                     unitOfWork.Execute(() =>
                     {
                         taskRepository.Save(task);
+                        riskDecisions?.Record(task, RiskDecisionReason.Rechecked, now);
                         orderRepository.Save(frozenOrder);
                         auditRepository.Add(AdminAuditEntry.Record(
                             AdminAuditEntry.SystemActorId, FreezeOrderAction, TargetType, task.Id, task.RiskEnforcementReason ?? "风险复检", now));
