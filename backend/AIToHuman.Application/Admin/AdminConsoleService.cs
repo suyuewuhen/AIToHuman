@@ -1,11 +1,13 @@
 using AIToHuman.Application.Common;
 using AIToHuman.Application.Notifications;
 using AIToHuman.Application.Orders;
+using AIToHuman.Application.Payments;
 using AIToHuman.Application.Tasks;
 using AIToHuman.Contracts.Admin;
 using AIToHuman.Domain.Admin;
 using AIToHuman.Domain.Common;
 using AIToHuman.Domain.Orders;
+using AIToHuman.Domain.Payments;
 using AIToHuman.Domain.Risk;
 using AIToHuman.Domain.Tasks;
 // System.Threading.Tasks 里也有一个 TaskStatus，这里明确用领域里的那个。
@@ -29,7 +31,8 @@ public sealed class AdminConsoleService(
     IAdminAuditRepository auditRepository,
     TimeProvider timeProvider,
     NotificationService notifications,
-    IUnitOfWork unitOfWork)
+    IUnitOfWork unitOfWork,
+    AIToHuman.Application.Payments.PaymentService? payments = null)
 {
     /// <summary>运营下架动作的审计名称。</summary>
     public const string TaskCancelAction = "task.cancel";
@@ -118,9 +121,14 @@ public sealed class AdminConsoleService(
 
     /// <summary>
     /// 处置争议：强制完成、退回返工或终止订单，必须写明依据（依据写进运营审计）。
-    /// 订单状态、任务连带处理、审计与双方通知都在同一个事务里完成。
+    /// 订单状态、任务连带处理、资金分账、审计与双方通知都在同一个事务里完成。
+    ///
+    /// <paramref name="amount"/> 的含义随结论而变（都可省略）：
+    /// 强制完成时是**放款给服务者的金额**（默认全部，差额退回需求方）；
+    /// 终止订单时是**退回需求方的金额**（默认全部，差额作为补偿给服务者）；
+    /// 退回返工不涉及资金，传了金额会被拒绝。
     /// </summary>
-    public AdminOrderItemResponse ResolveDispute(Guid orderId, string decision, string note, Guid actorId)
+    public AdminOrderItemResponse ResolveDispute(Guid orderId, string decision, string note, Guid actorId, decimal? amount = null)
     {
         var order = orderRepository.Get(orderId) ?? throw new KeyNotFoundException("订单不存在。");
         var resolution = ParseResolution(decision);
@@ -150,7 +158,9 @@ public sealed class AdminConsoleService(
                 }
             }
 
-            auditRepository.Add(AdminAuditEntry.Record(actorId, $"{OrderResolveActionPrefix}.{resolution.ToString().ToLowerInvariant()}", OrderTargetType, order.Id, note, now));
+            SettleDisputeMoney(order, resolution, amount, note, now);
+
+            auditRepository.Add(AdminAuditEntry.Record(actorId, $"{OrderResolveActionPrefix}.{resolution.ToString().ToLowerInvariant()}", OrderTargetType, order.Id, AuditReason(note, order, amount), now));
             notifications.EnqueueOrderDisputeResolved(order, order.OwnerId, now);
             notifications.EnqueueOrderDisputeResolved(order, order.WorkerId, now);
         });
@@ -211,6 +221,43 @@ public sealed class AdminConsoleService(
     }
 
     private static int Clamp(int? limit) => Math.Clamp(limit ?? DefaultLimit, 1, MaxLimit);
+
+    /// <summary>
+    /// 争议处置里的资金分账。没有托管（托管关掉或历史订单）时什么都不做——
+    /// 这种情况下的处置只改状态，不产生流水，与托管上线之前的行为一致。
+    /// </summary>
+    private void SettleDisputeMoney(Order order, DisputeResolution resolution, decimal? amount, string note, DateTimeOffset now)
+    {
+        if (order.EscrowStatus == EscrowStatus.None) return;
+        // 手工装配（测试）可以不注入托管服务：这时只改订单状态，不产生流水。
+        if (payments is not { } paymentService) return;
+
+        switch (resolution)
+        {
+            case DisputeResolution.Approve:
+                paymentService.SettleFor(order, amount ?? order.EscrowAmount, note);
+                orderRepository.Save(order);
+                break;
+
+            case DisputeResolution.Cancel:
+                paymentService.SettleFor(order, order.EscrowAmount - (amount ?? order.EscrowAmount), note);
+                orderRepository.Save(order);
+                break;
+
+            case DisputeResolution.Rework:
+                if (amount is not null) throw new DomainException("退回返工不涉及资金：赔付或退款金额只在“强制完成”与“终止订单”时填写。");
+                break;
+        }
+    }
+
+    /// <summary>审计里的原因带上分账金额，事后看审计就知道这次动了多少钱。</summary>
+    private static string AuditReason(string note, Order order, decimal? amount)
+    {
+        if (amount is not { } value || order.EscrowStatus == EscrowStatus.None) return note;
+
+        var text = $"{note}（资金处置金额 {value:0.##} {order.Reward.Currency}）";
+        return text.Length <= AdminAuditEntry.MaxReasonLength ? text : text[..(AdminAuditEntry.MaxReasonLength - 1)] + "…";
+    }
 
     private static TaskStatus? ParseStatus(string? status)
     {
@@ -300,7 +347,11 @@ public sealed class AdminConsoleService(
         order.DisputeOpenedAt,
         order.DisputeResult,
         order.DisputeResolutionNote,
-        order.DisputeResolvedAt);
+        order.DisputeResolvedAt,
+        order.EscrowStatus.ToString(),
+        order.EscrowAmount,
+        order.ReleasedAmount,
+        order.RefundedAmount);
 
     private AdminTaskItemResponse Map(TaskItem task, IReadOnlyDictionary<Guid, AdminUserView> owners)
     {

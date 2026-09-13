@@ -1,5 +1,6 @@
 using AIToHuman.Application.Orders;
 using AIToHuman.Domain.Orders;
+using AIToHuman.Domain.Payments;
 using AIToHuman.Domain.Tasks;
 using AIToHuman.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
@@ -36,12 +37,25 @@ public sealed class EfOrderRepository(TaskDbContext db) : IOrderRepository
         record.DisputeResolution = order.DisputeResult;
         record.DisputeResolutionNote = order.DisputeResolutionNote;
         record.DisputeResolvedAt = order.DisputeResolvedAt;
+        // 托管字段同样要逐列写回：它们是"钱动到哪一步"的唯一记录，
+        // 漏写一列就会变成"钱扣了但订单看起来没托管"（本仓库在 tasks 上踩过漏列的坑）。
+        record.EscrowStatus = order.EscrowStatus.ToString();
+        record.EscrowAmount = order.EscrowAmount;
+        record.ReleasedAmount = order.ReleasedAmount;
+        record.RefundedAmount = order.RefundedAmount;
+        record.PaymentReference = order.PaymentReference;
+        record.EscrowHeldAt = order.EscrowHeldAt;
+        record.EscrowSettledAt = order.EscrowSettledAt;
         // 自增并发令牌：同一订单被并发提交或验收时，后写入者会拿到 0 行更新并抛冲突。
         record.Version += 1;
         db.SaveChanges();
     }
-    private static OrderRecord ToRecord(Order order) => new() { Id = order.Id, TaskId = order.TaskId, OwnerId = order.OwnerId, WorkerId = order.WorkerId, Title = order.Title, RewardAmount = order.Reward.Amount, RewardCurrency = order.Reward.Currency, Status = order.Status.ToString(), CreatedAt = order.CreatedAt, EvidenceNote = order.EvidenceNote, ReviewNote = order.ReviewNote, SubmittedAt = order.SubmittedAt, ReviewedAt = order.ReviewedAt, RejectionNote = order.RejectionNote, ReworkCount = order.ReworkCount, CancelledAt = order.CancelledAt, CancelledBy = order.CancelledBy, CancellationReason = order.CancellationReason, DisputeReason = order.DisputeReason, DisputeOpenedBy = order.DisputeOpenedBy, DisputeOpenedAt = order.DisputeOpenedAt, DisputeResolution = order.DisputeResult, DisputeResolutionNote = order.DisputeResolutionNote, DisputeResolvedAt = order.DisputeResolvedAt };
-    private static Order Map(OrderRecord record) => Order.Rehydrate(record.Id, record.TaskId, record.OwnerId, record.WorkerId, record.Title, new Money(record.RewardAmount, record.RewardCurrency), Enum.Parse<OrderStatus>(record.Status), record.CreatedAt, record.EvidenceNote, record.ReviewNote, record.SubmittedAt, record.ReviewedAt, record.RejectionNote, record.ReworkCount, record.CancelledAt, record.CancelledBy, record.CancellationReason, record.DisputeReason, record.DisputeOpenedBy, record.DisputeOpenedAt, record.DisputeResolution, record.DisputeResolutionNote, record.DisputeResolvedAt);
+    private static OrderRecord ToRecord(Order order) => new() { Id = order.Id, TaskId = order.TaskId, OwnerId = order.OwnerId, WorkerId = order.WorkerId, Title = order.Title, RewardAmount = order.Reward.Amount, RewardCurrency = order.Reward.Currency, Status = order.Status.ToString(), CreatedAt = order.CreatedAt, EvidenceNote = order.EvidenceNote, ReviewNote = order.ReviewNote, SubmittedAt = order.SubmittedAt, ReviewedAt = order.ReviewedAt, RejectionNote = order.RejectionNote, ReworkCount = order.ReworkCount, CancelledAt = order.CancelledAt, CancelledBy = order.CancelledBy, CancellationReason = order.CancellationReason, DisputeReason = order.DisputeReason, DisputeOpenedBy = order.DisputeOpenedBy, DisputeOpenedAt = order.DisputeOpenedAt, DisputeResolution = order.DisputeResult, DisputeResolutionNote = order.DisputeResolutionNote, DisputeResolvedAt = order.DisputeResolvedAt, EscrowStatus = order.EscrowStatus.ToString(), EscrowAmount = order.EscrowAmount, ReleasedAmount = order.ReleasedAmount, RefundedAmount = order.RefundedAmount, PaymentReference = order.PaymentReference, EscrowHeldAt = order.EscrowHeldAt, EscrowSettledAt = order.EscrowSettledAt };
+    private static Order Map(OrderRecord record) => Order.Rehydrate(record.Id, record.TaskId, record.OwnerId, record.WorkerId, record.Title, new Money(record.RewardAmount, record.RewardCurrency), Enum.Parse<OrderStatus>(record.Status), record.CreatedAt, record.EvidenceNote, record.ReviewNote, record.SubmittedAt, record.ReviewedAt, record.RejectionNote, record.ReworkCount, record.CancelledAt, record.CancelledBy, record.CancellationReason, record.DisputeReason, record.DisputeOpenedBy, record.DisputeOpenedAt, record.DisputeResolution, record.DisputeResolutionNote, record.DisputeResolvedAt, ParseEscrowStatus(record.EscrowStatus), record.EscrowAmount, record.ReleasedAmount, record.RefundedAmount, record.PaymentReference, record.EscrowHeldAt, record.EscrowSettledAt);
+
+    /// <summary>托管状态列是后加的，历史行可能是空或不认识的取值：一律按"没有托管"处理。</summary>
+    private static EscrowStatus ParseEscrowStatus(string? value) =>
+        Enum.TryParse<EscrowStatus>(value, ignoreCase: true, out var parsed) ? parsed : EscrowStatus.None;
 }
 
 public sealed class EfReviewRepository(TaskDbContext db) : IReviewRepository

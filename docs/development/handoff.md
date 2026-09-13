@@ -6,7 +6,7 @@
 
 当前分支：`main`
 
-最新已提交基线：本轮之前 `main` 与 `origin/main` 同步在 `dc68f98`（申诉节流与留档）；本轮「精确地址访问审计 + 凭证容器白名单化」是紧随其后的一个提交，并已推送保持两边一致（见第 2 节）。
+最新已提交基线：本轮之前 `main` 与 `origin/main` 同步在 `85ac9ef`（精确地址访问审计 + 凭证容器白名单化）；本轮「资金托管与只追加账本」是紧随其后的一个提交，并已推送保持两边一致（见第 2 节）。
 
 本文面向接手开发、代码评审和本地联调人员。内容以已提交代码为准；上一版文档里“已提交基线 / 当前未提交实现”的双轨描述已经过时——所有多轮 AI、通知、会话与凭证实现都已提交。文中每条“已实现 / 未实现”的结论都对应第 11 节可复现的验证步骤。
 
@@ -29,11 +29,11 @@ AI 多轮澄清（每轮一个问题）
 → 双方评价，双方提交或 7 天后公开
 ```
 
-尚未实现：真实支付和托管、实名认证、真实的病毒/内容扫描服务商（协议已接好，只差选定/部署服务）、争议的责任判定与赔付/退款、争议申诉与处理时限、客服工单、凭证图片的**像素级重编码**（需要图像编解码库，离线取不到；当前做的是容器白名单化 + 结构 fail-closed，兜底靠内容扫描）；运营后台的任务/用户检索、人工下架、争议处置、风险复核、误拦申诉、**风险规则目录的编辑**、**发布后复检**与**精确地址访问审计**都已实现，风险侧缺的是模型辅助分类、规则命中统计与看板、规则目录编辑的审批流；另外禁止类别命中的已分配任务目前只做"冻结订单 + 运营按争议处置"，**没有自动退款或赔付**（要等支付与托管那一批）。
+尚未实现：**真实支付服务商接入**（托管与账本已实现：模拟网关 + 只追加账本 + 争议分账，缺的是接一家真实通道、失败重试队列与自动对账、佣金抽成）、实名认证、真实的病毒/内容扫描服务商（协议已接好，只差选定/部署服务）、争议申诉与处理时限、客服工单、凭证图片的**像素级重编码**（需要图像编解码库，离线取不到；当前做的是容器白名单化 + 结构 fail-closed，兜底靠内容扫描）、风险侧缺的是模型辅助分类、规则命中统计与看板、规则目录编辑的审批流；另外禁止类别命中的已分配任务只做"冻结订单 + 运营按争议处置"，**赔付与退款现在可以按金额执行**（走托管账本），但仍需运营人工给出金额与依据——没有自动的责任判定。
 
 ## 2. 当前工作区状态
 
-工作区状态：`main` 与 `origin/main` 同步；本轮的「精确地址访问审计」与「凭证容器白名单化」随本轮提交一起进入 `main` 并推送（`git log -1` 可见）。上一版交接文档描述的“多轮 AI 未提交实现”已经全部提交，本文不再区分“基线 / 未提交”两种状态。
+工作区状态：`main` 与 `origin/main` 同步；本轮的「资金托管与只追加账本」随本轮提交一起进入 `main` 并推送（`git log -1` 可见）。上一版交接文档描述的“多轮 AI 未提交实现”已经全部提交，本文不再区分“基线 / 未提交”两种状态。
 
 从基线 `f196850` 到 `e45da76`（多轮 AI 与会话持久化那一轮）的主要变化：
 
@@ -147,6 +147,13 @@ docs/                             ai-planning、api/api-guidelines、architectur
 ### 订单、通知与评价
 
 - 选中服务者后自动创建订单，并固化任务标题和悬赏快照。
+- **资金托管与只追加账本**（迁移 28）：下单（选人）时冻结需求方资金、验收时放款给服务者、取消时退款、争议处置时按金额分账，每一步都同时改订单的托管状态并写一条账本。
+  - 托管状态（`EscrowStatus`）：`None`（未托管：托管关掉或历史订单）/ `Held`（已冻结）/ `Released`（全额放款）/ `Refunded`（全额退款）/ `Settled`（部分放款 + 部分退款）；订单上另有 `EscrowAmount`（= 悬赏）、`ReleasedAmount`、`RefundedAmount`、`PaymentReference`、`EscrowHeldAt`、`EscrowSettledAt`，`EscrowBalance` 是还没动过的余额。
+  - 账本是**复式记账、只追加**（`ledger_entries`）：一行 = 一次账户间转账（`OwnerFunds` 需求方资金 → `Escrow` 平台托管 → `WorkerPayout` 服务者应得），带动作（`Hold`/`Release`/`Refund`/`PartialRelease`/`PartialRefund`）、正数金额、币种与说明。这样"钱去哪了"是可对账的：同一订单的流水加总能还原冻结、放款、退款各多少；争议里的"一半赔付"天然表达成两笔转账。**本轮不抽佣金**（账本里没有平台收入账户，真有佣金时要新增账户与分账流水，而不是把差额留在托管账户）。
+  - 分账必须**正好等于**托管金额：全给服务者 → `Released`，全退需求方 → `Refunded`，都有 → `Settled`；不相等、负数或全零一律 `422`（不允许出现"不知道去哪了"的差额）。
+  - 网关是**可插拔端口**（`IPaymentGateway`：冻结/放款/退款），当前注册**模拟网关**（确定性、不持有金额状态，只发可对账凭据 `sim-hold-<orderId>`；测试可打开失败开关）。真实服务商要满足两条契约：同一动作能用幂等键重放、网关侧要有可对账流水号。
+  - 运营配置 `payment.provider`：`simulated`（默认）走上面的流程；`disabled` 关闭托管——订单不带托管信息、也不写流水，行为与托管上线之前完全一致（既是本地联调的便利开关，也是网关出问题时的一键降级）。
+  - 三条口径：**钱与状态一起动**（资金动作与订单保存在同一个工作单元，不允许"已完成但没放款"）、**失败就不改状态**（网关不通时抛错让事务回滚、用户可重试，宁可挡住一次验收也不留一笔说不清的钱）、**参与者可查流水**（`GET /api/v1/orders/{id}/ledger`，仅订单双方；运营另有 `GET /api/v1/admin/orders/{id}/ledger`）。已知缺口：失败重试队列与自动对账还没有（现在依赖调用方重试）。
 - “我的订单”分为“我发布的订单”和“我接取的任务”。
 - 已实现 `Accepted → InProgress → Submitted → Approved`，需求方也可将 `Submitted` 驳回为 `Rejected`。
 - 被驳回的订单可以由服务者返工：`POST /api/v1/orders/{id}/resume` 把 `Rejected` 退回 `InProgress`，服务者可再次提交，`ReworkCount` 累加、`RejectionNote` 保留最近一次驳回原因。
@@ -160,6 +167,7 @@ docs/                             ai-planning、api/api-guidelines、architectur
 - 任务撤销与过期：所有者可以撤销自己的草稿或尚未被选中的已发布任务（`POST /api/v1/tasks/{id}/cancel`，原因必填，报名中的服务者收到 `task.cancelled`）；超过截止时间仍无人被选中的已发布任务由后台 `TaskExpiryService` 每 60 秒扫描一次置为过期（记 `ExpiredAt`），`Pending` 报名一并置为 `Expired`，所有者与报名者各收到一条 `task.expired`。过期不可逆，任务不会留在“已发布”里等下一个服务者。
 - 报名与报名窗口：任务可以设可选的**报名截止时间**（`ApplicationDeadline`），到点后只关闭新报名，已有报名仍可被选中；服务者可以撤回自己尚未被处理的报名（`POST /api/v1/tasks/{id}/applications/{applicationId}/withdraw`），撤回后记录保留为 `Withdrawn`、可以重新报名，所有者收到 `task.applicationWithdrawn`；服务者在“我的报名”（`GET /api/v1/tasks/applications/mine`）里能看到自己每一条报名的状态与是否还能撤回。
 - 争议：需求方在 `Submitted`、服务者在 `Rejected` 可以发起争议（`POST /api/v1/orders/{id}/dispute`，原因必填 ≤500），订单随即进入 `Disputed` 并冻结（提交、验收、驳回、返工、取消全部拒绝），任务保持 `Assigned`；运营在后台“争议处置”里三选一处置（强制完成 / 退回返工 / 终止订单）并必须写明依据，动作记入 `order.dispute.{approve|rework|cancel}` 审计，双方都会收到 `order.disputed` 与 `order.disputeResolved`。
+- **争议里的赔付与退款**：处置请求可以带一个可选金额（`AdminResolveDisputeRequest.amount`），**含义随结论而变**——强制完成时是放款给服务者的金额（差额退回需求方），终止订单时是退回需求方的金额（差额作为补偿给服务者），留空即全额；退回返工不涉及资金，填了金额会被拒绝（`422`）。越界（超过托管金额、负数）同样 `422`「赔付金额必须在 0 到托管金额（X）之间。」；运营审计的原因里会带上「（资金处置金额 X CNY）」，事后看审计就知道这次动了多少钱。
 - 多实例扇出：`ConnectionStrings__Redis` 已配置且运营打开 `notifications.fanout.enabled` 时，认领方把通知广播到 Redis 频道 `aitohuman:notifications:fanout`（`RedisNotificationFanout`，StackExchange.Redis 发布/订阅），每个实例的 `NotificationFanoutSubscriber` 收到后推给连在自己身上的客户端——用户连在哪个实例都能收到。没配连接串或开关为 false 时，认领方直接推本实例客户端；广播不通（Redis 抖动/还没起来）时兜底推本实例在线客户端并打警告日志，其它实例的客户端靠 REST 补齐；只有广播和本地推送都失败才撤回认领，2 秒后重试。订阅方每 5 秒检查一次开关，运营开启后自动接入，不需要重启。
 - 扇出是 at-most-once 的实时提示：广播时若没有任何实例在订阅，日志会给出警告；事实状态始终以 `notifications` 表与 REST 收件箱为准，客户端重连后重新拉取补齐。
 - 推送使用版本化信封 `{ eventId, type, version, occurredAt, payload }`；`eventId` 是幂等键（订单创建用订单 ID，状态变化由订单 ID + 状态推导），同一业务事件重复入队只保留一条。
@@ -198,7 +206,7 @@ docs/                             ai-planning、api/api-guidelines、architectur
 
 ### 运营可配置的三方集成参数
 
-- 设置目录（白名单）在 `backend/AIToHuman.Application/Settings/SettingCatalog.cs`：目前 26 个键，分 AI 服务商、对象存储、凭证上传、内容扫描、通知推送五组。只有登记在册的键才能被后台读写，`ConnectionStrings__Postgres`、`ConnectionStrings__Redis`、日志、密钥环路径这类部署级配置永远不会出现在配置表里。
+- 设置目录（白名单）在 `backend/AIToHuman.Application/Settings/SettingCatalog.cs`：目前 27 个键，分 AI 服务商、对象存储、凭证上传、内容扫描、通知推送、资金托管六组。只有登记在册的键才能被后台读写，`ConnectionStrings__Postgres`、`ConnectionStrings__Redis`、日志、密钥环路径这类部署级配置永远不会出现在配置表里。
 - 生效值的解析顺序固定为「数据库覆盖 → 环境变量/配置文件 → 代码默认值」。删除覆盖记录就等于恢复默认，不需要额外的启用/停用开关。
 - 运营接口（需管理员身份）：`GET /api/v1/admin/settings`、`GET /api/v1/admin/settings/{key}`、`PUT /api/v1/admin/settings/{key}`、`DELETE /api/v1/admin/settings/{key}`（恢复默认）、`POST /api/v1/admin/settings/{key}/test`（只读自检）、`GET /api/v1/admin/settings/audits`。
 - 机密（`ai.apiKey`、`storage.s3.secretAccessKey`、`evidence.scanner.apiKey`）用 Data Protection 加密后落库，密文带 `dp1:` 前缀；接口只返回 `****末四位` 与指纹，审计记录同样只留掩码与指纹，明文只在服务端内存里出现。
@@ -221,7 +229,7 @@ docs/                             ai-planning、api/api-guidelines、architectur
 5. 悬赏由用户结合 AI 建议确认；服务者不能竞价，用户只能在分配前主动加价。
 6. 服务者先看需求方评价再报名，需求方先看服务者评价再选择。
 7. 公开大厅仅展示区域级位置；精确地址和联系方式属于订单执行阶段私密信息。
-8. 当前不接入真实支付，也不以模拟支付冒充合规交易能力。
+8. 资金托管与账本已经落地（模拟网关），但**不接真实支付通道，也不以模拟支付冒充合规交易能力**：`payment.provider=simulated` 时钱只在平台内部记账（冻结/放款/退款/分账都可查），上线前必须接一家真实通道并补齐对账与失败重试。
 9. 聊天、未读数和系统通知复用 SignalR 推送，但事实状态一律以 REST 为准：推送只是刷新提示，持久化与重试由 `notifications` 表（Outbox）保证，客户端断线重连后靠重新拉取恢复。
 10. 取消订单的权限按“谁承担后果”划分：服务者只能在**开始执行前**（`Accepted`）取消，一旦开工就要由需求方发起终止，避免接了单又甩单；需求方在服务者提交验收前（`Accepted`/`InProgress`）都可以取消；提交验收后（`Submitted`）双方都不能取消，只能先验收或驳回。取消必须填原因（≤200 字），原因、取消人与时间都落库。
 11. 订单取消后不留死任务：任务未过截止时间就回到大厅重新招募（该次选择作废，服务者可以重新报名），已过截止时间就直接置为过期。
@@ -556,7 +564,7 @@ netstat -ano | Select-String ':5188|:5173'
 
 Development + PostgreSQL 启动时改为应用 EF Core 迁移（`Database.Migrate()`），不再使用 `EnsureCreated()` 和幂等建表 SQL。生产环境由部署流程执行迁移，不在应用启动时自动迁移。
 
-迁移历史（27 个）：`AddUsers` → `AddOrders` → `AddOrderEvidence` → `AddReviews` → `AddOrderRework` → `AddConversations` → `AddTaskTables` → `AddConcurrencyTokens` → `AddNotifications` → `AddOrderMessages` → `AddTaskExecutionAddress` → `AddEvidence` → `AddSystemSettings` → `AddEvidenceScanAttempts` → `AddEvidenceMetadataRemoved` → `AddAdminAudit` → `AddOrderCancellationAndTaskExpiry` → `AddApplicationDeadline` → `AddOrderDispute` → `AddTaskRiskAssessment` → `AddTaskDraftRevisions` → `AddIdempotencyEntries` → `AddRiskAppeal` → `AddRiskRuleCatalogRevisions` → `AddTaskRiskEnforcement` → `AddTaskRiskAppeals` → `AddAddressAccessEntries`。其中 `AddTaskTables` 补上了此前只由 `EnsureCreated()` 建出、从未纳入迁移的 `tasks` 与 `task_applications` 两张核心表；`AddConcurrencyTokens` 给 `tasks`/`orders` 加 `Version` 乐观并发令牌；`AddTaskExecutionAddress` 给 `tasks` 加参与者层的精确执行地址；`AddEvidence` 建 `evidence` 表；`AddSystemSettings` 建运营配置的两张表；`AddEvidenceScanAttempts` 给 `evidence` 补上扫描尝试次数、最近一次说明与尝试时间；`AddEvidenceMetadataRemoved` 补上“已移除元数据”说明与按人限速用的索引；`AddAdminAudit` 建运营操作审计表 `admin_audit_entries`（人工下架等动作只追加留痕）；`AddOrderCancellationAndTaskExpiry` 给 `orders` 加取消三列、给 `tasks` 加 `ExpiredAt`/`CancelledAt`/`CancellationReason`；`AddApplicationDeadline` 给 `tasks` 加可选的报名截止时间；`AddOrderDispute` 给 `orders` 加争议六列并补 `(Status, CreatedAt)` 索引供运营按状态检索；`AddTaskRiskAssessment` 给 `tasks` 加风险判定的 10 列并补 `(RiskReviewStatus, CreatedAt)` 索引供复核队列扫描——存量行用数据库默认值 `Allowed`/`NotRequired` 回填，读取时对未知取值也做防御性解析（历史行不会因为枚举名不认识而读不出来）；`AddTaskDraftRevisions` 建草稿历史表 `task_draft_revisions`（一行一个版本的完整快照 + `ChangeSummary` + 当版风险结论）并给 `(TaskId, Revision)` 建唯一索引；`AddIdempotencyEntries` 建幂等记录表 `idempotency_entries`（主键 `(UserId, Key)` + `StartedAt` 索引）；`AddRiskAppeal` 给 `tasks` 加误拦申诉的 6 列并补 `(RiskAppealStatus, RiskAppealedAt)` 索引供申诉队列扫描；`AddRiskRuleCatalogRevisions` 建风险规则目录的版本表 `risk_rule_catalog_revisions`（一行一版完整 JSON 快照 + 变化摘要 + 变更依据 + 操作人）并给 `Version` 建唯一索引、`CreatedAt` 建索引；`AddTaskRiskEnforcement` 给 `tasks` 加发布后风控处置的三列（`RiskEnforcementStatus` 带默认值 `None`，存量行回填成"没有处置过"）并补 `(Status, RiskRuleVersion)` 索引供复检扫描；`AddTaskRiskAppeals` 建申诉留档表 `task_risk_appeals`（一次申诉一行，含提交时的规则代码/版本/结论与理由、运营结论与依据）并给 `(TaskId, SubmittedAt)`（看轨迹）与 `(OwnerId, SubmittedAt)`（按人算节流次数）各建索引；`AddAddressAccessEntries` 建精确地址的访问留痕表 `address_access_entries`（一次读取一行，含被拒绝的尝试；`ViewerId` 可空表示匿名）并给 `(TaskId, OccurredAt)`（看这条地址被谁看过）与 `(ViewerId, OccurredAt)`（看这个人查过多少地址）各建索引。
+迁移历史（28 个）：`AddUsers` → `AddOrders` → `AddOrderEvidence` → `AddReviews` → `AddOrderRework` → `AddConversations` → `AddTaskTables` → `AddConcurrencyTokens` → `AddNotifications` → `AddOrderMessages` → `AddTaskExecutionAddress` → `AddEvidence` → `AddSystemSettings` → `AddEvidenceScanAttempts` → `AddEvidenceMetadataRemoved` → `AddAdminAudit` → `AddOrderCancellationAndTaskExpiry` → `AddApplicationDeadline` → `AddOrderDispute` → `AddTaskRiskAssessment` → `AddTaskDraftRevisions` → `AddIdempotencyEntries` → `AddRiskAppeal` → `AddRiskRuleCatalogRevisions` → `AddTaskRiskEnforcement` → `AddTaskRiskAppeals` → `AddAddressAccessEntries` → `AddOrderEscrowAndLedger`。其中 `AddTaskTables` 补上了此前只由 `EnsureCreated()` 建出、从未纳入迁移的 `tasks` 与 `task_applications` 两张核心表；`AddConcurrencyTokens` 给 `tasks`/`orders` 加 `Version` 乐观并发令牌；`AddTaskExecutionAddress` 给 `tasks` 加参与者层的精确执行地址；`AddEvidence` 建 `evidence` 表；`AddSystemSettings` 建运营配置的两张表；`AddEvidenceScanAttempts` 给 `evidence` 补上扫描尝试次数、最近一次说明与尝试时间；`AddEvidenceMetadataRemoved` 补上“已移除元数据”说明与按人限速用的索引；`AddAdminAudit` 建运营操作审计表 `admin_audit_entries`（人工下架等动作只追加留痕）；`AddOrderCancellationAndTaskExpiry` 给 `orders` 加取消三列、给 `tasks` 加 `ExpiredAt`/`CancelledAt`/`CancellationReason`；`AddApplicationDeadline` 给 `tasks` 加可选的报名截止时间；`AddOrderDispute` 给 `orders` 加争议六列并补 `(Status, CreatedAt)` 索引供运营按状态检索；`AddTaskRiskAssessment` 给 `tasks` 加风险判定的 10 列并补 `(RiskReviewStatus, CreatedAt)` 索引供复核队列扫描——存量行用数据库默认值 `Allowed`/`NotRequired` 回填，读取时对未知取值也做防御性解析（历史行不会因为枚举名不认识而读不出来）；`AddTaskDraftRevisions` 建草稿历史表 `task_draft_revisions`（一行一个版本的完整快照 + `ChangeSummary` + 当版风险结论）并给 `(TaskId, Revision)` 建唯一索引；`AddIdempotencyEntries` 建幂等记录表 `idempotency_entries`（主键 `(UserId, Key)` + `StartedAt` 索引）；`AddRiskAppeal` 给 `tasks` 加误拦申诉的 6 列并补 `(RiskAppealStatus, RiskAppealedAt)` 索引供申诉队列扫描；`AddRiskRuleCatalogRevisions` 建风险规则目录的版本表 `risk_rule_catalog_revisions`（一行一版完整 JSON 快照 + 变化摘要 + 变更依据 + 操作人）并给 `Version` 建唯一索引、`CreatedAt` 建索引；`AddTaskRiskEnforcement` 给 `tasks` 加发布后风控处置的三列（`RiskEnforcementStatus` 带默认值 `None`，存量行回填成"没有处置过"）并补 `(Status, RiskRuleVersion)` 索引供复检扫描；`AddTaskRiskAppeals` 建申诉留档表 `task_risk_appeals`（一次申诉一行，含提交时的规则代码/版本/结论与理由、运营结论与依据）并给 `(TaskId, SubmittedAt)`（看轨迹）与 `(OwnerId, SubmittedAt)`（按人算节流次数）各建索引；`AddAddressAccessEntries` 建精确地址的访问留痕表 `address_access_entries`（一次读取一行，含被拒绝的尝试；`ViewerId` 可空表示匿名）并给 `(TaskId, OccurredAt)`（看这条地址被谁看过）与 `(ViewerId, OccurredAt)`（看这个人查过多少地址）各建索引；`AddOrderEscrowAndLedger` 建资金账本表 `ledger_entries`（一行一次账户间转账，只追加）并给 `(OrderId, OccurredAt)` 与 `OccurredAt` 各建索引，同时给 `orders` 加 7 个托管字段（`EscrowStatus` 带默认值 `None`，存量订单回填成"没有托管"）与 `(EscrowStatus, CreatedAt)` 索引供运营排查"托管还没结清"的订单。
 
 早期 `EnsureCreated()` 建出的本地库没有迁移历史记录。启动逻辑会检测这种情况：先用模型对比物理表的「表名.列名」，只有结构完全对得上时，才把当时已有的迁移整体标记为已应用并打警告日志；一旦缺表或缺列就直接报错说明缺了什么，提示删除重建，避免在错误的 schema 上继续运行。基线化之后新增的迁移会正常应用——例如 `AddConcurrencyTokens` 就是在基线化之后自动补上的 `Version` 列。目标库不存在时由 `Migrate()` 负责建库。
 
@@ -662,7 +670,7 @@ Order: Accepted → InProgress → Submitted → Approved
 
 - 扫描闭环端到端（真实 PostgreSQL + 真实 HTTP + 本地 TCP 扫描替身）：上传 67 字节 PNG 时替身返回 `pending` → 接口 `200`、`scanStatus=Pending`、`scanAttempts=1`、`isDownloadable=false`、下载 `403`；把替身改成 `clean` 后，后台重扫在 60 秒那一轮把它变为 `Clean`（`scanAttempts=2`、说明“重新扫描通过。”），需求方再下载拿到完全一致的 67 字节。替身日志显示两次调用依次是 `pending`、`clean`。
 - 可配置上传上限生效：把 `evidence.maxSizeBytes` 改成 1024 后上传 2048 字节返回 `413 凭证大小不能超过 1 KB。`，且磁盘上不留文件；`DELETE` 该配置后回到默认 5242880（`source=default`）。
-- 运营配置目录当时共 20 个键、四个分组：AI 服务商 / 对象存储 / 凭证上传 / 内容扫描（现在是 26 个、五个分组：凭证上传组多了直连下载有效期、元数据开关、按人配额，内容扫描组多了 ClamAV 的地址与端口，通知推送组是后加的多实例扇出开关）。
+- 运营配置目录当时共 20 个键、四个分组：AI 服务商 / 对象存储 / 凭证上传 / 内容扫描（现在是 27 个、六个分组：凭证上传组多了直连下载有效期、元数据开关、按人配额，内容扫描组多了 ClamAV 的地址与端口，通知推送与资金托管两组是后来加的）lamAV 的地址与端口，通知推送组是后加的多实例扇出开关）。
 - 全新数据库：同一轮启动时 `Migrate()` 从零建库并应用全部 14 个迁移，随后在该库上完成上面的用例。
 
 本轮（S3 兼容对象存储）新增验证：
@@ -869,6 +877,18 @@ npm run build
   - 非管理员路径：退出登录 → 换一个不在管理员名单里的账号登录 → 看到“这个账号没有运营权限”（说明文字指出名单来自 `Admin__UserIds` / `Admin__Emails`），且页面上没有任何后台内容。
 - 说明：截图存在 `.scratch/ops-1-login.png` … `.scratch/ops-7-not-admin.png`（本机临时目录，不入库）；我这次的模型不具备图片输入能力，所以上述结论来自 DOM 断言与尺寸测量，截图请人工过一眼。
 
+本轮（资金托管与只追加账本）新增验证：
+
+- 编译与测试：`dotnet build AIToHuman.sln --no-restore` 0 警告 0 错误；领域 **327** + 集成 **361** = **688** 个用例全通过（本轮新增领域 16 条、用例层 13 条、真库 3 条）；迁移总数 **28**；前端 `npm run typecheck` 与 `npm run build` 通过（`index` 130.68 kB、`ops` 43.06 kB）。
+- 迁移自愈：开发库启动时自动应用第 28 个迁移 `AddOrderEscrowAndLedger`（日志"共 28 个迁移"）；真库回归用例在随机空库上 `Migrate()` 也从零建出账本表与托管字段。
+- 真机 HTTP（真实 PostgreSQL）跑通四条资金路径：
+  - **验收放款**：选人时订单 `Held`（托管 60），服务者提交后需求方验收 → `Released`、已放款 60；流水两条：`OwnerFunds → Escrow` 60（Hold）、`Escrow → WorkerPayout` 60（Release）。
+  - **取消退款**：选人时冻结 80，需求方取消订单 → `Refunded`、已退款 80；流水两条：Hold + `Escrow → OwnerFunds` 80（Refund）。
+  - **争议分账**：托管 100，双方进入争议后运营按"放款 40、退款 60"处置 → 订单 `Approved`、托管 `Settled`、已放款 40、已退款 60；流水三条：Hold 100 + `PartialRelease` 40 + `PartialRefund` 60，运营审计原因是「按完成一半结算（资金处置金额 40 CNY）」。
+  - **边界**：外人读订单流水 `403`；赔付金额超过托管额 `422`「赔付金额必须在 0 到托管金额（100）之间。」；把 `payment.provider` 改成 `disabled` 后新建订单托管状态 `None`、金额 0、**没有任何流水**，改回 `simulated` 后恢复托管（说明这个开关既能做联调降级，也能真的把托管整体关掉）。
+- 真库用例另外断言两条只有真事务能验证的事：①**网关冻结失败时整体回滚**——任务仍是 `Published`、数据库里没有订单、没有任何流水、报名仍是 `Pending`（内存装配做不到这件事，所以这条只放在真库用例里）；②托管字段与账本在真库上的往返——换作用域读回来仍是 `Released` + 已放款 60，账本两行且借/贷账户正确（托管字段是逐列写回的，漏一列就会出现"钱扣了但订单看起来没托管"）。
+- 一条实现上的取舍（写进文档）：**模拟网关不持有金额状态**——真正的账在 `ledger_entries` 与订单托管字段上，网关只负责"动作能不能成功"并返回可对账凭据。理由：真实服务商的状态在它那边，服务端再存一份必然会对不上，凭据 + 本地流水才是可对账的组合。
+
 本轮（精确地址访问审计 + 凭证容器白名单化）新增验证：
 
 - 编译与测试：`dotnet build AIToHuman.sln --no-restore` 0 警告 0 错误；领域 **311** + 集成 **347** = **658** 个用例全通过（本轮新增/改写领域 14 条、用例层 6 条、真库 1 条）；迁移总数 **27**；前端 `npm run typecheck` 与 `npm run build` 通过（`index` 128.50 kB、`ops` 41.76 kB）。
@@ -1052,6 +1072,14 @@ npm run build
 - 主应用：顶栏只保留一个“运营后台 ↗”链接（`target="_blank"`，仅管理员可见），运营相关状态与引用（`settingsOpen`、配置项/审计草稿、各队列数据）全部移出，退出登录时不再需要清理这些状态。
 - 顺带抽取：时间格式化搬到 `frontend/src/utils/format.ts`，两个入口共用一份，避免口径漂移。
 
+本轮追加（资金托管与只追加账本）：
+
+- 领域：`EscrowStatus`、只追加的 `LedgerEntry`（复式记账：行 = 一次账户间转账，金额为正、借贷不同账户、必须挂订单）、`LedgerAccount`（需求方资金 / 平台托管 / 服务者应得，**没有平台收入账户**）、`LedgerEntryKind`（冻结/放款/退款/部分放款/部分退款）；`Order` 新增托管字段与 `HoldEscrow`/`ReleaseEscrow`/`RefundEscrow`/`SettleEscrow`（分账之和必须等于托管金额）。
+- 应用：`IPaymentGateway` 端口 + `PaymentService`（`HoldFor`/`ReleaseFor`/`RefundFor`/`SettleFor`/流水查询），三条口径是"钱与状态一起动、失败就不改状态、可以整体关掉"；选人、验收、取消、争议处置四处接入。
+- 存储与迁移：第 28 个迁移建 `ledger_entries` 并给 `orders` 加 7 个托管字段与 `(EscrowStatus, CreatedAt)` 索引；EF 与内存两套账本实现。
+- 配置：新增 `payment.provider`（`simulated` 默认 / `disabled` 关掉托管），设置目录变为 27 个键、六个分组。
+- 接口与前端：`OrderResponse` 与 `AdminOrderItemResponse` 带上托管字段，`AdminResolveDisputeRequest.amount` 支持按金额赔付/退款，新增参与者与运营两条流水接口；用户侧订单卡片显示托管状态并可展开"资金流水"，运营后台争议处置可填金额并看到资金去向。
+
 本轮追加（精确地址访问审计 + 凭证容器白名单化）：
 
 - 领域：新增只追加的 `AddressAccessEntry`（身份与结论由任务本身推出：`Owner`/`SelectedWorker`/`Other` × `Granted`/`Denied`/`NotSet`，匿名不留 viewer id，"没有地址可看"不算越权）与 `AddressAccessRole`/`AddressAccessOutcome`；`EvidenceContentSanitizer` 由黑名单改为**白名单 + 结构校验**（JPEG 丢全部 APPn/COM、PNG 只留 IHDR/PLTE/tRNS/IDAT/IEND、WebP 只留图像与动画块），结构坏了抛 `DomainException`（fail closed，不再原样放行）。
@@ -1085,7 +1113,7 @@ npm run build
 - 幂等键的收尾：没有 ETag/版本字段返回；前端还没有"自动生成并复用幂等键"，目前只靠按钮置灰防重复点击（见第 10 节）。记录清理已经自动化（24 小时 / 10 分钟 / 每小时一轮）。
 - 对象存储的短时签名 URL 已实现（见第 3、11 节）；如果以后要让前端完全绕开后端，需要补 CORS 配置与审计补偿。
 - 选定病毒/内容扫描服务后把 `evidence.scanner.provider` 切成 `http` + `failMode=closed`（重扫闭环已经就绪，只差真实服务商）。
-- 运营后台的其余部分：客服工单、争议的责任判定与赔付/退款、争议申诉与处理时限。风险复核队列、误拦申诉（含**单任务 3 次 / 单人 24 小时 5 次的节流与逐次留档**）、人工下架、**风险规则目录的后台编辑**、**发布后复检**与**精确地址访问审计**都已实现（改规则不再需要发版：版本号自动 +1、依据必填、只追加、可一键恢复内置目录；改完之后在线的任务会被重新判定并按口径处置；地址的每次读取都留痕，含被拒绝的尝试）。规则编辑仍然没有双人复核；禁止类别命中的已分配任务只做"冻结订单 + 运营按争议处置"，**没有自动退款或赔付**（等支付与托管那一批）。上传大小与份数上限已经进了设置目录；凭证类型白名单**故意不进**（放开等于允许上传可执行内容）。
+- 运营后台的其余部分：客服工单、**争议的责任判定**（赔付与退款已能按金额执行并走托管账本）、争议申诉与处理时限。风险复核队列、误拦申诉（含**单任务 3 次 / 单人 24 小时 5 次的节流与逐次留档**）、人工下架、**风险规则目录的后台编辑**、**发布后复检**与**精确地址访问审计**都已实现（改规则不再需要发版：版本号自动 +1、依据必填、只追加、可一键恢复内置目录；改完之后在线的任务会被重新判定并按口径处置；地址的每次读取都留痕，含被拒绝的尝试）。规则编辑仍然没有双人复核；禁止类别命中的已分配任务只做"冻结订单 + 运营按争议处置"，**没有自动退款或赔付**（等支付与托管那一批）。上传大小与份数上限已经进了设置目录；凭证类型白名单**故意不进**（放开等于允许上传可执行内容）。
 - 风险判定的增强：模型辅助分类（现在只有字面词表匹配，语义变体容易漏）、追加式决策历史表（现在只保留最新一条判定）、误拦与漏拦的回归测试集扩充（当前是 17 条禁止 + 6 条转人工 + 8 条正常用例）。
 - 草稿的版本与历史：版本号、编辑历史、**字段级差异与回滚**都已实现（`task_draft_revisions` 只追加，编辑与回滚都追加一版、都不会覆盖已有版本）。仍然没有独立的 `TaskDraft` 聚合（编辑直接改 `ReadyToPublish` 的任务）；历史的可见范围只有所有者，运营后台看不到。
 - 真实基础设施的自动化回归测试：**PostgreSQL、Redis、S3 兼容对象存储三块都已建立**（见第 7 节与第 11 节本轮条目）。剩下的自动化缺口是主机级端到端（`WebApplicationFactory`）与"两个真实实例 + 客户端"的通知扇出整链路。
@@ -1097,7 +1125,7 @@ npm run build
 ### P2
 
 - Redis backplane 已用自研发布/订阅落地（见第 3、11 节，ADR-0004）；剩余的是缓存、分布式锁与限流，以及多实例部署本身的编排与可观测性。
-- 实名认证、真实支付托管、退款、争议和合规评审。
+- 实名认证、真实支付通道接入（托管、账本与争议分账已实现，缺的是真实通道、对账与失败重试）与合规评审。
 - 运营审核后台与高风险任务人工复核。
 
 ## 13. 交接检查清单
@@ -1123,7 +1151,7 @@ npm run build
 - [ ] 通过运营接口把 `ai.apiKey` 换成新密钥：响应只显示 `****末四位`；接着发起一轮 AI 对话应立刻用新密钥，不需要重启进程。
 - [ ] 把 `evidence.scanner.provider` 改成 `http` 但不填扫描地址，服务者上传凭证应返回“待扫描、不可下载”，文件不被删除也不放行。
 - [ ] 重启进程后重新读取运营配置：机密仍能解密（说明 `DataProtection__KeysPath` 指向了持久目录，而不是临时目录）。
-- [ ] 用管理员账户打开 <http://localhost:5173/ops.html>（或点主应用顶栏的“运营后台 ↗”）：能看到 26 个配置项、五个分组与来源徽标；非管理员账户打开同一个地址应看到“这个账号没有运营权限”，且一个运营接口都不会被调用。
+- [ ] 用管理员账户打开 <http://localhost:5173/ops.html>（或点主应用顶栏的“运营后台 ↗”）：能看到 27 个配置项、六个分组与来源徽标；非管理员账户打开同一个地址应看到“这个账号没有运营权限”，且一个运营接口都不会被调用。
 - [ ] 切到“任务检索”页签：按标题关键字能搜到任务并看到需求方邮箱与报名数；对一条大厅中的任务点“下架”并填写原因后，任务从大厅消失、审计里出现对应记录；对一条已分配的尝试下架应看到可读的拒绝提示。
 - [ ] 在页面上改一个机密项并保存：列表立刻显示新的掩码与“后台已改”，点“测试连接”能看到自检结果，切到“变更记录”能看到这次修改；把某条改坏（例如把超时填成 1）保存应看到可读的校验提示。
 - [ ] 把 `evidence.maxSizeBytes` 调成 1024 后上传一张 2 KB 的图片：应返回“凭证大小不能超过 1 KB”，恢复默认后能正常上传。
@@ -1161,6 +1189,10 @@ npm run build
 - [ ] 申诉轨迹：在“误拦申诉”页签点某条任务的“申诉轨迹”，应看到每次申诉的规则版本、理由、运营结论与依据，以及当前生效的两条上限（3 / 5）。
 - [ ] 地址留痕：用所有者读一次 `/api/v1/tasks/{id}/execution-address`（应 `200`），再让一位没被选中的服务者读一次（应 `403`），然后以管理员打开运营后台"地址留痕"页签：应看到这两条记录（一条"已披露"、一条"已拒绝"），拒绝计数为 1；按查看者 ID 过滤应只剩那位服务者的记录。
 - [ ] 凭证规范化：上传一张 PNG，其中夹一个私有块（例如在 `IDAT` 前插一个 `prVt` 块，载荷写 `PK\x03\x04`）——应上传成功，且凭证面板的"已在上传时移除元数据"里出现 `PNG 未知块(prVt)`，文件的 `sizeBytes` 比上传前小；再把同一张图截断（去掉 `IEND`）后上传，应返回 `422`「凭证内容不是合法的 PNG（缺少结束块 IEND），已拒绝保存。」且凭证列表里不新增条目。
+- [ ] 资金托管：发布一条 60 元的任务并选中一位服务者——“我的订单”里应显示"资金托管：已冻结（等待放款或退款）60 CNY"，点"资金流水"应看到一条 `需求方资金 → 平台托管`；服务者提交后需求方点"确认完成"，托管状态应变成"已全额放款给服务者"，流水里多一条 `平台托管 → 服务者应得`。
+- [ ] 取消退款：另发一条任务并选中服务者，然后取消订单——托管状态应变成"已全额退回需求方"，流水里应有一条 `平台托管 → 需求方资金`；用别的账号读这笔订单的流水应返回 `403`。
+- [ ] 争议分账：让一条订单进入争议，在运营后台"争议处置"里选"强制完成"并把金额填成托管额的一半——处置后订单托管状态应是"已分账"，流水里应同时出现"部分放款"与"部分退款"两条，审计里应看到带「（资金处置金额 X CNY）」的原因；金额填成超过托管额应返回 `422`。
+- [ ] 托管开关：在运营配置里把 `payment.provider` 改成 `disabled`，再发一条任务并选人——订单不应带托管信息、也不产生任何流水；改回 `simulated` 后恢复正常。
 - [ ] 跑一次 `dotnet test AIToHuman.sln --no-build --no-restore`：确认 `PostgresRegressionTests` 是**通过**而不是**跳过**（跳过说明本机没连上测试库，见第 7 节“真实数据库回归测试”）；再把 `AITOHUMAN_TEST_POSTGRES` 指向不可达端口确认它们变成跳过而不是失败。
 - [ ] 用两个账号跑一遍双向信用：服务者完成一单且双方互评后，需求方在自己的任务“查看报名”里应看到该服务者的公开评分与条数，且与 `GET /api/v1/users/{id}/review-summary` 一致；只有单方评价（盲期内）时列表里应为 0 分 / 0 条。
 - [ ] 幂等键：对同一个写接口用同一个 `Idempotency-Key` 连发两次，第二次应返回与第一次相同的状态码和响应体，并带 `Idempotency-Replayed: true`；把请求体改掉再用同一个键，应返回 `409`；不带这个头时行为应和以前完全一样。

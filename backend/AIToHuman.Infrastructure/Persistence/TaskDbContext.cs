@@ -1,6 +1,7 @@
 using AIToHuman.Domain.Admin;
 using AIToHuman.Domain.Idempotency;
 using AIToHuman.Domain.Orders;
+using AIToHuman.Domain.Payments;
 using AIToHuman.Domain.Risk;
 using AIToHuman.Domain.Settings;
 using AIToHuman.Domain.Tasks;
@@ -28,6 +29,7 @@ public sealed class TaskDbContext(DbContextOptions<TaskDbContext> options) : DbC
     public DbSet<RiskRuleCatalogRevisionRecord> RiskRuleCatalogRevisions => Set<RiskRuleCatalogRevisionRecord>();
     public DbSet<RiskAppealRecordRecord> RiskAppeals => Set<RiskAppealRecordRecord>();
     public DbSet<AddressAccessRecord> AddressAccessEntries => Set<AddressAccessRecord>();
+    public DbSet<LedgerEntryRecord> LedgerEntries => Set<LedgerEntryRecord>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -104,8 +106,32 @@ public sealed class TaskDbContext(DbContextOptions<TaskDbContext> options) : DbC
             entity.Property(item => item.DisputeReason).HasMaxLength(Order.MaxDisputeReasonLength);
             entity.Property(item => item.DisputeResolution).HasMaxLength(16);
             entity.Property(item => item.DisputeResolutionNote).HasMaxLength(Order.MaxDisputeReasonLength);
+            // 资金托管：状态带默认值（存量订单回填成"没有托管"），金额用同样的精度。
+            entity.Property(item => item.EscrowStatus).HasConversion<string>().HasMaxLength(16).IsRequired().HasDefaultValue(nameof(EscrowStatus.None));
+            entity.Property(item => item.EscrowAmount).HasPrecision(18, 2);
+            entity.Property(item => item.ReleasedAmount).HasPrecision(18, 2);
+            entity.Property(item => item.RefundedAmount).HasPrecision(18, 2);
+            entity.Property(item => item.PaymentReference).HasMaxLength(120);
             // 运营按状态找争议订单，这条索引让“待处置”列表不必全表扫描。
             entity.HasIndex(item => new { item.Status, item.CreatedAt });
+            // 运营按"托管还没结清"排查资金：Held 状态的订单不该长期挂着。
+            entity.HasIndex(item => new { item.EscrowStatus, item.CreatedAt });
+        });
+
+        modelBuilder.Entity<LedgerEntryRecord>(entity =>
+        {
+            entity.ToTable("ledger_entries");
+            entity.HasKey(item => item.Id);
+            // 账本只追加：一行一次账户间转账，借/贷两个账户 + 金额 + 动作。
+            entity.Property(item => item.DebitAccount).HasConversion<string>().HasMaxLength(20).IsRequired();
+            entity.Property(item => item.CreditAccount).HasConversion<string>().HasMaxLength(20).IsRequired();
+            entity.Property(item => item.Amount).HasPrecision(18, 2);
+            entity.Property(item => item.Currency).HasMaxLength(3).IsRequired();
+            entity.Property(item => item.Kind).HasConversion<string>().HasMaxLength(24).IsRequired();
+            entity.Property(item => item.Note).HasMaxLength(LedgerEntry.MaxNoteLength);
+            // 对账按订单读流水，排查按时间倒序读最近流水，两条索引各服务一边。
+            entity.HasIndex(item => new { item.OrderId, item.OccurredAt });
+            entity.HasIndex(item => item.OccurredAt);
         });
 
         modelBuilder.Entity<ReviewRecord>(entity =>
@@ -385,7 +411,31 @@ public sealed class OrderRecord
     public string? DisputeResolution { get; set; }
     public string? DisputeResolutionNote { get; set; }
     public DateTimeOffset? DisputeResolvedAt { get; set; }
+
+    /// <summary>资金托管：状态、被托管的金额、已放款/已退款的金额、网关凭据与两个时间点。</summary>
+    public string EscrowStatus { get; set; } = "None";
+    public decimal EscrowAmount { get; set; }
+    public decimal ReleasedAmount { get; set; }
+    public decimal RefundedAmount { get; set; }
+    public string? PaymentReference { get; set; }
+    public DateTimeOffset? EscrowHeldAt { get; set; }
+    public DateTimeOffset? EscrowSettledAt { get; set; }
     public int Version { get; set; }
+}
+
+/// <summary>资金流水：一行一次账户间转账，只追加。</summary>
+public sealed class LedgerEntryRecord
+{
+    public Guid Id { get; set; }
+    public Guid OrderId { get; set; }
+    public Guid TaskId { get; set; }
+    public string DebitAccount { get; set; } = "Escrow";
+    public string CreditAccount { get; set; } = "Escrow";
+    public decimal Amount { get; set; }
+    public string Currency { get; set; } = "CNY";
+    public string Kind { get; set; } = "Hold";
+    public string? Note { get; set; }
+    public DateTimeOffset OccurredAt { get; set; }
 }
 
 public sealed class ReviewRecord

@@ -63,6 +63,11 @@ export interface AdminOrderItem {
   disputeResolution: string | null
   disputeResolutionNote: string | null
   disputeResolvedAt: string | null
+  /** 资金托管状态与金额（运营处置争议时要看钱动到哪一步了）。 */
+  escrowStatus: string
+  escrowAmount: number
+  releasedAmount: number
+  refundedAmount: number
 }
 
 export interface AdminOrderList {
@@ -224,11 +229,16 @@ export async function listDisputedOrders(status = '', limit = 20): Promise<Admin
 }
 
 /** 处置争议：三选一 + 必填依据（依据会写进运营审计，并通知订单双方）。 */
-export async function resolveDispute(orderId: string, decision: DisputeDecision, note: string): Promise<AdminOrderItem> {
+/**
+ * 处置争议：三选一 + 必填依据（依据会写进运营审计，并通知订单双方）。
+ * `amount` 可选，含义随结论而变：强制完成时是放款给服务者的金额、终止订单时是退回需求方的金额
+ * （留空即全额），退回返工不涉及资金。
+ */
+export async function resolveDispute(orderId: string, decision: DisputeDecision, note: string, amount?: number): Promise<AdminOrderItem> {
   return parseResponse<AdminOrderItem>(await apiFetch(`/api/v1/admin/orders/${orderId}/resolve`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
-    body: JSON.stringify({ decision, note }),
+    body: JSON.stringify({ decision, note, amount: amount ?? null }),
   }))
 }
 

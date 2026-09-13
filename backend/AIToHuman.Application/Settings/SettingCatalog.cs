@@ -35,6 +35,14 @@ public static class SettingKeys
     public const string EvidenceUploadsPerUserPerHour = "evidence.uploadsPerUserPerHour";
 
     public const string NotificationFanoutEnabled = "notifications.fanout.enabled";
+
+    public const string PaymentProvider = "payment.provider";
+
+    /// <summary>模拟网关：资金动作全部走本地确定性实现，用于开发、联调与回归。</summary>
+    public const string PaymentProviderSimulated = "simulated";
+
+    /// <summary>关闭托管：订单不带托管信息、也不写资金流水，行为与托管功能上线之前一致。</summary>
+    public const string PaymentProviderDisabled = "disabled";
 }
 
 /// <summary>
@@ -77,7 +85,9 @@ public static class SettingCatalog
         new(SettingKeys.EvidenceScannerTimeoutSeconds, "内容扫描", "扫描超时（秒）", "单次扫描的等待上限，超时按失败模式处理。", SettingValueKind.Int, "15", "Settings:evidence:scanner:timeoutSeconds", MinInt: 1, MaxInt: 120),
         new(SettingKeys.EvidenceScannerFailMode, "内容扫描", "扫描失败模式", "closed：扫描不可用时凭证保持“待扫描、不可下载”，不丢文件；open：扫描不可用时直接放行，只建议在开发环境使用。", SettingValueKind.Choice, "closed", "Settings:evidence:scanner:failMode", Choices: ["closed", "open"]),
 
-        new(SettingKeys.NotificationFanoutEnabled, "通知推送", "多实例扇出", "多实例部署时用 Redis 发布/订阅广播通知，用户连在哪个实例上都能实时收到。启用前部署配置里必须有 ConnectionStrings__Redis；没配连接串时这个开关不生效，应用按单实例推送运行。远端实例重启或 Redis 抖动时通知仍会落库，客户端重连后从收件箱补齐。", SettingValueKind.Bool, "false", "Settings:notifications:fanout:enabled")
+        new(SettingKeys.NotificationFanoutEnabled, "通知推送", "多实例扇出", "多实例部署时用 Redis 发布/订阅广播通知，用户连在哪个实例上都能实时收到。启用前部署配置里必须有 ConnectionStrings__Redis；没配连接串时这个开关不生效，应用按单实例推送运行。远端实例重启或 Redis 抖动时通知仍会落库，客户端重连后从收件箱补齐。", SettingValueKind.Bool, "false", "Settings:notifications:fanout:enabled"),
+
+        new(SettingKeys.PaymentProvider, "资金托管", "托管通道", "simulated：本地模拟网关（资金动作确定、可回归，订单会冻结悬赏并在验收时放款、取消时退款，每一步都写资金流水）；disabled：关闭托管，订单不带托管信息也不写流水，行为与托管功能上线之前一致。接真实支付服务商时会在这里出现新的取值。", SettingValueKind.Choice, SettingKeys.PaymentProviderSimulated, "Settings:payment:provider", Choices: [SettingKeys.PaymentProviderSimulated, SettingKeys.PaymentProviderDisabled])
     ];
 
     private static readonly Dictionary<string, SettingDefinition> ByKey = All.ToDictionary(item => item.Key, StringComparer.Ordinal);

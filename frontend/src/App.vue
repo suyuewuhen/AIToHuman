@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { getDevSession, type DevSession } from './api/session'
 import { clearAccessToken, getAccessToken, getCurrentUser, login, register, switchRole, type ActiveRole, type CurrentUser } from './api/auth'
-import { applyForTask, approveOrder, cancelOrder, cancelTask, createOrderReview, createTask, getExecutionAddress, getReviewSummary, increaseTaskReward, listMyApplications, listMyOrders, listMyTasks, listOrderReviews, listPublishedTasks, listTaskApplications, listTaskDraftRevisions, openDispute, openRiskAppeal, publishTask, rejectOrder, restoreTaskDraftRevision, resumeOrder, selectTaskApplication, startOrder, submitOrder, updateTaskDraft, withdrawApplication, type MyApplicationItem, type OrderItem, type ReviewItem, type TaskApplication, type TaskDraftRevision, type TaskItem, type ReviewSummary } from './api/tasks'
+import { applyForTask, approveOrder, cancelOrder, cancelTask, createOrderReview, createTask, getExecutionAddress, getReviewSummary, increaseTaskReward, listMyApplications, listMyOrders, listMyTasks, listOrderLedger, listOrderReviews, listPublishedTasks, listTaskApplications, listTaskDraftRevisions, openDispute, openRiskAppeal, publishTask, rejectOrder, restoreTaskDraftRevision, resumeOrder, selectTaskApplication, startOrder, submitOrder, updateTaskDraft, withdrawApplication, type LedgerEntry, type MyApplicationItem, type OrderItem, type ReviewItem, type TaskApplication, type TaskDraftRevision, type TaskItem, type ReviewSummary } from './api/tasks'
 import { connectNotifications as connectNotificationHub, disconnectNotifications, listNotifications, markNotificationsRead, type NotificationEnvelope, type NotificationItem } from './api/notifications'
 import { listOrderMessages, markOrderMessagesRead, sendOrderMessage, type OrderMessage } from './api/messages'
 import { absoluteMaxEvidenceBytes, allowedEvidenceTypes, downloadEvidence, listOrderEvidence, uploadOrderEvidence, type EvidenceItem } from './api/evidence'
@@ -109,6 +109,62 @@ const evidenceByOrder = ref<Record<string, EvidenceItem[]>>({})
 const evidenceOpenOrderId = ref('')
 const evidenceBusy = ref(false)
 const evidenceError = ref('')
+// 资金流水同样按需拉取：钱的事只有展开时才查，订单列表不开销。
+const ledgerByOrder = ref<Record<string, LedgerEntry[]>>({})
+const ledgerOpenOrderId = ref('')
+const ledgerBusy = ref(false)
+const ledgerError = ref('')
+
+/** 展开/收起某笔订单的资金流水（仅参与者可读；服务端会拦外人）。 */
+async function toggleLedger(order: OrderItem) {
+  if (ledgerOpenOrderId.value === order.id) {
+    ledgerOpenOrderId.value = ''
+    return
+  }
+
+  ledgerOpenOrderId.value = order.id
+  ledgerError.value = ''
+  if (ledgerByOrder.value[order.id]) return
+
+  ledgerBusy.value = true
+  try {
+    ledgerByOrder.value = { ...ledgerByOrder.value, [order.id]: await listOrderLedger(order.id) }
+  } catch (error) {
+    ledgerError.value = error instanceof Error ? error.message : '读取资金流水失败'
+  } finally {
+    ledgerBusy.value = false
+  }
+}
+
+/** 托管状态中文。 */
+function escrowStatusLabel(status: string): string {
+  const labels: Record<string, string> = {
+    None: '未托管',
+    Held: '已冻结（等待放款或退款）',
+    Released: '已全额放款给服务者',
+    Refunded: '已全额退回需求方',
+    Settled: '已分账（部分放款、部分退款）',
+  }
+  return labels[status] ?? status
+}
+
+/** 流水动作中文。 */
+function ledgerKindLabel(kind: string): string {
+  const labels: Record<string, string> = {
+    Hold: '冻结',
+    Release: '放款',
+    Refund: '退款',
+    PartialRelease: '部分放款',
+    PartialRefund: '部分退款',
+  }
+  return labels[kind] ?? kind
+}
+
+/** 流水账户中文。 */
+function ledgerAccountLabel(account: string): string {
+  const labels: Record<string, string> = { OwnerFunds: '需求方资金', Escrow: '平台托管', WorkerPayout: '服务者应得' }
+  return labels[account] ?? account
+}
 
 /** 凭证列表按需拉取：展开某个订单时才请求，避免订单列表产生 N 次查询。 */
 async function toggleEvidence(order: OrderItem) {
@@ -1594,7 +1650,19 @@ onMounted(async () => {
       <div v-else-if="ordersError" class="hall-state error"><strong>订单暂时离线</strong><span>{{ ordersError }}</span><button type="button" @click="loadOrders">重新连接</button></div>
       <div v-else-if="visibleOrders.length === 0" class="hall-state"><strong>{{ orderTab === 'published' ? '还没有发布订单' : '还没有接取任务' }}</strong><span>{{ orderTab === 'published' ? '确认发布并选择服务者后，订单会显示在这里。' : '在任务大厅报名并被需求方选中后，任务会显示在这里。' }}</span></div>
       <div v-else class="orders-list">
-        <article v-for="order in visibleOrders" :key="order.id" class="order-row"><div><small>{{ formatDeadline(order.createdAt) }} · {{ orderStatusLabel(order.status) }}</small><h3>{{ order.title }}</h3><span>订单号 {{ order.id.slice(0, 8) }} · {{ orderTab === 'published' ? '服务者待执行' : '需求方已确认' }}</span><p v-if="order.evidenceNote" class="order-note"><b>执行凭证：</b>{{ order.evidenceNote }}</p><p v-if="order.rejectionNote" class="order-note rejection"><b>驳回原因：</b>{{ order.rejectionNote }}</p><p v-else-if="order.reviewNote" class="order-note"><b>验收意见：</b>{{ order.reviewNote }}</p><p v-if="order.cancellationReason" class="order-note rejection"><b>取消原因：</b>{{ order.cancellationReason }}</p><p v-if="order.disputeReason" class="order-note rejection"><b>争议原因：</b>{{ order.disputeReason }}<template v-if="order.disputeOpenedAt"> · {{ formatDeadline(order.disputeOpenedAt) }} 发起</template></p><p v-if="isDisputeResolved(order)" class="order-note"><b>平台处置：</b>{{ disputeResolutionLabel(order.disputeResult ?? '') }}<template v-if="order.disputeResolutionNote"> · {{ order.disputeResolutionNote }}</template><template v-if="order.disputeResolvedAt"> · {{ formatDeadline(order.disputeResolvedAt) }}</template></p><p v-if="order.reworkCount > 0" class="order-note"><b>返工次数：</b>{{ order.reworkCount }} 次</p><p v-if="orderAddresses[order.taskId]" class="order-note"><b>执行地址：</b>{{ orderAddresses[order.taskId] }}</p><div v-if="evidenceOpenOrderId === order.id" class="evidence-panel">
+        <article v-for="order in visibleOrders" :key="order.id" class="order-row"><div><small>{{ formatDeadline(order.createdAt) }} · {{ orderStatusLabel(order.status) }}</small><h3>{{ order.title }}</h3><span>订单号 {{ order.id.slice(0, 8) }} · {{ orderTab === 'published' ? '服务者待执行' : '需求方已确认' }}</span><p v-if="order.evidenceNote" class="order-note"><b>执行凭证：</b>{{ order.evidenceNote }}</p><p v-if="order.rejectionNote" class="order-note rejection"><b>驳回原因：</b>{{ order.rejectionNote }}</p><p v-else-if="order.reviewNote" class="order-note"><b>验收意见：</b>{{ order.reviewNote }}</p><p v-if="order.cancellationReason" class="order-note rejection"><b>取消原因：</b>{{ order.cancellationReason }}</p><p v-if="order.disputeReason" class="order-note rejection"><b>争议原因：</b>{{ order.disputeReason }}<template v-if="order.disputeOpenedAt"> · {{ formatDeadline(order.disputeOpenedAt) }} 发起</template></p><p v-if="isDisputeResolved(order)" class="order-note"><b>平台处置：</b>{{ disputeResolutionLabel(order.disputeResult ?? '') }}<template v-if="order.disputeResolutionNote"> · {{ order.disputeResolutionNote }}</template><template v-if="order.disputeResolvedAt"> · {{ formatDeadline(order.disputeResolvedAt) }}</template></p><p v-if="order.reworkCount > 0" class="order-note"><b>返工次数：</b>{{ order.reworkCount }} 次</p><p v-if="order.escrowStatus && order.escrowStatus !== 'None'" class="order-note"><b>资金托管：</b>{{ escrowStatusLabel(order.escrowStatus) }} {{ order.escrowAmount }} {{ order.currency }}<template v-if="order.releasedAmount"> · 已放款 {{ order.releasedAmount }}</template><template v-if="order.refundedAmount"> · 已退款 {{ order.refundedAmount }}</template></p><p v-if="orderAddresses[order.taskId]" class="order-note"><b>执行地址：</b>{{ orderAddresses[order.taskId] }}</p><div v-if="ledgerOpenOrderId === order.id" class="evidence-panel">
+              <strong>资金流水</strong>
+              <span v-if="ledgerBusy && !ledgerByOrder[order.id]">正在读取资金流水…</span>
+              <span v-else-if="!ledgerByOrder[order.id]?.length">这笔订单还没有资金流水（托管关闭时不会产生流水）。</span>
+              <div v-for="entry in ledgerByOrder[order.id]" v-else :key="entry.id" class="evidence-row">
+                <div>
+                  <strong>{{ ledgerKindLabel(entry.kind) }} · {{ entry.amount }} {{ entry.currency }}</strong>
+                  <small>{{ ledgerAccountLabel(entry.debitAccount) }} → {{ ledgerAccountLabel(entry.creditAccount) }} · {{ formatDeadline(entry.occurredAt) }}</small>
+                  <small v-if="entry.note" class="evidence-note">{{ entry.note }}</small>
+                </div>
+              </div>
+              <p v-if="ledgerError" class="notice warning">{{ ledgerError }}</p>
+            </div><div v-if="evidenceOpenOrderId === order.id" class="evidence-panel">
               <strong>执行凭证</strong>
               <span v-if="evidenceBusy && !evidenceByOrder[order.id]">正在读取凭证…</span>
               <span v-else-if="!evidenceByOrder[order.id]?.length">还没有上传凭证。</span>
@@ -1612,7 +1680,7 @@ onMounted(async () => {
                 <input type="file" accept="image/jpeg,image/png,image/webp,application/pdf" :disabled="evidenceBusy" @change="uploadEvidence(order, $event)" />
               </label>
               <p v-if="evidenceError" class="notice warning">{{ evidenceError }}</p>
-            </div><div class="order-actions"><button type="button" class="secondary-action" @click="openChat(order)">消息<span v-if="order.unreadMessageCount" class="unread-dot">{{ order.unreadMessageCount }}</span></button><button type="button" class="secondary-action" @click="toggleEvidence(order)">{{ evidenceOpenOrderId === order.id ? '收起凭证' : '凭证' }}</button><button type="button" class="secondary-action" @click="loadExecutionAddress({ id: order.taskId } as TaskItem)">执行地址</button><button v-if="orderTab === 'taken' && order.status === 'Accepted'" type="button" @click="transitionOrder(order, 'start')">开始执行</button><button v-if="orderTab === 'taken' && order.status === 'InProgress'" type="button" @click="transitionOrder(order, 'submit')">提交验收</button><button v-if="orderTab === 'taken' && order.status === 'Rejected'" type="button" @click="transitionOrder(order, 'resume')">继续返工</button><button v-if="orderTab === 'published' && order.status === 'Submitted'" type="button" @click="transitionOrder(order, 'approve')">确认完成</button><button v-if="orderTab === 'published' && order.status === 'Submitted'" type="button" class="secondary-action" @click="transitionOrder(order, 'reject')">需要补充</button><button v-if="canCancelOrder(order) && orderCancelId !== order.id" type="button" class="danger" @click="startOrderCancel(order)">取消订单</button><button v-if="canOpenDispute(order) && disputeOrderId !== order.id" type="button" class="danger" @click="startOrderDispute(order)">申请平台介入</button><button v-if="order.status === 'Approved'" type="button" class="secondary-action" @click="openReview(order)">写评价</button></div><div v-if="orderCancelId === order.id" class="order-actions order-cancel"><input v-model.trim="orderCancelReason" type="text" maxlength="200" placeholder="填写取消原因（必填，最多 200 字）" /><button type="button" class="danger" :disabled="orderCancelBusy" @click="confirmOrderCancel(order)">{{ orderCancelBusy ? '取消中…' : '确认取消' }}</button><button type="button" class="secondary-action" :disabled="orderCancelBusy" @click="orderCancelId = ''">放弃</button><span v-if="orderCancelError" class="cancel-error">{{ orderCancelError }}</span></div><div v-if="disputeOrderId === order.id" class="order-actions order-cancel"><input v-model.trim="disputeReason" type="text" maxlength="500" placeholder="写明争议原因（必填，最多 500 字）" /><button type="button" class="danger" :disabled="disputeBusy" @click="confirmOrderDispute(order)">{{ disputeBusy ? '提交中…' : '确认申请平台介入' }}</button><button type="button" class="secondary-action" :disabled="disputeBusy" @click="disputeOrderId = ''">放弃</button><span v-if="disputeError" class="cancel-error">{{ disputeError }}</span></div><div v-if="orderReviews[order.id]?.length" class="review-list"><div v-for="review in orderReviews[order.id]" :key="review.id"><span class="review-stars">{{ '★'.repeat(review.rating) }}{{ '☆'.repeat(5 - review.rating) }}</span><span>{{ review.comment }}</span><small>{{ review.isVisible ? '已公开' : '盲期中' }}</small></div></div></div><strong>¥{{ order.reward }}</strong></article>
+            </div><div class="order-actions"><button type="button" class="secondary-action" @click="openChat(order)">消息<span v-if="order.unreadMessageCount" class="unread-dot">{{ order.unreadMessageCount }}</span></button><button type="button" class="secondary-action" @click="toggleEvidence(order)">{{ evidenceOpenOrderId === order.id ? '收起凭证' : '凭证' }}</button><button type="button" class="secondary-action" @click="toggleLedger(order)">{{ ledgerOpenOrderId === order.id ? '收起流水' : '资金流水' }}</button><button type="button" class="secondary-action" @click="loadExecutionAddress({ id: order.taskId } as TaskItem)">执行地址</button><button v-if="orderTab === 'taken' && order.status === 'Accepted'" type="button" @click="transitionOrder(order, 'start')">开始执行</button><button v-if="orderTab === 'taken' && order.status === 'InProgress'" type="button" @click="transitionOrder(order, 'submit')">提交验收</button><button v-if="orderTab === 'taken' && order.status === 'Rejected'" type="button" @click="transitionOrder(order, 'resume')">继续返工</button><button v-if="orderTab === 'published' && order.status === 'Submitted'" type="button" @click="transitionOrder(order, 'approve')">确认完成</button><button v-if="orderTab === 'published' && order.status === 'Submitted'" type="button" class="secondary-action" @click="transitionOrder(order, 'reject')">需要补充</button><button v-if="canCancelOrder(order) && orderCancelId !== order.id" type="button" class="danger" @click="startOrderCancel(order)">取消订单</button><button v-if="canOpenDispute(order) && disputeOrderId !== order.id" type="button" class="danger" @click="startOrderDispute(order)">申请平台介入</button><button v-if="order.status === 'Approved'" type="button" class="secondary-action" @click="openReview(order)">写评价</button></div><div v-if="orderCancelId === order.id" class="order-actions order-cancel"><input v-model.trim="orderCancelReason" type="text" maxlength="200" placeholder="填写取消原因（必填，最多 200 字）" /><button type="button" class="danger" :disabled="orderCancelBusy" @click="confirmOrderCancel(order)">{{ orderCancelBusy ? '取消中…' : '确认取消' }}</button><button type="button" class="secondary-action" :disabled="orderCancelBusy" @click="orderCancelId = ''">放弃</button><span v-if="orderCancelError" class="cancel-error">{{ orderCancelError }}</span></div><div v-if="disputeOrderId === order.id" class="order-actions order-cancel"><input v-model.trim="disputeReason" type="text" maxlength="500" placeholder="写明争议原因（必填，最多 500 字）" /><button type="button" class="danger" :disabled="disputeBusy" @click="confirmOrderDispute(order)">{{ disputeBusy ? '提交中…' : '确认申请平台介入' }}</button><button type="button" class="secondary-action" :disabled="disputeBusy" @click="disputeOrderId = ''">放弃</button><span v-if="disputeError" class="cancel-error">{{ disputeError }}</span></div><div v-if="orderReviews[order.id]?.length" class="review-list"><div v-for="review in orderReviews[order.id]" :key="review.id"><span class="review-stars">{{ '★'.repeat(review.rating) }}{{ '☆'.repeat(5 - review.rating) }}</span><span>{{ review.comment }}</span><small>{{ review.isVisible ? '已公开' : '盲期中' }}</small></div></div></div><strong>¥{{ order.reward }}</strong></article>
       </div>
     </section>
 

@@ -1,4 +1,5 @@
 using AIToHuman.Domain.Common;
+using AIToHuman.Domain.Payments;
 using AIToHuman.Domain.Tasks;
 
 namespace AIToHuman.Domain.Orders;
@@ -81,14 +82,101 @@ public sealed class Order
     public string? DisputeResolutionNote { get; private set; }
     public DateTimeOffset? DisputeResolvedAt { get; private set; }
 
-    public static Order Rehydrate(Guid id, Guid taskId, Guid ownerId, Guid workerId, string title, Money reward, OrderStatus status, DateTimeOffset createdAt, string? evidenceNote = null, string? reviewNote = null, DateTimeOffset? submittedAt = null, DateTimeOffset? reviewedAt = null, string? rejectionNote = null, int reworkCount = 0, DateTimeOffset? cancelledAt = null, Guid? cancelledBy = null, string? cancellationReason = null, string? disputeReason = null, Guid? disputeOpenedBy = null, DateTimeOffset? disputeOpenedAt = null, string? disputeResolution = null, string? disputeResolutionNote = null, DateTimeOffset? disputeResolvedAt = null) => new()
+    /// <summary>
+    /// 资金托管状态与金额。刻意与订单状态分开记：订单可能"已验收"但放款失败要重试，
+    /// 也可能"已取消"但退款还在路上——把两件事塞进一个字段，事后就说不清钱到底动没动。
+    /// </summary>
+    public EscrowStatus EscrowStatus { get; private set; } = EscrowStatus.None;
+
+    /// <summary>被托管的金额（下单时的悬赏；托管关闭时为 0）。</summary>
+    public decimal EscrowAmount { get; private set; }
+
+    /// <summary>已经放款给服务者的金额。</summary>
+    public decimal ReleasedAmount { get; private set; }
+
+    /// <summary>已经退回需求方的金额。</summary>
+    public decimal RefundedAmount { get; private set; }
+
+    /// <summary>支付网关侧的凭据（模拟网关是确定性字符串；接真实服务商后是它返回的流水号）。</summary>
+    public string? PaymentReference { get; private set; }
+
+    public DateTimeOffset? EscrowHeldAt { get; private set; }
+    public DateTimeOffset? EscrowSettledAt { get; private set; }
+
+    /// <summary>还没动过的托管资金（可以放款或退款的余额）。</summary>
+    public decimal EscrowBalance => EscrowStatus == EscrowStatus.Held ? EscrowAmount - ReleasedAmount - RefundedAmount : 0m;
+
+    /// <summary>能不能做托管：只有从未托管过的订单可以（重复冻结是明确的错误）。</summary>
+    public bool CanHoldEscrow => EscrowStatus == EscrowStatus.None;
+
+    /// <summary>这笔托管还在等待处置（放款或退款都可以做）。</summary>
+    public bool EscrowAwaitingSettlement => EscrowStatus == EscrowStatus.Held;
+
+    /// <summary>
+    /// 冻结需求方资金（下单时调用）。金额固定为订单悬赏——把"托管多少"和"订单多少钱"绑在一起，
+    /// 避免出现"托管了 100 元但订单是 200 元"这种谁也说不清的状态。
+    /// </summary>
+    public void HoldEscrow(string paymentReference, DateTimeOffset now)
+    {
+        if (!CanHoldEscrow) throw new DomainException($"这笔订单的资金已经处理过（{EscrowStatus}），不能重复托管。");
+        if (Reward.Amount <= 0) throw new DomainException("订单金额必须大于 0 才能托管。");
+        if (string.IsNullOrWhiteSpace(paymentReference)) throw new DomainException("托管必须记录支付凭据。");
+
+        EscrowStatus = EscrowStatus.Held;
+        EscrowAmount = Reward.Amount;
+        ReleasedAmount = 0m;
+        RefundedAmount = 0m;
+        PaymentReference = paymentReference.Trim();
+        EscrowHeldAt = UtcTimestamp.Normalize(now);
+        EscrowSettledAt = null;
+    }
+
+    /// <summary>验收通过：托管全额放款给服务者。</summary>
+    public void ReleaseEscrow(DateTimeOffset now) => Settle(EscrowAmount, 0m, now);
+
+    /// <summary>订单取消：托管全额退回需求方。</summary>
+    public void RefundEscrow(DateTimeOffset now) => Settle(0m, EscrowAmount, now);
+
+    /// <summary>
+    /// 争议处置后的分账：<paramref name="workerAmount"/> 放款给服务者、<paramref name="ownerAmount"/> 退回需求方，
+    /// 两者之和必须正好等于托管金额（不允许有"不知道去哪了"的差额）。
+    /// </summary>
+    public void SettleEscrow(decimal workerAmount, decimal ownerAmount, DateTimeOffset now) => Settle(workerAmount, ownerAmount, now);
+
+    private void Settle(decimal workerAmount, decimal ownerAmount, DateTimeOffset now)
+    {
+        if (EscrowStatus != EscrowStatus.Held)
+        {
+            throw new DomainException(EscrowStatus == EscrowStatus.None
+                ? "这笔订单没有托管资金，无法放款或退款。"
+                : $"这笔订单的托管资金已经处理过（{EscrowStatus}），不能重复处置。");
+        }
+
+        if (workerAmount < 0 || ownerAmount < 0) throw new DomainException("放款与退款的金额不能为负。");
+        if (workerAmount == 0 && ownerAmount == 0) throw new DomainException("放款与退款至少要有一项大于 0。");
+        if (workerAmount + ownerAmount != EscrowAmount)
+        {
+            throw new DomainException($"放款与退款金额之和必须等于托管金额（{EscrowAmount:0.##}），当前为 {workerAmount + ownerAmount:0.##}。");
+        }
+
+        ReleasedAmount = workerAmount;
+        RefundedAmount = ownerAmount;
+        EscrowSettledAt = UtcTimestamp.Normalize(now);
+        EscrowStatus = ownerAmount == 0m
+            ? EscrowStatus.Released
+            : workerAmount == 0m ? EscrowStatus.Refunded : EscrowStatus.Settled;
+    }
+
+    public static Order Rehydrate(Guid id, Guid taskId, Guid ownerId, Guid workerId, string title, Money reward, OrderStatus status, DateTimeOffset createdAt, string? evidenceNote = null, string? reviewNote = null, DateTimeOffset? submittedAt = null, DateTimeOffset? reviewedAt = null, string? rejectionNote = null, int reworkCount = 0, DateTimeOffset? cancelledAt = null, Guid? cancelledBy = null, string? cancellationReason = null, string? disputeReason = null, Guid? disputeOpenedBy = null, DateTimeOffset? disputeOpenedAt = null, string? disputeResolution = null, string? disputeResolutionNote = null, DateTimeOffset? disputeResolvedAt = null, EscrowStatus escrowStatus = EscrowStatus.None, decimal escrowAmount = 0m, decimal releasedAmount = 0m, decimal refundedAmount = 0m, string? paymentReference = null, DateTimeOffset? escrowHeldAt = null, DateTimeOffset? escrowSettledAt = null) => new()
     {
         Id = id, TaskId = taskId, OwnerId = ownerId, WorkerId = workerId, Title = title, Reward = reward, Status = status, CreatedAt = createdAt,
         EvidenceNote = evidenceNote, ReviewNote = reviewNote, SubmittedAt = submittedAt, ReviewedAt = reviewedAt,
         RejectionNote = rejectionNote, ReworkCount = reworkCount,
         CancelledAt = cancelledAt, CancelledBy = cancelledBy, CancellationReason = cancellationReason,
         DisputeReason = disputeReason, DisputeOpenedBy = disputeOpenedBy, DisputeOpenedAt = disputeOpenedAt,
-        DisputeResult = disputeResolution, DisputeResolutionNote = disputeResolutionNote, DisputeResolvedAt = disputeResolvedAt
+        DisputeResult = disputeResolution, DisputeResolutionNote = disputeResolutionNote, DisputeResolvedAt = disputeResolvedAt,
+        EscrowStatus = escrowStatus, EscrowAmount = escrowAmount, ReleasedAmount = releasedAmount, RefundedAmount = refundedAmount,
+        PaymentReference = paymentReference, EscrowHeldAt = escrowHeldAt, EscrowSettledAt = escrowSettledAt
     };
 
     public void Start(Guid actorId)

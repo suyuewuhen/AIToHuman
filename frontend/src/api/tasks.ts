@@ -112,6 +112,33 @@ export interface OrderItem {
   disputeResult?: string | null
   disputeResolutionNote?: string | null
   disputeResolvedAt?: string | null
+  /** 资金托管状态：None / Held / Released / Refunded / Settled。 */
+  escrowStatus?: string
+  /** 被托管的金额（下单时的悬赏）。 */
+  escrowAmount?: number
+  releasedAmount?: number
+  refundedAmount?: number
+  escrowHeldAt?: string | null
+  escrowSettledAt?: string | null
+}
+
+/** 一条资金流水：借/贷两个账户 + 金额 + 动作；方向由账户表达，金额恒为正。 */
+export interface LedgerEntry {
+  id: string
+  orderId: string
+  taskId: string
+  kind: string
+  debitAccount: string
+  creditAccount: string
+  amount: number
+  currency: string
+  note: string | null
+  occurredAt: string
+}
+
+/** 订单资金流水（仅订单参与者）：钱冻着、退了还是付给了服务者，双方都该看得见。 */
+export async function listOrderLedger(orderId: string): Promise<LedgerEntry[]> {
+  return parseResponse<LedgerEntry[]>(await fetch(`/api/v1/orders/${orderId}/ledger`, { headers: authHeaders() }))
 }
 
 /** 服务者视角的一条报名：`canWithdraw` 由服务端判定，客户端不要自己推算。 */

@@ -353,8 +353,24 @@ function startAdminResolve(order: AdminOrderItem) {
   adminResolveOrderId.value = order.id
   adminResolveDecision.value = 'Approve'
   adminResolveNote.value = ''
+  adminResolveAmount.value = undefined
   adminTaskError.value = ''
   adminTaskNotice.value = ''
+}
+
+/** 争议处置里的资金金额：强制完成时是放款给服务者的金额，终止订单时是退回需求方的金额（留空即全额）。 */
+const adminResolveAmount = ref<number | undefined>(undefined)
+
+/** 托管状态中文（与用户侧同一套说法）。 */
+function escrowStatusLabel(status: string): string {
+  const labels: Record<string, string> = {
+    None: '未托管',
+    Held: '已冻结（等待放款或退款）',
+    Released: '已全额放款给服务者',
+    Refunded: '已全额退回需求方',
+    Settled: '已分账（部分放款、部分退款）',
+  }
+  return labels[status] ?? status
 }
 
 async function confirmAdminResolve(order: AdminOrderItem) {
@@ -366,8 +382,8 @@ async function confirmAdminResolve(order: AdminOrderItem) {
   adminTaskBusy.value = true
   adminTaskError.value = ''
   try {
-    const resolved = await resolveDispute(order.id, adminResolveDecision.value, adminResolveNote.value.trim())
-    adminTaskNotice.value = `订单「${resolved.title}」的争议已处置：${disputeResolutionLabel(resolved.disputeResolution ?? adminResolveDecision.value)}，双方已收到通知。`
+    const resolved = await resolveDispute(order.id, adminResolveDecision.value, adminResolveNote.value.trim(), adminResolveAmount.value)
+    adminTaskNotice.value = `订单「${resolved.title}」的争议已处置：${disputeResolutionLabel(resolved.disputeResolution ?? adminResolveDecision.value)}${resolved.escrowStatus && resolved.escrowStatus !== 'None' ? `，资金${escrowStatusLabel(resolved.escrowStatus)}（放款 ¥${resolved.releasedAmount} / 退款 ¥${resolved.refundedAmount}）` : ''}，双方已收到通知。`
     adminResolveOrderId.value = ''
     await loadAdminOrders()
   } catch (error) {
@@ -778,6 +794,7 @@ async function confirmResetRiskRules() {
               <small v-if="order.rejectionNote" class="evidence-note">驳回原因：{{ order.rejectionNote }}</small>
               <small v-if="order.disputeReason" class="evidence-note">争议原因：{{ order.disputeReason }}<template v-if="order.disputeOpenedAt"> · {{ formatDeadline(order.disputeOpenedAt) }} 发起</template></small>
               <small v-if="order.disputeResolution" class="evidence-note">处置结果：{{ disputeResolutionLabel(order.disputeResolution) }}<template v-if="order.disputeResolutionNote"> · {{ order.disputeResolutionNote }}</template></small>
+              <small v-if="order.escrowStatus && order.escrowStatus !== 'None'" class="evidence-note">资金托管：{{ escrowStatusLabel(order.escrowStatus) }} ¥{{ order.escrowAmount }}<template v-if="order.releasedAmount"> · 已放款 ¥{{ order.releasedAmount }}</template><template v-if="order.refundedAmount"> · 已退款 ¥{{ order.refundedAmount }}</template></small>
             </div>
             <div class="setting-actions">
               <template v-if="adminResolveOrderId !== order.id">
@@ -790,6 +807,8 @@ async function confirmResetRiskRules() {
                   <option value="Cancel">终止订单</option>
                 </select>
                 <input v-model.trim="adminResolveNote" type="text" maxlength="500" placeholder="填写处置依据（必填，最多 500 字）" />
+                <input v-if="adminResolveDecision !== 'Rework'" v-model.number="adminResolveAmount" type="number" min="0" step="1" :placeholder="adminResolveDecision === 'Approve' ? `放款给服务者的金额（默认全额 ${order.escrowAmount}）` : `退回需求方的金额（默认全额 ${order.escrowAmount}）`" />
+                <small v-if="adminResolveDecision === 'Rework'" class="evidence-note">退回返工不涉及资金，托管金额继续冻结。</small>
                 <button type="button" class="settings-secondary danger" :disabled="adminTaskBusy" @click="confirmAdminResolve(order)">确认处置</button>
                 <button type="button" class="settings-secondary" :disabled="adminTaskBusy" @click="adminResolveOrderId = ''">取消</button>
               </template>

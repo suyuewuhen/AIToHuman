@@ -1,8 +1,11 @@
+using AIToHuman.Contracts.Payments;
 using AIToHuman.Contracts.Tasks;
+using AIToHuman.Domain.Payments;
 using AIToHuman.Domain.Tasks;
 using System.Text;
 using AIToHuman.Application.Common;
 using AIToHuman.Application.Orders;
+using AIToHuman.Application.Payments;
 using AIToHuman.Application.Risk;
 using AIToHuman.Domain.Orders;using AIToHuman.Domain.Common;
 using AIToHuman.Domain.Risk;
@@ -12,7 +15,7 @@ using DomainTaskStatus = AIToHuman.Domain.Tasks.TaskStatus;
 
 namespace AIToHuman.Application.Tasks;
 
-public sealed class TaskService(ITaskRepository repository, IOrderRepository orderRepository, IReviewRepository reviewRepository, ITaskRevisionRepository revisionRepository, AIToHuman.Application.Admin.IUserDirectory userDirectory, TimeProvider timeProvider, NotificationService notifications, IUnitOfWork unitOfWork, IRiskRuleCatalogProvider? riskRuleCatalog = null, RiskEnforcementService? riskEnforcement = null, IRiskAppealRepository? riskAppeals = null)
+public sealed class TaskService(ITaskRepository repository, IOrderRepository orderRepository, IReviewRepository reviewRepository, ITaskRevisionRepository revisionRepository, AIToHuman.Application.Admin.IUserDirectory userDirectory, TimeProvider timeProvider, NotificationService notifications, IUnitOfWork unitOfWork, IRiskRuleCatalogProvider? riskRuleCatalog = null, RiskEnforcementService? riskEnforcement = null, IRiskAppealRepository? riskAppeals = null, PaymentService? payments = null)
 {
     /// <summary>
     /// 这次写入该用哪一版风险规则：运营在后台改过就是最新那一版，否则是代码里的内置目录。
@@ -254,6 +257,9 @@ public sealed class TaskService(ITaskRepository repository, IOrderRepository ord
             repository.Save(task);
             order = new Order(task.Id, task.OwnerId, selected.WorkerId, task.Title, task.Reward, now);
             orderRepository.Add(order);
+            // 资金托管和建单在同一个事务里：托管失败就整体回滚，"任务分配出去但钱没冻住"是不允许出现的状态。
+            payments?.HoldFor(order, task.Id);
+            orderRepository.Save(order);
             notifications.EnqueueOrderCreated(order, now);
         });
 
@@ -333,6 +339,21 @@ public sealed class TaskService(ITaskRepository repository, IOrderRepository ord
         return MapSummary(task);
     }
 
+    /// <summary>
+    /// 某笔订单的资金流水（仅订单参与者）。"钱去哪了"不该只有平台知道：
+    /// 需求方要能确认自己付的钱是冻着、退了还是付给了服务者，服务者要能确认自己该得的那笔到没到。
+    /// </summary>
+    public IReadOnlyCollection<LedgerEntryResponse> ListOrderLedger(Guid orderId, Guid actorId)
+    {
+        var order = orderRepository.Get(orderId) ?? throw new KeyNotFoundException("订单不存在。");
+        EnsureParticipant(order, actorId);
+        return (payments?.ListByOrder(orderId) ?? []).Select(MapLedger).ToArray();
+    }
+
+    private static LedgerEntryResponse MapLedger(LedgerEntry entry) => new(
+        entry.Id, entry.OrderId, entry.TaskId, entry.Kind.ToString(), entry.DebitAccount.ToString(),
+        entry.CreditAccount.ToString(), entry.Amount, entry.Currency, entry.Note, entry.OccurredAt);
+
     /// <summary>按任务查询订单（路由是 /tasks/{id}/order，因此这里的 id 是任务 ID）。</summary>
     public OrderResponse? GetOrderByTask(Guid taskId, Guid userId)
     {
@@ -350,11 +371,14 @@ public sealed class TaskService(ITaskRepository repository, IOrderRepository ord
         order.Approve(actorId, note, timeProvider.GetUtcNow());
         var now = timeProvider.GetUtcNow();
 
-        // 验收通过要同时写订单状态、关闭任务并写入通知，必须落在同一个事务里。
+        // 验收通过要同时写订单状态、关闭任务、放款并写入通知，必须落在同一个事务里。
         unitOfWork.Execute(() =>
         {
             orderRepository.Save(order);
             CloseTaskIfAssigned(order.TaskId);
+            // 放款失败会抛错让整个事务回滚：订单不能"已完成"却没钱给服务者。
+            payments?.ReleaseFor(order);
+            orderRepository.Save(order);
             notifications.EnqueueOrderStatusChanged(order, order.WorkerId, now);
         });
 
@@ -397,6 +421,9 @@ public sealed class TaskService(ITaskRepository repository, IOrderRepository ord
         unitOfWork.Execute(() =>
         {
             order.Cancel(actorId, reason, now);
+            orderRepository.Save(order);
+            // 取消要连退款一起完成：退款失败就整体回滚，不允许出现"订单已取消但钱还冻着"。
+            payments?.RefundFor(order, reason);
             orderRepository.Save(order);
 
             // 只有仍处于 Assigned 的任务才需要处理：历史数据里任务可能已经被关掉。
@@ -625,7 +652,7 @@ public sealed class TaskService(ITaskRepository repository, IOrderRepository ord
         task.RiskReviewStatus.ToString(), task.RiskReviewNote, task.IsPublishBlockedByRisk, CanEditDraft(task),
         task.RiskAppealStatus.ToString(), task.RiskAppealReason, task.RiskAppealedAt, task.RiskAppealDecisionNote, task.CanAppealRisk,
         task.RiskEnforcementStatus.ToString(), task.RiskEnforcementReason, task.RiskEnforcedAt);
-    private static OrderResponse Map(Order order) => new(order.Id, order.TaskId, order.OwnerId, order.WorkerId, order.Title, order.Reward.Amount, order.Reward.Currency, order.Status.ToString(), order.CreatedAt, order.EvidenceNote, order.ReviewNote, order.SubmittedAt, order.ReviewedAt, order.ReworkCount, order.RejectionNote, 0, order.CancelledAt, order.CancelledBy, order.CancellationReason, order.DisputeReason, order.DisputeOpenedBy, order.DisputeOpenedAt, order.DisputeResult, order.DisputeResolutionNote, order.DisputeResolvedAt);
+    private static OrderResponse Map(Order order) => new(order.Id, order.TaskId, order.OwnerId, order.WorkerId, order.Title, order.Reward.Amount, order.Reward.Currency, order.Status.ToString(), order.CreatedAt, order.EvidenceNote, order.ReviewNote, order.SubmittedAt, order.ReviewedAt, order.ReworkCount, order.RejectionNote, 0, order.CancelledAt, order.CancelledBy, order.CancellationReason, order.DisputeReason, order.DisputeOpenedBy, order.DisputeOpenedAt, order.DisputeResult, order.DisputeResolutionNote, order.DisputeResolvedAt, order.EscrowStatus.ToString(), order.EscrowAmount, order.ReleasedAmount, order.RefundedAmount, order.PaymentReference, order.EscrowHeldAt, order.EscrowSettledAt);
     private static ReviewResponse MapReview(Review review, bool visible) => new(review.Id, review.OrderId, review.ReviewerId, review.RevieweeId, review.Rating, visible ? review.Comment : "评价将在双方完成后公开", review.CreatedAt, visible);
 
     private static TaskDraftRevisionResponse MapRevision(TaskDraftRevision revision, IReadOnlyList<TaskDraftFieldChange>? changes = null) => new(

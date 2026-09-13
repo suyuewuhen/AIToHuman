@@ -35,6 +35,12 @@
   - ① **改完规则要跑一轮复检看在线任务**：改过风险规则目录（或手动收紧词表/阈值）之后，用管理员令牌调 `POST /api/v1/admin/risk/recheck`（可带 `?limit=`），看仍处于 `Published`/`Assigned` 的任务会不会被处置——响应里的 `scanned` / `refreshed` / `flagged` / `unpublished` / `frozen` / `skipped` 就是这一轮的条数：命中禁止类别且没有订单的被自动下架（`unpublished`）、已经有订单的改为冻结订单并进争议队列（`frozen`）、只命中“需人工复核”的保持在线并要求复检（`flagged`）。后台 `RiskRecheckService` 每 5 分钟也会自己跑一轮，所以“页面没动静”不等于“什么都没发生”。
   - ② **申诉节流是按人按天算的**：同一条任务累计最多申诉 3 次、同一个人 24 小时内最多 5 次，反复联调同一个账号很容易撞上限（`422` 文案分别是「这条任务累计申诉已达上限（3 次）：请先修改文案，规则会重新判定。」与「近 24 小时提交的申诉已达上限（5 次）：请明天再试，或先修改文案。」）。换一个账号，或清掉 `task_risk_appeals`（同一条任务的留档行）再试。
 - **地址留痕的真机联调**：查留痕用 `GET /api/v1/admin/address-access?taskId=…`（也可按 `viewerId` 过滤；`limit` 默认 50、上限 200；匿名 `401`、非管理员 `403`）。一条带精确地址的任务上，正常链路应当是：**选人前**所有者读 `200` 且拿到地址、报名者读 `403`；**选中其中一位之后**被选中者 `200`、另一位仍 `403`——运营侧查这条任务应当看到对应条数的留痕（所有者 `Granted`、报名者选人前 `Denied`、被选中者 `Granted`、另一位 `Denied`），`deniedCount=2`；按那位没被选中的 `viewerId` 过滤，能看到他“查过几次、被拒几次”。看结果时**别只看条目**：同一过滤条件下的 **`deniedCount`（拒绝次数）才是探测信号**，正常联调里“报名者选人前被拒一次”是预期内的，同一个账号反复被拒才要追。
+- **资金托管的真机联调（三条路径 + 一个对比开关）**：托管默认开启（运营配置 `payment.provider=simulated`，走本地模拟网关），一条任务走一遍就能看清钱怎么动——
+  - ① **验收放款**：发布任务（悬赏如 60）→ 服务者报名、需求方选人，此时订单应当是 `Held`、`escrowAmount=60`（**选人这一步同时冻结资金**，冻结失败会让任务、订单与流水一起回滚，不会留下“订单已建、钱没冻上”的状态）；服务者开始执行并提交，需求方验收通过后订单变 `Released`、`releasedAmount=60`，流水两条（`OwnerFunds → Escrow` 60 的 `Hold` 与 `Escrow → WorkerPayout` 60 的 `Release`）。
+  - ② **取消退款**：选人后（例如冻结 80）由需求方 `POST /api/v1/orders/{id}/cancel`，订单变 `Refunded`、`refundedAmount=80`，流水两条（`Hold` + `Escrow → OwnerFunds` 80 的 `Refund`）。
+  - ③ **争议分账**：让双方进入 `Disputed`，运营用 `POST /api/v1/admin/orders/{id}/resolve` 处置并带上金额——`Approve` 时 `amount` 是**放款给服务者的金额**，`Cancel` 时是**退回需求方的金额**（都留空即全额），`Rework` 不涉及资金、填了会被拒。托管 100、按“放款 40、退款 60”处置后订单是 `Approved`、托管 `Settled`、`releasedAmount=40`、`refundedAmount=60`，流水三条（`Hold` 100 + `PartialRelease` 40 + `PartialRefund` 60），运营审计的原因里能看到「（资金处置金额 40 CNY）」。
+  - **赔付金额越界会 `422`**：超过托管额时返回「赔付金额必须在 0 到托管金额（X）之间。」（例如托管 100 时报「赔付金额必须在 0 到托管金额（100）之间。」），这是领域层在挡金额，不是接口坏了。
+  - **看流水、关托管做对比**：资金流水走 `GET /api/v1/orders/{id}/ledger`（**仅订单参与者**；外人 `403`、订单不存在 `404`；返回裸数组，金额恒为正、方向看 `debitAccount → creditAccount`），运营侧对应 `GET /api/v1/admin/orders/{id}/ledger`。把运营配置 `payment.provider` 改成 `disabled` 之后新建的订单应当是 `None`、金额 0、**没有任何流水**，改回 `simulated` 即恢复托管——联调时用它对一下“托管关掉时行为与上线前一致”。
 - **凭证规范化的三种联调样本**（用来验证剥离与拒绝两条路径）：① **带私有块的 PNG**——在 `IDAT` 前塞一个载荷是 ZIP 魔数的未知块 `prVt`，上传后应当变小（本轮样本 89 字节存成 62 字节），响应的 `metadataRemoved` 是 `PNG 未知块(prVt)`；② **截断的 PNG**（删掉 `IEND`）——`422`「凭证内容不是合法的 PNG（缺少结束块 IEND），已拒绝保存。」；③ **改名文件**（把 JPEG 存成 `.png`）——`422`「凭证内容与声明的类型不一致，已拒绝保存。」。三种样本都要顺手回读一次凭证列表，确认没有多出半份文件。
 - 数据库结构只通过 EF Core Migration 演进。
 - **前端不要自己拼 API 地址**：所有请求走 `frontend/src/api/base.ts` 的 `apiFetch()`（SignalR 用 `hubUrl()`），两个入口之间的跳转用 `APP_HOME_URL` / `OPS_HOME_URL`。默认是相对路径（同源 + 反向代理），跨域部署时才由构建期变量给出绝对地址：`VITE_API_BASE_URL`、`VITE_HUB_BASE_URL`、`VITE_APP_HOME_URL`、`VITE_OPS_HOME_URL`（声明在 `frontend/env.d.ts`）。
@@ -127,12 +133,13 @@ Settings__evidence__maxPerOrder
 Settings__evidence__stripMetadata
 Settings__evidence__uploadsPerUserPerHour
 Settings__evidence__downloadUrlLifetimeSeconds
+Settings__payment__provider
 Admin__UserIds
 Admin__Emails
 DataProtection__KeysPath
 ```
 
-命名规则：`Settings__<设置键里点号换成双下划线>` 与设置目录里的键一一对应（例如 `Settings__evidence__scanner__provider` ↔ `evidence.scanner.provider`），作用是兜底；日常调整在运营后台完成，改完立即生效。`ObjectStorage__LocalRoot` 只在 `storage.provider=local` 时生效（留空则用应用目录下的 `evidence`）。`Admin__UserIds` / `Admin__Emails` 决定谁能访问运营接口，留空等于关闭运营接口。`DataProtection__KeysPath` 指向密钥环目录，生产必须持久化并在实例间共享。
+命名规则：`Settings__<设置键里点号换成双下划线>` 与设置目录里的键一一对应（例如 `Settings__evidence__scanner__provider` ↔ `evidence.scanner.provider`），作用是兜底；日常调整在运营后台完成，改完立即生效。`ObjectStorage__LocalRoot` 只在 `storage.provider=local` 时生效（留空则用应用目录下的 `evidence`）。`Admin__UserIds` / `Admin__Emails` 决定谁能访问运营接口，留空等于关闭运营接口。`DataProtection__KeysPath` 指向密钥环目录，生产必须持久化并在实例间共享。`Settings__payment__provider` ↔ `payment.provider` 是资金托管的通道开关：`simulated`（默认）走本地模拟网关，`disabled` 关闭托管——订单不带托管信息、也不写任何流水。
 
 对象存储：`storage.provider=s3` 之前需要先在服务端建好 Bucket 并保持私有（用 MinIO 的话 `mc mb` + `mc anonymous set none` 即可），然后填 `storage.s3.endpoint/region/bucket/accessKeyId/secretAccessKey`；本机 MinIO 的 region 用 `us-east-1`，endpoint 形如 `http://127.0.0.1:9000`。密钥填错或 Bucket 不存在时接口会返回可读错误（`422`，带上 S3 的错误码），不会退回本机目录。`evidence.downloadUrlLifetimeSeconds` 控制直连下载地址的有效期（5 至 900 秒，默认 120）。
 

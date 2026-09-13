@@ -19,7 +19,9 @@
 | `TaskDraft` | ⚠️ | 无独立草稿实体；**版本号、编辑历史、字段级 diff 与回滚都已实现**（`task_draft_revisions` 只追加：创建草稿写第 1 版、每次编辑或回滚追加一版，每版记录原文、变更摘要与该版的风险结论，`GET /api/v1/tasks/{id}/revisions` 仅所有者可读并带与上一版逐字段比较的 `changes`，`POST /api/v1/tasks/{id}/revisions/{revision}/restore` 只对草稿开放且走与编辑同一条校验路径）；AI 返回的 `plan` 经确认后直接创建 `ReadyToPublish` 任务，但该任务的字段可编辑（`PUT /api/v1/tasks/{id}`，仅 `ReadyToPublish`）；仍缺独立聚合 |
 | `Task` | ✅ | `TaskItem` 已实现，含所有者、截止时间、公开区域和验收标准校验；可选的报名截止时间 `ApplicationDeadline` 到点后只关闭新报名；`Expired`（后台扫描超期未分配任务）与 `Cancelled`（所有者撤销、运营下架）都有落库时间戳与原因；发布后复检的处置单独记在 `RiskEnforcementStatus`/`RiskEnforcementReason`/`RiskEnforcedAt` 三列上（`None`/`RecheckRequired`/`Suspended`），刻意不写进人工复核状态，见第 10 节 |
 | `Application` | ⚠️ | `TaskApplication` 已实现；服务者可撤回自己仍处于 `Pending` 的报名（`Withdrawn`，之后可重新报名），订单取消把选中的报名置为 `Rejected`、任务过期把 `Pending` 置为 `Expired`；报名列表内联该服务者的公开评价摘要（`WorkerAverageRating`/`WorkerReviewCount`，只统计已公开评价）；仍无预计到达时间，也没有选人时固化的报名快照 |
-| `Order` | ✅ | `Order` 已实现，含参与者校验、状态机、取消（`Cancelled` + 取消人、取消时间、取消原因）与争议（`Disputed` + 发起人、原因、发起时间、处置结果、处置依据与处置时间）；平台按风控冻结走 `SuspendByRisk`/`CanBeSuspendedForRisk`，复用争议路径且 `DisputeOpenedBy` 留空表示平台动作 |
+| `Order` | ✅ | `Order` 已实现，含参与者校验、状态机、取消（`Cancelled` + 取消人、取消时间、取消原因）与争议（`Disputed` + 发起人、原因、发起时间、处置结果、处置依据与处置时间）；平台按风控冻结走 `SuspendByRisk`/`CanBeSuspendedForRisk`，复用争议路径且 `DisputeOpenedBy` 留空表示平台动作；**托管字段与方法已落地**（`EscrowStatus`/`EscrowAmount`/`ReleasedAmount`/`RefundedAmount`/`PaymentReference`/`EscrowHeldAt`/`EscrowSettledAt` + `HoldEscrow`/`ReleaseEscrow`/`RefundEscrow`/`SettleEscrow`），见本节与第 8 节 |
+| `EscrowStatus`（订单托管） | ✅ | 订单上的资金状态，与订单状态刻意分开记（“订单已验收但放款重试中”“订单已取消但退款还在路上”都是可能的中间态）：`None`（未托管：托管关掉或托管上线前的历史订单，也是存量行的数据库默认值）/ `Held`（已冻结，等放款或退款）/ `Released`（全额放款给服务者）/ `Refunded`（全额退回需求方）/ `Settled`（部分放款 + 部分退款） |
+| `LedgerEntry`（资金流水） | ✅ | `ledger_entries`（迁移 28）的**只追加**复式记账流水：一行 = 一次账户间转账（`DebitAccount` → `CreditAccount` + 正数金额 + `LedgerEntryKind` + 币种 + 说明 + 时间），必须挂订单、金额必须 > 0、借贷账户不能相同；账户只有 `OwnerFunds`/`Escrow`/`WorkerPayout` 三个，**本轮不抽佣金**（账本里没有平台收入账户），见第 8 节 |
 | 风险模型（`RiskRule`/`RiskAssessment`/`RiskAppealStatus`） | ⚠️ | 规则目录已是**实例类型**：代码内置目录 `RiskRuleCatalog.BuiltIn`（版本 1、12 个原因代码）是硬底线，运营可在后台编辑出覆盖版本（只追加的版本快照 + 依据必填 + 运营审计 + 可恢复内置）；判定接入创建草稿、编辑草稿、回滚、发布与已发布任务加价五个门禁，都传当下生效的那一版目录，另对仍在线任务做**发布后复检**（`RiskEnforcementStatus`/`RiskEnforcementOutcome`）。`RiskReviewStatus` 记录人工复核结论，`RiskAppealStatus` 记录误拦申诉（禁止类别的申诉成立也不放行），申诉另有 `RiskAppealPolicy` 节流与 `RiskAppealRecord` 留档；缺模型辅助分类、追加式决策历史、规则命中统计与规则目录编辑的双人复核，见第 10 节 |
 | `Evidence` | ⚠️ | `OrderEvidence` + `evidence` 表已实现：类型白名单与文件签名校验、扫描状态机与退避重扫、上传时**容器白名单化与结构 fail-closed**（非白名单的扩展段/块一律丢弃，结构不合法一律 `422`）、按人小时配额，存储走 `IFileStorage`（本机目录或 S3 兼容对象存储，支持短时直连下载地址）；订单上的 `EvidenceNote` 仍作为“完成说明”文本框与凭证文件并存。仍缺图片像素级重编码（需图像编解码库）与“凭证关联到具体验收项” |
 | `AddressAccessEntry` | ✅ | 精确执行地址的**只追加**访问留痕：`address_access_entries`（迁移 27）一次读取一行，身份（`Owner`/`SelectedWorker`/`Other`）与结论（`Granted`/`Denied`/`NotSet`）全部由任务本身推出，匿名只记“没有 viewer id”；先留痕再判断，被拒绝的尝试同样落库，见第 7 节 |
@@ -70,9 +72,9 @@ AI 与用户共同编辑的临时结构。保存字段完整性、风险检查�
 
 ### Order
 
-用户查看服务者公开评价并选择报名者后形成的执行关系，是执行状态、验收、争议以及未来支付的核心聚合。
+用户查看服务者公开评价并选择报名者后形成的执行关系，是执行状态、验收、争议以及资金托管的核心聚合。
 
-> 实现现状（✅）：`Order` 已实现任务、双方参与者、标题与 `Money` 快照、状态机和参与者校验（`EnsureWorker`/`EnsureOwner` + `EnsureStatus`）。`RejectionNote` 保存最近一次驳回原因并在验收通过时清空，`ReworkCount` 累计返工次数。取消已落地：`CancelledAt`、`CancelledBy`、`CancellationReason` 三个字段记录取消人、时间与必填原因。快照仅覆盖标题与悬赏，未保存验收条件、报名快照和执行说明；争议已经落地（`DisputeReason`/`DisputeOpenedBy`/`DisputeOpenedAt`/`DisputeResolution`/`DisputeResolutionNote`/`DisputeResolvedAt` 六个字段，参与者发起与运营处置两条路径见第 4 节），支付相关字段仍未出现。
+> 实现现状（✅）：`Order` 已实现任务、双方参与者、标题与 `Money` 快照、状态机和参与者校验（`EnsureWorker`/`EnsureOwner` + `EnsureStatus`）。`RejectionNote` 保存最近一次驳回原因并在验收通过时清空，`ReworkCount` 累计返工次数。取消已落地：`CancelledAt`、`CancelledBy`、`CancellationReason` 三个字段记录取消人、时间与必填原因。快照仅覆盖标题与悬赏，未保存验收条件、报名快照和执行说明；争议已经落地（`DisputeReason`/`DisputeOpenedBy`/`DisputeOpenedAt`/`DisputeResolution`/`DisputeResolutionNote`/`DisputeResolvedAt` 六个字段，参与者发起与运营处置两条路径见第 4 节）；**托管字段与方法也已落地**：`EscrowStatus`（`None`/`Held`/`Released`/`Refunded`/`Settled`）、`EscrowAmount`（= 订单的悬赏快照金额）、`ReleasedAmount`、`RefundedAmount`、`PaymentReference`、`EscrowHeldAt`、`EscrowSettledAt`，另有只读派生属性 `EscrowBalance`（仍冻结在托管里、还没放款也没退款的余额，只在 `Held` 时非零）与两个判定属性 `CanHoldEscrow`（只有 `None` 为真，即**一笔订单只能冻结一次**）、`EscrowAwaitingSettlement`（`Held`，表示这笔钱还在等放款或退款）。四个方法是 `HoldEscrow(reference, now)`（冻结，金额固定取订单悬赏）、`ReleaseEscrow(now)`（全额放款给服务者）、`RefundEscrow(now)`（全额退回需求方）、`SettleEscrow(workerAmount, ownerAmount, now)`（争议分账，**两者之和必须正好等于托管金额**；全给服务者 → `Released`，全退需求方 → `Refunded`，都有 → `Settled`）。资金动作与订单保存在同一个工作单元里（见第 8 节），因此不会留下“订单已完成但没放款”的持久化中间态。
 
 ### Evidence
 
@@ -179,7 +181,7 @@ Disputed
 > | `Disputed` | ✅ `Disputed` | 已接入：`POST /api/v1/orders/{id}/dispute`（复用 `OrderActionRequest`，`note` 即争议原因，必填 ≤500 字）由参与者发起——需求方只能在 `Submitted`（服务者已提交验收）发起，服务者只能在 `Rejected`（验收被驳回）发起，非参与者返回“只有订单参与者可以发起争议。”，其它阶段同样返回可读的 `422` 说明。争议期间订单冻结：提交、验收、驳回、返工、取消一律 `422`，任务保持 `Assigned`、不会回到大厅。运营处置：`GET /api/v1/admin/orders?status=`（省略 `status` 默认只返回 `Disputed`，传 `all` 看全部）检索，`POST /api/v1/admin/orders/{id}/resolve`（`{ decision, note }`，`decision ∈ { Approve, Rework, Cancel }`，`note` 必填 ≤500 字）三种结果：`Approve` 订单 → `Approved`（写 `ReviewedAt`/`ReviewNote`、清空 `RejectionNote`）且任务 `Assigned → Closed`；`Rework` 订单 → `InProgress`、`ReworkCount` 累加、`RejectionNote` 记处置依据、任务保持 `Assigned`；`Cancel` 订单 → `Cancelled`（`CancelledAt` 落库、`CancelledBy` 为 **null**——表示平台处置而不是某个参与者取消、`CancellationReason` 记处置依据），任务按“取消订单”的规则回到大厅或直接过期。三种处置都在同一事务里写运营审计（`order.dispute.approve`/`order.dispute.rework`/`order.dispute.cancel`，`targetType=order`，依据写在 `reason`）并通知双方（发起时对方收到 `order.disputed`，处置后双方收到 `order.disputeResolved`，事件键按接收者派生）。**平台自己也能把订单冻结进这个状态**：发布后复检命中禁止类别、而任务已经产生订单时，应用层调用 `Order.SuspendByRisk(reason, now)`（先过 `CanBeSuspendedForRisk`——已结束、已取消或已经在争议里的订单不动它，留给下一轮），订单变 `Disputed` 并记争议原因，唯一区别是 `DisputeOpenedBy` 留空表示这不是任何一方发起的，而是平台按风控处置；双方各收到一条 `order.disputed`，事件键按接收者派生且加了 `SuspendedByRisk:` 前缀，因此与参与者发起的那条不会互相顶掉 |
 > | `Cancelled` | ✅ `Cancelled` | 已接入：`POST /api/v1/orders/{id}/cancel`（`actorId` + 必填 `note`，≤200 字）记 `CancelledAt`/`CancelledBy`/`CancellationReason`。服务者只能在 `Accepted`（还没开始执行）时取消，开工后要终止必须由需求方发起；需求方在 `Submitted` 之前都可取消；提交验收之后双方都不能取消（先验收或驳回）；`Approved`/`Cancelled` 不能再取消，非参与者返回「只有订单参与者可以取消订单。」（均为 `422` + 可读中文原因）。同一事务内连带：任务未过截止时间则退回 `Published` 重新招募并把选中报名置为 `Rejected`，已过截止时间则置为 `Expired`（记 `ExpiredAt`，取消者不是需求方时需求方还会收到 `task.expired`）；双方参与者收到 `order.cancelled` |
 >
-> 另外，订单验收通过时 `TaskService.ApproveOrder` 在同一个事务里调用 `CloseTaskIfAssigned`，把 `Assigned` 任务推进到 `Closed`（返工期间任务保持 `Assigned`，不会回到大厅）；执行凭证已经是独立实体与独立表（`OrderEvidence` + `evidence`），支持上传、鉴权下载、扫描门禁与短时直连地址，`EvidenceNote` 只承担“完成说明”文本的角色。
+> 另外，订单验收通过时 `TaskService.ApproveOrder` 在同一个事务里调用 `CloseTaskIfAssigned`，把 `Assigned` 任务推进到 `Closed`（返工期间任务保持 `Assigned`，不会回到大厅）；执行凭证已经是独立实体与独立表（`OrderEvidence` + `evidence`），支持上传、鉴权下载、扫描门禁与短时直连地址，`EvidenceNote` 只承担“完成说明”文本的角色。验收通过时还会在**同一个事务**里放款（托管 `Held` → `Released`，写一条 `Escrow → WorkerPayout` 的流水），放款失败则整笔回滚、订单不完成，用户可以重试（见第 8 节）。
 
 ## 5. 不变量
 
@@ -194,6 +196,10 @@ Disputed
 - ✅ Application 的服务者不能是 Task 所有者，报名中不得包含价格。领域层已校验，`ApplyForTaskRequest` 没有价格字段。
 - ⚠️ 已发布 Task 的悬赏只能在分配前提高。`IncreaseReward` 已校验“仅 `Published` 状态、同币种、金额只能提高”，并受任务行并发令牌保护；`TaskRewardIncreased` 事件仍未实现，加价也不通知已报名者。
 - ⚠️ Order 的用户、服务者、任务快照和报名快照创建后不可替换。参与者创建后不可替换，但只固化了标题和悬赏，验收条件、执行说明和报名快照未进入订单。
+- ✅ 托管金额与订单悬赏绑定，且一笔订单只能冻结一次。`HoldEscrow` 只在 `EscrowStatus = None` 时可调用（否则抛错），金额固定取订单的 `Reward.Amount`（**不接受调用方传金额**），`EscrowAmount` 因此恒等于这笔订单的悬赏快照；托管整体关闭（`payment.provider=disabled`）时订单保持 `None`、金额为 0，也不写任何流水。
+- ✅ 分账之和必须等于托管金额。`SettleEscrow(workerAmount, ownerAmount)` 要求两者之和**正好**等于 `EscrowAmount`（不满足即抛错），不允许“有一部分不知道去哪了”的差额；全给服务者落 `Released`、全退需求方落 `Refunded`、两边都有落 `Settled`，已经处置过的订单不能重复处置。
+- ✅ 账本只追加、金额为正、借贷不同账户。`LedgerEntry` 没有修改方法，一行就是一次账户间转账（`DebitAccount` → `CreditAccount`），构造时即校验金额 > 0、借贷账户不能相同、必须有币种、必须挂订单；因此同一订单的流水加总能还原“冻结了多少、放款了多少、退款了多少”，不用靠订单上的汇总字段。
+- ✅ 网关失败不改状态（先扣钱后改状态不行）。`PaymentService` 的四条路径都是“先让网关确认（`Hold`/`Capture`/`Refund` 成功）→ 再改订单的托管字段 → 再写流水”，任何一步失败都抛错、由调用方的显式事务整体回滚——真库用例断言了这条：网关冻结失败时任务仍是 `Published`、数据库里没有订单、没有任何流水、报名仍是 `Pending`。宁可挡住一次验收，也不留一笔说不清的钱。
 - ✅ 状态转换必须同时验证操作者、当前状态和必要材料。`EnsureWorker`/`EnsureOwner` 区分服务者与需求方动作，`EnsureStatus` 校验当前状态；提交凭证和驳回验收均要求必填说明。
 - ✅ 上传即规范化，且结构坏了不放过。凭证上传的顺序固定为：按声明类型校验签名 → 容器白名单化（丢掉一切非白名单的扩展段/块：JPEG 的 APPn 与 COM、PNG 的非结构块、WebP 的 EXIF/XMP 与未知块）→ 再校验一次签名 → 落库 → 扫描。容器结构不合法一律 `422`（fail closed），**不再把坏文件原样放行**；像素数据逐字节保留，因此这是**容器规范化，不是像素级重编码**，真正兜底的是内容扫描。
 - ⚠️ AwaitingReview 必须至少有一份通过安全检查的 Evidence。当前只要求 `EvidenceNote` 非空文本，没有文件、类型/大小校验或扫描状态。
@@ -251,9 +257,13 @@ Money(amount, currency)
 
 支付上线后区分任务悬赏、用户应付、平台服务费、服务者应收和退款，不能只用一个 `Amount` 字段承载所有含义。AI 建议价仅是带版本和依据摘要的建议，不是订单金额来源；用户确认的悬赏才进入任务与订单快照。
 
-> 实现现状（✅ Money / ⚠️ 金额语义）：`Money` 值对象已实现，使用 `decimal` 加三位币种代码（默认 `CNY`），校验金额大于零并四舍五入到两位小数；任务和订单都保存 `Reward` 快照，订单创建后不受任务加价影响。
+> 实现现状（✅ Money 与托管账本 / ⚠️ 真实资金）：`Money` 值对象已实现，使用 `decimal` 加三位币种代码（默认 `CNY`），校验金额大于零并四舍五入到两位小数；任务和订单都保存 `Reward` 快照，订单创建后不受任务加价影响。
 >
-> - 只有“悬赏”一种金额语义，没有用户应付、平台服务费、服务者应收、退款或账本字段。
+> - **托管与只追加账本已落地（第 28 个迁移 `AddOrderEscrowAndLedger`）**：订单上是 `EscrowStatus` + `EscrowAmount`（= 悬赏）+ `ReleasedAmount`/`RefundedAmount`/`PaymentReference`/`EscrowHeldAt`/`EscrowSettledAt`；账本 `ledger_entries` 一行一次账户间转账（`DebitAccount` → `CreditAccount` + 正数金额 + `LedgerEntryKind`：`Hold`/`Release`/`Refund`/`PartialRelease`/`PartialRefund` + 币种 + 说明 + 时间）。账户只有三个——`OwnerFunds`（需求方资金）/`Escrow`（平台托管）/`WorkerPayout`（服务者应得）；**本轮不抽佣金，账本里没有平台收入账户**：真有佣金时应当新增账户与对应的分账流水，而不是把差额留在托管账户里。参与者用 `GET /api/v1/orders/{id}/ledger`、运营用 `GET /api/v1/admin/orders/{id}/ledger` 读流水——**“钱去哪了”不该只有平台知道**。
+> - **钱与状态一起动、失败就不改状态**：`TaskService.Select`（选人时冻结）、`ApproveOrder`（验收放款）、`CancelOrder`（取消退款）与 `AdminConsoleService.ResolveDispute`（争议分账）都在同一个工作单元里改订单并写流水；网关返回失败时抛错让事务整体回滚，用户可以重试（见第 5 节的不变量）。
+> - **网关不持有金额状态，凭据 + 本地流水才是可对账的组合**：`SimulatedPaymentGateway` 是确定性本地实现，只负责“这个动作能不能成功”并发一个可对账凭据（`sim-hold-<orderId:N>` / `sim-capture-…` / `sim-refund-…`），真正的账在订单的托管字段与 `ledger_entries` 上——真实服务商的状态在它那边，服务端自己再存一份必然会对不上；测试可以用 `FailureMode` 让指定动作失败。
+> - **托管可以整体关掉**：`payment.provider=disabled` 时订单不带托管信息、也不写流水，行为与托管功能上线之前一致（既是本地联调时的对比开关，也是网关出问题时的降级退路）。
+> - **仍缺**：真实支付服务商接入、失败重试队列与自动对账、佣金抽成；平台服务费与“服务者应收”这类金额语义因此仍未出现，现在只有悬赏与它的托管去向。
 > - AI 建议价由 `POST /api/v1/reward-suggestions` 的本地规则计算，不调用模型，也不写入任务金额；用户提交的 `reward` 才是任务悬赏。
 > - 当前建议价响应不含规则/模型版本，也没有数据充分度指标。
 
@@ -292,7 +302,7 @@ Money(amount, currency)
 > - **加价即重判（`IncreaseReward(reward, now, catalog)`）**：已发布任务加价之后立即按当下生效的规则重判一次，把结果作为 `RiskEnforcementOutcome` 返回给应用层（通知、审计、冻结订单由 `RiskEnforcementService.ApplyOutcome` 做），因此“先发一条普通任务、再改成高标准悬赏”不再能绕过高金额转人工。加价本身仍然只允许 `Published`、同币种、只能提高，并受任务行并发令牌保护。
 > - **`RiskEnforcementStatus` / `RiskEnforcementOutcome`**：前者是落在任务上的处置状态（`None`/`RecheckRequired`/`Suspended`），后者是判定给应用层的“还需要做哪些带副作用的动作”（`Unchanged`/`FlaggedForRecheck`/`Unpublished`/`OrderFrozen`）。领域层只判定与改自己的状态，碰订单与通知是应用层的事；需要冻结订单的情形不允许由 `ApplyOutcome` 处理（它做不到“同一个工作单元里连订单一起改”，半截处置比什么都不做更糟）。
 > - **平台动作的审计身份**：自动下架与冻结订单分别写运营审计 `task.risk.recheck.unpublish`/`task.risk.recheck.freezeOrder`（`targetType=task`），操作人统一是 `AdminAuditEntry.SystemActorId`（`00000000-0000-0000-0000-00000000ffff`），因此审计里能一眼分出“人做的”和“系统做的”。
-> - 缺失：模型辅助分类与语义判断（现在只有字面词表匹配，改写过的表述可能漏过）；规则目录编辑的双人复核/审批流、灰度或 A/B 与按规则维度的报表，以及规则命中统计/看板（目录本身已有只追加的版本历史，但“哪条规则命中过多少次”没有统计）；决策只保留最新一条（记在任务行上），没有追加式的决策历史表，也没有独立的风险事件流；禁止类别命中的已分配任务只有“冻结订单 + 运营按争议处置”，**没有自动退款或赔付**（要等支付/托管那一批）；通知仍只有站内渠道。
+> - 缺失：模型辅助分类与语义判断（现在只有字面词表匹配，改写过的表述可能漏过）；规则目录编辑的双人复核/审批流、灰度或 A/B 与按规则维度的报表，以及规则命中统计/看板（目录本身已有只追加的版本历史，但“哪条规则命中过多少次”没有统计）；决策只保留最新一条（记在任务行上），没有追加式的决策历史表，也没有独立的风险事件流；禁止类别命中的已分配任务仍然只有“冻结订单 + 运营按争议处置”，**赔付与退款已能由运营在处置时按金额执行**（见第 8 节），但没有**自动**退款或赔付规则；通知仍只有站内渠道。
 
 ### 误拦申诉（`RiskAppealStatus`）
 

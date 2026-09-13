@@ -1,6 +1,7 @@
 using AIToHuman.Application.Idempotency;
 using AIToHuman.Application.Risk;
 using AIToHuman.Application.Tasks;
+using AIToHuman.Infrastructure.Payments;
 using AIToHuman.Contracts.Admin;
 using AIToHuman.Contracts.Tasks;
 using AIToHuman.Domain.Admin;
@@ -648,6 +649,103 @@ public sealed class PostgresRegressionTests(PostgresRegressionFixture fixture) :
         Assert.Equal(2, rows.Count);
         Assert.Contains(rows, item => item.Outcome == "Granted" && item.ViewerRole == "Owner" && item.ViewerId == world.Owner);
         Assert.Contains(rows, item => item.Outcome == "Denied" && item.ViewerRole == "Other" && item.ViewerId == stranger);
+    }
+
+    /// <summary>
+    /// 资金托管在真库上的往返：下单冻结 → 验收放款，订单上的托管字段与账本都要落库；
+    /// 换一个作用域读回来仍然一致（托管字段是逐列写回的，漏一列就会出现"钱扣了但订单看起来没托管"）。
+    /// </summary>
+    [PostgresFact]
+    public async Task Escrow_and_ledger_round_trip_through_postgres()
+    {
+        using var world = new PostgresWorld(fixture.ConnectionString, Now);
+        var task = world.CreatePublishedWithOrder("代取文件", reward: 60);
+        var orderId = task.OrderId;
+
+        await using (var context = fixture.CreateContext())
+        {
+            var held = await context.Orders.AsNoTracking().SingleAsync(item => item.Id == orderId);
+            Assert.Equal("Held", held.EscrowStatus);
+            Assert.Equal(60m, held.EscrowAmount);
+            Assert.NotNull(held.EscrowHeldAt);
+            Assert.StartsWith("sim-hold-", held.PaymentReference);
+        }
+
+        world.Service.StartOrder(orderId, world.Worker);
+        world.Service.SubmitOrder(orderId, world.Worker, "已完成");
+        world.Service.ApproveOrder(orderId, world.Owner, "通过");
+
+        using (var freshScope = world.NewScope())
+        {
+            var reloaded = world.Service.ListOrders(world.Owner).Single(item => item.Id == orderId);
+            Assert.Equal("Approved", reloaded.Status);
+            Assert.Equal("Released", reloaded.EscrowStatus);
+            Assert.Equal(60m, reloaded.ReleasedAmount);
+        }
+
+        await using var verify = fixture.CreateContext();
+        var settled = await verify.Orders.AsNoTracking().SingleAsync(item => item.Id == orderId);
+        Assert.Equal("Released", settled.EscrowStatus);
+        Assert.Equal(60m, settled.ReleasedAmount);
+        Assert.Equal(0m, settled.RefundedAmount);
+        Assert.NotNull(settled.EscrowSettledAt);
+
+        var entries = await verify.LedgerEntries.AsNoTracking().Where(item => item.OrderId == orderId).OrderBy(item => item.OccurredAt).ToListAsync();
+        Assert.Equal(2, entries.Count);
+        Assert.Equal("Hold", entries[0].Kind);
+        Assert.Equal("Release", entries[1].Kind);
+        Assert.Equal("Escrow", entries[1].DebitAccount);
+        Assert.Equal("WorkerPayout", entries[1].CreditAccount);
+    }
+
+    /// <summary>
+    /// 网关失败时**真事务**回滚：任务没有被分配、数据库里没有订单、也没有任何流水。
+    /// 这三条只有真库能验证——内存装配不做事务，失败后内存里的对象早被改脏了。
+    /// </summary>
+    [PostgresFact]
+    public async Task A_failed_hold_rolls_the_selection_back_in_the_database()
+    {
+        using var world = new PostgresWorld(fixture.ConnectionString, Now);
+        var taskId = world.CreatePublished("代取文件");
+        var workerId = world.Worker;
+        world.Service.Apply(taskId, new ApplyForTaskRequest(workerId, "半小时可到"));
+        var application = world.Service.ListApplications(taskId, world.Owner).Single();
+        world.Gateway.FailureMode = SimulatedPaymentAction.Hold;
+
+        Assert.Throws<DomainException>(() => world.Service.Select(taskId, application.Id, new SelectApplicationRequest(world.Owner)));
+
+        await using var context = fixture.CreateContext();
+        var stored = await context.Tasks.AsNoTracking().SingleAsync(item => item.Id == taskId);
+        Assert.Equal("Published", stored.Status);
+        Assert.Empty(await context.Orders.AsNoTracking().Where(item => item.TaskId == taskId).ToListAsync());
+        Assert.Empty(await context.LedgerEntries.AsNoTracking().ToListAsync());
+        // 报名也没被"选中"：整体回滚，不留半截状态。
+        Assert.Equal("Pending", (await context.Applications.AsNoTracking().SingleAsync(item => item.TaskId == taskId)).Status);
+    }
+
+    /// <summary>争议里的分账在真库上的落库：部分放款 + 部分退款两笔流水，订单托管状态是 Settled。</summary>
+    [PostgresFact]
+    public async Task A_dispute_settlement_splits_the_escrow_in_the_database()
+    {
+        using var world = new PostgresWorld(fixture.ConnectionString, Now);
+        var created = world.CreatePublishedWithOrder("代取文件", reward: 100);
+        var orderId = created.OrderId;
+        world.Service.StartOrder(orderId, world.Worker);
+        world.Service.SubmitOrder(orderId, world.Worker, "已完成");
+        world.Service.OpenDispute(orderId, world.Owner, "和描述不符");
+
+        world.Admin.ResolveDispute(orderId, "Approve", "按完成一半结算", world.AdminId, amount: 40m);
+
+        await using var context = fixture.CreateContext();
+        var order = await context.Orders.AsNoTracking().SingleAsync(item => item.Id == orderId);
+        Assert.Equal("Settled", order.EscrowStatus);
+        Assert.Equal(40m, order.ReleasedAmount);
+        Assert.Equal(60m, order.RefundedAmount);
+
+        var entries = await context.LedgerEntries.AsNoTracking().Where(item => item.OrderId == orderId).ToListAsync();
+        Assert.Equal(3, entries.Count);
+        Assert.Contains(entries, item => item.Kind == "PartialRelease" && item.Amount == 40m);
+        Assert.Contains(entries, item => item.Kind == "PartialRefund" && item.Amount == 60m);
     }
 
     /// <summary>带时区偏移的截止时间与中文文本在真库上的往返：领域层统一归一化成 UTC，文本原样保存。</summary>

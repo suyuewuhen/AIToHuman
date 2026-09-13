@@ -4,6 +4,7 @@ using AIToHuman.Application.Conversations;
 using AIToHuman.Application.Idempotency;
 using AIToHuman.Application.Notifications;
 using AIToHuman.Application.Orders;
+using AIToHuman.Application.Payments;
 using AIToHuman.Application.Risk;
 using AIToHuman.Application.Settings;
 using AIToHuman.Application.Tasks;
@@ -14,6 +15,7 @@ using AIToHuman.Infrastructure.Conversations;
 using AIToHuman.Infrastructure.Idempotency;
 using AIToHuman.Infrastructure.Notifications;
 using AIToHuman.Infrastructure.Orders;
+using AIToHuman.Infrastructure.Payments;
 using AIToHuman.Infrastructure.Persistence;
 using AIToHuman.Infrastructure.Risk;
 using AIToHuman.Infrastructure.Settings;
@@ -155,6 +157,15 @@ public sealed class PostgresWorld : IDisposable
         services.AddScoped<RiskRuleCatalogService>();
         services.AddScoped<RiskEnforcementService>();
         services.AddScoped<AddressAccessService>();
+        // 资金托管：模拟网关（测试里可以打开失败开关）+ EF 账本仓储 + 字典设置（托管默认开着）。
+        services.AddSingleton<ISettingsProvider>(new TestSettingsProvider(new Dictionary<string, string?>
+        {
+            [SettingKeys.PaymentProvider] = SettingKeys.PaymentProviderSimulated
+        }));
+        services.AddSingleton<SimulatedPaymentGateway>();
+        services.AddSingleton<IPaymentGateway>(provider => provider.GetRequiredService<SimulatedPaymentGateway>());
+        services.AddScoped<ILedgerRepository, EfLedgerRepository>();
+        services.AddScoped<PaymentService>();
         provider = services.BuildServiceProvider();
         scope = provider.CreateScope();
     }
@@ -174,6 +185,9 @@ public sealed class PostgresWorld : IDisposable
     public IRiskAppealRepository AppealRecords => Services.GetRequiredService<IRiskAppealRepository>();
     public AddressAccessService AddressAccess => Services.GetRequiredService<AddressAccessService>();
     public IAddressAccessRepository AddressAccessRecords => Services.GetRequiredService<IAddressAccessRepository>();
+    public PaymentService Payments => Services.GetRequiredService<PaymentService>();
+    public ILedgerRepository Ledger => Services.GetRequiredService<ILedgerRepository>();
+    public SimulatedPaymentGateway Gateway => Services.GetRequiredService<SimulatedPaymentGateway>();
     public NotificationService Notifications => Services.GetRequiredService<NotificationService>();
     public ITaskRepository Tasks => Services.GetRequiredService<ITaskRepository>();
     public IOrderRepository Orders => Services.GetRequiredService<IOrderRepository>();
@@ -217,6 +231,15 @@ public sealed class PostgresWorld : IDisposable
         var id = CreateDraft(title, reward);
         Service.Publish(id, Owner);
         return id;
+    }
+
+    /// <summary>发布 → 报名 → 选人，返回订单 ID 与任务 ID（选人这一步会冻结资金）。</summary>
+    public (Guid TaskId, Guid OrderId) CreatePublishedWithOrder(string title, decimal reward = 50)
+    {
+        var taskId = CreatePublished(title, reward);
+        var application = Service.Apply(taskId, new ApplyForTaskRequest(Worker, "半小时可到"));
+        var selected = Service.Select(taskId, application.Applications.Single(item => item.Status == "Pending").Id, new SelectApplicationRequest(Owner));
+        return (taskId, selected.Order.Id);
     }
 
     public Guid Apply(Guid taskId, Guid? workerId = null)

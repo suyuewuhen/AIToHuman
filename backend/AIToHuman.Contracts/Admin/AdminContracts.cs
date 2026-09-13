@@ -66,12 +66,20 @@ public sealed record AdminOrderItemResponse(
     DateTimeOffset? DisputeOpenedAt,
     string? DisputeResolution,
     string? DisputeResolutionNote,
-    DateTimeOffset? DisputeResolvedAt);
+    DateTimeOffset? DisputeResolvedAt,
+    string EscrowStatus = "None",
+    decimal EscrowAmount = 0,
+    decimal ReleasedAmount = 0,
+    decimal RefundedAmount = 0);
 
 public sealed record AdminOrderListResponse(IReadOnlyList<AdminOrderItemResponse> Items, int Limit);
 
-/// <summary>处置争议：<c>decision</c> 取 <c>Approve</c>/<c>Rework</c>/<c>Cancel</c>，依据必填。</summary>
-public sealed record AdminResolveDisputeRequest(string Decision, string Note);
+/// <summary>
+/// 处置争议：<c>decision</c> 取 <c>Approve</c>/<c>Rework</c>/<c>Cancel</c>，依据必填。
+/// <paramref name="Amount"/> 可选，含义随结论而变：强制完成时是放款给服务者的金额，
+/// 终止订单时是退回需求方的金额（省略即全额），退回返工不涉及资金。
+/// </summary>
+public sealed record AdminResolveDisputeRequest(string Decision, string Note, decimal? Amount = null);
 
 public sealed record AdminUserResponse(Guid Id, string Email, string DisplayName, string Role, DateTimeOffset CreatedAt);
 public sealed record AdminUserListResponse(IReadOnlyList<AdminUserResponse> Items, int Limit);

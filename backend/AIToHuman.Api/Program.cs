@@ -3,6 +3,7 @@ using AIToHuman.Application.Conversations;
 using AIToHuman.Application.Common;
 using AIToHuman.Contracts.Notifications;
 using AIToHuman.Contracts.Orders;
+using AIToHuman.Contracts.Payments;
 using AIToHuman.Infrastructure.Notifications;
 using AIToHuman.Infrastructure.Storage;
 using AIToHuman.Contracts.Conversations;
@@ -24,6 +25,8 @@ using AIToHuman.Api.Idempotency;
 using AIToHuman.Application.Idempotency;
 using AIToHuman.Application.Risk;
 using AIToHuman.Infrastructure.Idempotency;
+using AIToHuman.Application.Payments;
+using AIToHuman.Infrastructure.Payments;
 using AIToHuman.Infrastructure.Risk;
 using AIToHuman.Api.Risk;
 using AIToHuman.Api.Tasks;
@@ -88,6 +91,7 @@ if (usePostgres)
     builder.Services.AddScoped<IUserDirectory, EfUserDirectory>();
     builder.Services.AddScoped<IAdminAuditRepository, EfAdminAuditRepository>();
     builder.Services.AddScoped<IAddressAccessRepository, EfAddressAccessRepository>();
+    builder.Services.AddScoped<ILedgerRepository, EfLedgerRepository>();
     builder.Services.AddScoped<IIdempotencyStore, EfIdempotencyStore>();
     builder.Services.AddScoped<IRiskRuleCatalogStore, EfRiskRuleCatalogStore>();
     builder.Services.AddScoped<IRiskAppealRepository, EfRiskAppealRepository>();
@@ -119,6 +123,7 @@ else
     builder.Services.AddSingleton<IUserDirectory, EmptyUserDirectory>();
     builder.Services.AddSingleton<IAdminAuditRepository, InMemoryAdminAuditRepository>();
     builder.Services.AddSingleton<IAddressAccessRepository, InMemoryAddressAccessRepository>();
+    builder.Services.AddSingleton<ILedgerRepository, InMemoryLedgerRepository>();
     builder.Services.AddSingleton<IIdempotencyStore, InMemoryIdempotencyStore>();
     builder.Services.AddSingleton<IRiskRuleCatalogStore, InMemoryRiskRuleCatalogStore>();
     builder.Services.AddSingleton<IRiskAppealRepository, InMemoryRiskAppealRepository>();
@@ -148,6 +153,9 @@ builder.Services.AddScoped<EvidenceService>();
 builder.Services.AddScoped<TaskService>();
     // 执行地址的读取与留痕（地址是最敏感的用户数据，读过就要能查到）。
     builder.Services.AddScoped<AddressAccessService>();
+    // 资金托管：网关是可插拔端口，当前注册模拟网关；托管开关由运营配置 payment.provider 控制。
+    builder.Services.AddSingleton<IPaymentGateway, SimulatedPaymentGateway>();
+    builder.Services.AddScoped<PaymentService>();
 builder.Services.AddScoped<ConversationService>();
 // Outbox 派发：把已落库但还没推送的通知发给在线客户端。
 builder.Services.AddHostedService<NotificationDispatcher>();
@@ -545,6 +553,9 @@ app.MapPost("/api/v1/orders/{id:guid}/cancel", (Guid id, OrderActionRequest requ
 // 发起争议，请平台介入：需求方在提交验收后、服务者在验收被驳回后可以发起；原因必填。
 app.MapPost("/api/v1/orders/{id:guid}/dispute", (Guid id, OrderActionRequest request, ClaimsPrincipal user, IHostEnvironment environment, TaskService service) => Results.Ok(service.OpenDispute(id, ResolveUserId(user, request.ActorId, environment), request.Note)));
 app.MapGet("/api/v1/orders/{id:guid}/reviews", (Guid id, ClaimsPrincipal user, IHostEnvironment environment, TaskService service) => Results.Ok(service.ListReviews(id, ResolveUserId(user, Guid.Empty, environment))));
+// 订单资金流水（仅参与者）：钱冻着、退了还是付给了服务者，双方都该看得见。
+app.MapGet("/api/v1/orders/{id:guid}/ledger", (Guid id, ClaimsPrincipal user, IHostEnvironment environment, TaskService service) =>
+    Results.Ok(service.ListOrderLedger(id, ResolveUserId(user, Guid.Empty, environment))));
 app.MapPost("/api/v1/orders/{id:guid}/reviews", (Guid id, CreateReviewRequest request, ClaimsPrincipal user, IHostEnvironment environment, TaskService service) => Results.Ok(service.CreateReview(id, request with { ReviewerId = ResolveUserId(user, request.ReviewerId, environment) }, ResolveUserId(user, request.ReviewerId, environment))));
 app.MapGet("/api/v1/users/{id:guid}/review-summary", (Guid id, TaskService service) => Results.Ok(service.GetReviewSummary(id)));
 
@@ -591,10 +602,16 @@ adminConsole.MapGet("/orders", (string? status, int? limit, AdminConsoleService 
 adminConsole.MapPost("/orders/{id:guid}/resolve", (Guid id, AdminResolveDisputeRequest request, ClaimsPrincipal user, AdminConsoleService service) =>
 {
     var actorId = ResolveAdminId(user);
-    var resolved = service.ResolveDispute(id, request.Decision, request.Note, actorId);
-    app.Logger.LogInformation("运营 {ActorId} 处置了订单 {OrderId} 的争议：{Decision}", actorId, resolved.Id, request.Decision);
+    var resolved = service.ResolveDispute(id, request.Decision, request.Note, actorId, request.Amount);
+    app.Logger.LogInformation(
+        "运营 {ActorId} 处置了订单 {OrderId} 的争议：{Decision}（资金处置金额 {Amount}）", actorId, resolved.Id, request.Decision, request.Amount);
     return Results.Ok(resolved);
 });
+// 订单资金流水的运营视图（按订单读，用于处置争议时核对该订单的钱动到哪一步了）。
+adminConsole.MapGet("/orders/{id:guid}/ledger", (Guid id, PaymentService service) =>
+    Results.Ok(service.ListByOrder(id).Select(entry => new LedgerEntryResponse(
+        entry.Id, entry.OrderId, entry.TaskId, entry.Kind.ToString(), entry.DebitAccount.ToString(),
+        entry.CreditAccount.ToString(), entry.Amount, entry.Currency, entry.Note, entry.OccurredAt)).ToArray()));
 adminConsole.MapGet("/audits", (int? limit, AdminConsoleService service) => Results.Ok(service.ListAudits(limit)));
 // 精确地址的访问留痕：谁在什么时候读过哪条任务的地址、有没有真的给出去（拒绝的尝试也在里面）。
 adminConsole.MapGet("/address-access", (Guid? taskId, Guid? viewerId, int? limit, AddressAccessService service) =>
