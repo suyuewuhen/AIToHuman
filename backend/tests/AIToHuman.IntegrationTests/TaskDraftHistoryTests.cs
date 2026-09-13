@@ -103,6 +103,77 @@ public sealed class TaskDraftHistoryTests
     }
 
     [Fact]
+    public void The_history_exposes_field_level_changes_against_the_previous_version()
+    {
+        var world = new World();
+        var draft = world.Create("明天下午帮我去前台取一份文件");
+        world.Edit(draft.Id, title: "明天下午帮我去公司前台取一份文件", reward: 60);
+
+        var items = world.Service.ListDraftRevisions(draft.Id, world.Owner).Items;
+
+        // 第一版没有"上一版"，差异为空。
+        Assert.Empty(items[0].Changes ?? []);
+        var changes = items[1].Changes ?? [];
+        Assert.Equal(["标题", "悬赏"], changes.Select(item => item.Field));
+        Assert.Equal("明天下午帮我去前台取一份文件", changes[0].Before);
+        Assert.Equal("明天下午帮我去公司前台取一份文件", changes[0].After);
+        Assert.Equal("50 CNY", changes[1].Before);
+        Assert.Equal("60 CNY", changes[1].After);
+    }
+
+    [Fact]
+    public void Restoring_a_revision_brings_the_fields_back_and_appends_a_new_version()
+    {
+        var world = new World();
+        var draft = world.Create("明天下午帮我去前台取一份文件");
+        world.Edit(draft.Id, title: "改成去菜市场买两斤苹果", district: "西城区", reward: 60);
+
+        var restored = world.Service.RestoreDraftRevision(draft.Id, revision: 1, world.Owner);
+
+        Assert.Equal("明天下午帮我去前台取一份文件", restored.Title);
+        Assert.Equal("朝阳区", restored.District);
+        Assert.Equal(50m, restored.Reward);
+
+        var items = world.Service.ListDraftRevisions(draft.Id, world.Owner).Items;
+        // 回滚是"往前长"的一版：中间那版仍然在历史里，不会被抹掉。
+        Assert.Equal([1, 2, 3], items.Select(item => item.Revision));
+        Assert.Equal("回滚自第 1 版：标题、公开区域、悬赏", items[2].ChangeSummary);
+        Assert.Equal(["标题", "公开区域", "悬赏"], (items[2].Changes ?? []).Select(item => item.Field));
+        Assert.Equal("明天下午帮我去前台取一份文件", items[2].Title);
+    }
+
+    [Fact]
+    public void Restoring_a_blocked_version_locks_the_task_again()
+    {
+        var world = new World();
+        var draft = world.Create("明天下午帮我去前台取一份文件");
+        world.Edit(draft.Id, title: "帮我代考英语四级", description: "替我进考场");
+        world.Edit(draft.Id, title: "明天下午帮我去前台取一份文件", description: "到前台取件", district: "朝阳区", reward: 50);
+
+        var restored = world.Service.RestoreDraftRevision(draft.Id, revision: 2, world.Owner);
+
+        // 回滚同样重判风险：回到禁止的那一版，任务就又不能发布了。
+        Assert.Equal("Blocked", restored.RiskVerdict);
+        Assert.Equal("prohibited.exam_impersonation", restored.RiskRuleCode);
+        Assert.True(restored.RiskPublishBlocked);
+        Assert.Throws<DomainException>(() => world.Service.Publish(draft.Id, world.Owner));
+    }
+
+    [Fact]
+    public void Restoring_is_owner_only_and_only_for_drafts()
+    {
+        var world = new World();
+        var draft = world.Create("明天下午帮我去前台取一份文件");
+        world.Edit(draft.Id, reward: 60);
+
+        Assert.Throws<UnauthorizedAccessException>(() => world.Service.RestoreDraftRevision(draft.Id, 1, Guid.NewGuid()));
+        Assert.Throws<KeyNotFoundException>(() => world.Service.RestoreDraftRevision(draft.Id, revision: 99, world.Owner));
+
+        world.Service.Publish(draft.Id, world.Owner);
+        Assert.Throws<DomainException>(() => world.Service.RestoreDraftRevision(draft.Id, 1, world.Owner));
+    }
+
+    [Fact]
     public void Creating_and_editing_each_write_the_snapshot_in_the_same_unit_of_work()
     {
         var unitOfWork = new SpyUnitOfWork();

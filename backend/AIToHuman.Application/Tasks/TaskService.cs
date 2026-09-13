@@ -67,12 +67,47 @@ public sealed class TaskService(ITaskRepository repository, IOrderRepository ord
         return Map(task);
     }
 
-    /// <summary>草稿历史（仅所有者）：从创建到最近一次编辑，按版本号升序。</summary>
+    /// <summary>
+    /// 草稿历史（仅所有者）：从创建到最近一次编辑，按版本号升序。
+    /// 每一版都带上"与上一版逐字段比较"的结果，前端直接渲染即可。
+    /// </summary>
     public TaskDraftRevisionListResponse ListDraftRevisions(Guid id, Guid ownerId)
     {
         var task = GetOwned(id, ownerId);
-        var items = revisionRepository.ListByTask(task.Id).Select(MapRevision).ToArray();
+        var revisions = revisionRepository.ListByTask(task.Id).ToArray();
+
+        var items = new List<TaskDraftRevisionResponse>(revisions.Length);
+        for (var index = 0; index < revisions.Length; index++)
+        {
+            var previous = index == 0 ? null : revisions[index - 1];
+            items.Add(MapRevision(revisions[index], TaskDraftRevision.Diff(previous, revisions[index])));
+        }
+
         return new(items);
+    }
+
+    /// <summary>
+    /// 回滚到历史某一版（仅所有者，且只有草稿可以回滚）。
+    /// 走与编辑同一条路径：同一套字段校验、重判风险、作废人工复核与申诉；回滚本身也追加一版快照，
+    /// 因此历史是"往前长"的，不会因为回滚而丢失中间版本。
+    /// </summary>
+    public TaskResponse RestoreDraftRevision(Guid id, int revision, Guid ownerId)
+    {
+        var task = GetOwned(id, ownerId);
+        var target = revisionRepository.ListByTask(task.Id).SingleOrDefault(item => item.Revision == revision)
+            ?? throw new KeyNotFoundException($"任务没有第 {revision} 版草稿。");
+
+        var now = timeProvider.GetUtcNow();
+        var changedFields = task.RestoreDraft(target, now);
+
+        unitOfWork.Execute(() =>
+        {
+            repository.Save(task);
+            revisionRepository.Add(TaskDraftRevision.FromRestore(
+                task, revisionRepository.LatestRevision(task.Id) + 1, revision, ownerId, changedFields, now));
+        });
+
+        return Map(task);
     }
 
     /// <summary>
@@ -545,11 +580,12 @@ public sealed class TaskService(ITaskRepository repository, IOrderRepository ord
     private static OrderResponse Map(Order order) => new(order.Id, order.TaskId, order.OwnerId, order.WorkerId, order.Title, order.Reward.Amount, order.Reward.Currency, order.Status.ToString(), order.CreatedAt, order.EvidenceNote, order.ReviewNote, order.SubmittedAt, order.ReviewedAt, order.ReworkCount, order.RejectionNote, 0, order.CancelledAt, order.CancelledBy, order.CancellationReason, order.DisputeReason, order.DisputeOpenedBy, order.DisputeOpenedAt, order.DisputeResult, order.DisputeResolutionNote, order.DisputeResolvedAt);
     private static ReviewResponse MapReview(Review review, bool visible) => new(review.Id, review.OrderId, review.ReviewerId, review.RevieweeId, review.Rating, visible ? review.Comment : "评价将在双方完成后公开", review.CreatedAt, visible);
 
-    private static TaskDraftRevisionResponse MapRevision(TaskDraftRevision revision) => new(
+    private static TaskDraftRevisionResponse MapRevision(TaskDraftRevision revision, IReadOnlyList<TaskDraftFieldChange>? changes = null) => new(
         revision.Id, revision.TaskId, revision.Revision, revision.Title, revision.Description, revision.District,
         revision.Deadline, revision.RewardAmount, revision.RewardCurrency, revision.AcceptanceCriteria,
         revision.ExecutionAddress, revision.ApplicationDeadline, revision.RiskVerdict, revision.RiskRuleCode,
-        revision.RiskRuleVersion, revision.EditedBy, revision.ChangeSummary, revision.CreatedAt);
+        revision.RiskRuleVersion, revision.EditedBy, revision.ChangeSummary, revision.CreatedAt,
+        changes?.Select(item => new TaskDraftFieldChangeResponse(item.Field, item.Before, item.After)).ToArray());
     private static void EnsureParticipant(Order order, Guid actorId) { if (order.OwnerId != actorId && order.WorkerId != actorId) throw new UnauthorizedAccessException("只有订单参与者可以执行该操作。"); }
     private bool IsReviewPublic(Guid orderId, DateTimeOffset createdAt)
     {

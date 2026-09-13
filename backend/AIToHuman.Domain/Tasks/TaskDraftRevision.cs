@@ -76,6 +76,56 @@ public sealed class TaskDraftRevision
     public static TaskDraftRevision FromEdit(TaskItem task, int revision, Guid editedBy, IReadOnlyCollection<string> changedFields, DateTimeOffset now) =>
         Build(task, revision, editedBy, Summarize(changedFields), now);
 
+    /// <summary>
+    /// 回滚之后追加的一版：摘要要写清"回滚自第几版"，否则历史里会出现一版看不出原因的变化。
+    /// </summary>
+    public static TaskDraftRevision FromRestore(TaskItem task, int revision, int sourceRevision, Guid editedBy, IReadOnlyCollection<string> changedFields, DateTimeOffset now)
+    {
+        if (sourceRevision < 1) throw new DomainException("回滚来源版本号必须从 1 开始。");
+
+        var details = Summarize(changedFields);
+        var summary = details == "无字段变化"
+            ? $"回滚自第 {sourceRevision} 版（内容与该版一致）"
+            : $"回滚自第 {sourceRevision} 版：{details}";
+
+        return Build(task, revision, editedBy, summary, now);
+    }
+
+    /// <summary>
+    /// 与上一版逐字段比较，给出"哪个字段从什么变成了什么"。
+    /// 第一版（<paramref name="previous"/> 为 null）没有可比对象，返回空列表。
+    /// 差异由服务端算，前端只负责渲染——否则每个客户端都会实现一套自己的比较规则，迟早不一致。
+    /// </summary>
+    public static IReadOnlyList<TaskDraftFieldChange> Diff(TaskDraftRevision? previous, TaskDraftRevision current)
+    {
+        if (previous is null) return [];
+
+        var changes = new List<TaskDraftFieldChange>();
+        Add(changes, "标题", previous.Title, current.Title);
+        Add(changes, "描述", previous.Description, current.Description);
+        Add(changes, "公开区域", previous.District, current.District);
+        Add(changes, "截止时间", Format(previous.Deadline), Format(current.Deadline));
+        Add(changes, "悬赏", Format(previous.RewardAmount, previous.RewardCurrency), Format(current.RewardAmount, current.RewardCurrency));
+        Add(changes, "验收标准", Format(previous.AcceptanceCriteria), Format(current.AcceptanceCriteria));
+        Add(changes, "执行地址", previous.ExecutionAddress, current.ExecutionAddress);
+        Add(changes, "报名截止时间", Format(previous.ApplicationDeadline), Format(current.ApplicationDeadline));
+        return changes;
+    }
+
+    private static void Add(ICollection<TaskDraftFieldChange> changes, string field, string? before, string? after)
+    {
+        if (string.Equals(before, after, StringComparison.Ordinal)) return;
+        changes.Add(new TaskDraftFieldChange(field, before, after));
+    }
+
+    private static string Format(DateTimeOffset value) => value.ToUniversalTime().ToString("yyyy-MM-dd HH:mm 'UTC'", System.Globalization.CultureInfo.InvariantCulture);
+
+    private static string? Format(DateTimeOffset? value) => value is { } moment ? Format(moment) : null;
+
+    private static string Format(decimal amount, string currency) => $"{amount:0.##} {currency}";
+
+    private static string Format(IReadOnlyList<string> criteria) => string.Join("；", criteria);
+
     private static TaskDraftRevision Build(TaskItem task, int revision, Guid editedBy, string changeSummary, DateTimeOffset now)
     {
         if (task.Id == Guid.Empty) throw new DomainException("草稿版本必须关联任务。");

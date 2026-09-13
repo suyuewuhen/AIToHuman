@@ -235,9 +235,18 @@ export interface TaskDraftRevision {
   riskRuleCode: string | null
   riskRuleVersion: number
   editedBy: string
-  /** 这次改了哪些字段，例如“标题、截止时间”；创建那一版是“创建草稿”。 */
+  /** 这次改了哪些字段，例如“标题、截止时间”；创建那一版是“创建草稿”，回滚版是“回滚自第 N 版：…”。 */
   changeSummary: string
   createdAt: string
+  /** 与上一版逐字段比较的结果（由服务端算好并格式化），第一版为空数组。 */
+  changes?: TaskDraftFieldChange[]
+}
+
+/** 两个版本之间某个字段的变化；值已经是可读文本。 */
+export interface TaskDraftFieldChange {
+  field: string
+  before: string | null
+  after: string | null
 }
 
 /** 草稿历史（仅所有者可读）。 */
@@ -246,6 +255,17 @@ export async function listTaskDraftRevisions(taskId: string, ownerId: string): P
     await fetch(`/api/v1/tasks/${taskId}/revisions?ownerId=${encodeURIComponent(ownerId)}`, { headers: authHeaders() }),
   )
   return response.items
+}
+
+/**
+ * 回滚到历史某一版：走与编辑同一条校验与风险重判路径，回滚本身也会追加一版，
+ * 所以中间版本不会被抹掉（返回的是回滚后的任务）。
+ */
+export async function restoreTaskDraftRevision(taskId: string, revision: number, ownerId: string): Promise<TaskItem> {
+  return parseResponse<TaskItem>(await fetch(
+    `/api/v1/tasks/${taskId}/revisions/${revision}/restore?ownerId=${encodeURIComponent(ownerId)}`,
+    { method: 'POST', headers: authHeaders() },
+  ))
 }
 
 /**

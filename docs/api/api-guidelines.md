@@ -84,7 +84,15 @@ GET    /api/v1/workers/{workerId}/reviews
 
 已实现的草稿字段编辑：`PUT /api/v1/tasks/{id}`，body 为 `UpdateTaskDraftRequest(ownerId, title, description, district, deadline, reward, acceptanceCriteria, executionAddress?, applicationDeadline?)`，需要所有者身份（JWT 优先，`ownerId` 只在 Development 合成会话下作为回退）。字段校验与创建任务**共用同一套**：标题 1–80 字、描述与区域非空、至少一项验收标准（去空白/去重）、执行地址 ≤200 字、截止时间必须晚于当前时间、报名截止必须晚于当前时间且不晚于任务截止——所以不存在“创建拦得住、编辑能绕过”的缺口。只有 `ReadyToPublish` 可以编辑：非所有者 `403`，其它状态 `422`（例如“任务当前状态 Published 不允许该操作”），字段不合法同样是 `422`（例如“截止时间必须晚于当前时间。”“任务至少需要一项验收标准。”）。编辑后会立即重跑确定性风险规则并**作废原有的人工复核结论**（复核人、时间与依据一并清空，按新文本重新判定；被判成需复核的任务会重新回到运营队列），因此同一条任务的 `riskReviewStatus` 可能在编辑后从 `Approved` 回到 `Pending`。响应里的 `draftEditable` 由服务端按状态判定，**客户端不要自己推算**；执行地址不随任务响应返回，仍只走 `GET /api/v1/tasks/{id}/execution-address`（`TaskResponse` 也会返回给申请报名的服务者，不能带参与者层信息）。
 
-已实现的草稿历史（只追加、不可修改）：`GET /api/v1/tasks/{id}/revisions?ownerId=...`，仅任务所有者可读（其他身份 `403`，任务不存在 `404`）。返回 `items[]`，每项是 `TaskDraftRevisionResponse(id, taskId, revision, title, description, district, deadline, reward, currency, acceptanceCriteria[], executionAddress, applicationDeadline, riskVerdict, riskRuleCode, riskRuleVersion, editedBy, changeSummary, createdAt)`：第 1 版是创建草稿（`changeSummary = "创建草稿"`），之后每次编辑追加一版，`revision` 在同一任务内单调递增；`changeSummary` 写明本次改了哪些字段（例如“标题、悬赏”；超过 6 个字段时只列前 6 个并追加“等 N 项”，N 是本次变更的字段总数；一个字段都没变时写“无字段变化”）；每项都带该版文本对应的风险结论（`riskVerdict` / `riskRuleCode` / `riskRuleVersion`），因此能对账“第几版被判成禁止或转人工、用的是哪一版规则”。历史只用于追溯：没有写入接口，也没有回滚或字段级 diff。
+已实现的草稿历史（只追加、不覆盖）：`GET /api/v1/tasks/{id}/revisions?ownerId=...`，仅任务所有者可读（其他身份 `403`，任务不存在 `404`）。返回 `items[]`，每项是 `TaskDraftRevisionResponse(id, taskId, revision, title, description, district, deadline, reward, currency, acceptanceCriteria[], executionAddress, applicationDeadline, riskVerdict, riskRuleCode, riskRuleVersion, editedBy, changeSummary, changes[], createdAt)`：第 1 版是创建草稿（`changeSummary = "创建草稿"`），之后每次编辑或回滚追加一版，`revision` 在同一任务内单调递增；`changeSummary` 写明本次改了哪些字段（例如“标题、悬赏”；超过 6 个字段时只列前 6 个并追加“等 N 项”，N 是本次变更的字段总数；一个字段都没变时写“无字段变化”）；每项都带该版文本对应的风险结论（`riskVerdict` / `riskRuleCode` / `riskRuleVersion`），因此能对账“第几版被判成禁止或转人工、用的是哪一版规则”。
+
+**`changes[]` 是字段级 diff**：由服务端把该版与**上一版**逐字段比较得出，每项形如 `{ "field": "截止时间", "before": "2026-09-14 09:00 UTC", "after": "2026-09-15 09:00 UTC" }`。字段名与 `changeSummary` 用同一套中文名（标题/描述/公开区域/截止时间/悬赏/验收标准/执行地址/报名截止时间）；值由服务端格式化成可读文本——时间统一 `yyyy-MM-dd HH:mm UTC`、金额写成“数值 币种”、验收标准用 `；` 连接。**第 1 版没有上一版，因此 `changes` 是空数组**。差异算在服务端（领域层的 `TaskDraftRevision.Diff`），客户端只负责渲染，不要自己按快照字段比较（否则每个客户端都会长出一套自己的比较规则）。
+
+已实现的草稿回滚：`POST /api/v1/tasks/{id}/revisions/{revision}/restore?ownerId=...`，把草稿恢复到某一版，返回更新后的 `TaskResponse`。语义与边界：
+
+- **仅任务所有者**可调用（其他身份 `403`），且**只有草稿（`ReadyToPublish`）能回滚**：已发布的返回 `422`（发布后字段本来就不可改，要改只能撤销后重建）。`{revision}` 不存在返回 `404`；跨任务的版本快照会被领域层拒绝（“这一版不属于当前任务。”）。
+- 回滚走的是与编辑**完全同一套**写入路径：同样的字段校验、同样重跑确定性风险规则、**同样作废原有的人工复核结论与误拦申诉状态**。它不是绕过校验的后门——如果目标版的截止时间已经过去，回滚会像编辑一样返回 `422`「截止时间必须晚于当前时间。」，而不是悄悄造出一个永远发布不了的草稿。
+- **回滚本身也追加一版**，`changeSummary` 形如「回滚自第 1 版：标题、公开区域、悬赏」（内容与目标版完全一致时写「回滚自第 N 版（内容与该版一致）」），并且这一版带的反向差异就是“回到该版”时改了哪些字段。**中间版本不会被覆盖或删除**，历史只会往前长。
 
 建议价响应至少包含建议金额、建议区间、币种、主要估价因素、数据充分度和规则/模型版本。它不修改草稿金额；用户另行编辑并确认的 `reward` 才是任务悬赏。
 

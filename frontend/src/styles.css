@@ -358,6 +358,9 @@ h1 em { color: var(--acid); font-style: normal; }
 
 /* 草稿修改记录：按版本列出的历史快照 */
 .draft-history { display: grid; gap: 8px; margin-top: 12px; padding: 12px; border: 1px dashed var(--line); background: #fbf7ec; }
-.draft-history-row { padding: 8px 10px; border: 1px solid var(--line); background: #fffdf7; }
+.draft-history-row { padding: 8px 10px; border: 1px solid var(--line); background: #fffdf7; display: flex; gap: 10px; align-items: flex-start; justify-content: space-between; }
+.draft-history-row > div { flex: 1 1 auto; min-width: 0; }
+/* 字段级差异：旧值 → 新值 */
+.draft-change { display: block; margin-top: 3px; color: #8a6100; font-size: 10px; line-height: 1.5; word-break: break-word; }
 .draft-history-row strong { display: block; font-size: 11px; }
 .draft-history-row small { display: block; margin-top: 3px; color: #626b66; font-size: 10px; line-height: 1.5; }

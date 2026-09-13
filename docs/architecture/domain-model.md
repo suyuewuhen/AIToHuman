@@ -16,7 +16,7 @@
 | --- | --- | --- |
 | `User` | ⚠️ | 账户、JWT 和角色切换已实现；`WorkerProfile` 未实现，服务者没有资料与服务区域 |
 | `Conversation` | ✅ | `Conversation` 聚合已实现，消息与草稿状态落库，支持刷新恢复与历史截断；仍缺模型运行元数据 |
-| `TaskDraft` | ⚠️ | 无独立草稿实体；**版本号与编辑历史已实现**（`task_draft_revisions` 只追加：创建草稿写第 1 版、每次编辑追加一版，每版记录原文、变更摘要与该版的风险结论，`GET /api/v1/tasks/{id}/revisions` 仅所有者可读）；AI 返回的 `plan` 经确认后直接创建 `ReadyToPublish` 任务，但该任务的字段可编辑（`PUT /api/v1/tasks/{id}`，仅 `ReadyToPublish`），编辑复用创建时的校验并重跑风险判定；仍缺独立聚合与回滚、字段级 diff |
+| `TaskDraft` | ⚠️ | 无独立草稿实体；**版本号、编辑历史、字段级 diff 与回滚都已实现**（`task_draft_revisions` 只追加：创建草稿写第 1 版、每次编辑或回滚追加一版，每版记录原文、变更摘要与该版的风险结论，`GET /api/v1/tasks/{id}/revisions` 仅所有者可读并带与上一版逐字段比较的 `changes`，`POST /api/v1/tasks/{id}/revisions/{revision}/restore` 只对草稿开放且走与编辑同一条校验路径）；AI 返回的 `plan` 经确认后直接创建 `ReadyToPublish` 任务，但该任务的字段可编辑（`PUT /api/v1/tasks/{id}`，仅 `ReadyToPublish`）；仍缺独立聚合 |
 | `Task` | ✅ | `TaskItem` 已实现，含所有者、截止时间、公开区域和验收标准校验；可选的报名截止时间 `ApplicationDeadline` 到点后只关闭新报名；`Expired`（后台扫描超期未分配任务）与 `Cancelled`（所有者撤销、运营下架）都有落库时间戳与原因 |
 | `Application` | ⚠️ | `TaskApplication` 已实现；服务者可撤回自己仍处于 `Pending` 的报名（`Withdrawn`，之后可重新报名），订单取消把选中的报名置为 `Rejected`、任务过期把 `Pending` 置为 `Expired`；报名列表内联该服务者的公开评价摘要（`WorkerAverageRating`/`WorkerReviewCount`，只统计已公开评价）；仍无预计到达时间，也没有选人时固化的报名快照 |
 | `Order` | ✅ | `Order` 已实现，含参与者校验、状态机、取消（`Cancelled` + 取消人、取消时间、取消原因）与争议（`Disputed` + 发起人、原因、发起时间、处置结果、处置依据与处置时间） |
@@ -51,7 +51,7 @@
 
 AI 与用户共同编辑的临时结构。保存字段完整性、风险检查结果和版本号。确认后转换为 `Task`，后续编辑必须重新检查。
 
-> 实现现状（⚠️）：没有独立的草稿聚合（也没有独立的风险检查结果实体）。AI 在信息足够时于同一轮返回完整 `plan`，前端提交 `POST /api/v1/tasks` 直接创建 `ReadyToPublish` 任务；`readyToDraft=false` 时后端不返回 `plan`，前端草稿区保持锁定，不使用演示数据兜底。**字段编辑已实现**：`TaskItem.UpdateDraft(title, description, district, deadline, reward, criteria, executionAddress, applicationDeadline, now)` 只允许 `ReadyToPublish` 状态，并且与构造函数**共用同一套字段校验**（抽出的 `NormalizeCriteria` + `EnsureDraftFields`，因此不存在“创建拦得住、编辑能绕过”的字段缺口）；编辑后会立即重跑确定性风险规则并作废原有的人工复核结论（见第 10 节）。**版本号与编辑历史也已实现**：`task_draft_revisions` 只追加，创建草稿写第 1 版（`changeSummary = "创建草稿"`），之后每次编辑追加一版，`Revision` 在同一任务内单调递增；变更摘要由领域层比对前后字段得出（例如“标题、悬赏”；超过 6 个字段时只列前 6 个并追加“等 N 项”，N 是本次变更的字段总数；一个字段都没变时写“无字段变化”）；每版都记下该版文本对应的 `RiskVerdict`/`RiskRuleCode`/`RiskRuleVersion`，因此事后能回答“第几版被判成禁止、用的是哪一版规则”；任务写入与版本快照在同一个工作单元里，并发落败的编辑不会留下多余版本（先撞 `tasks.Version` 乐观并发令牌，再由 `(TaskId, Revision)` 唯一索引兜底）。仍缺：没有独立草稿聚合（历史是任务的附属表）、历史只读（无回滚、无字段级 diff、无导出）、已发布任务的字段仍不可改（历史到发布那一刻为止）。
+> 实现现状（⚠️）：没有独立的草稿聚合（也没有独立的风险检查结果实体）。AI 在信息足够时于同一轮返回完整 `plan`，前端提交 `POST /api/v1/tasks` 直接创建 `ReadyToPublish` 任务；`readyToDraft=false` 时后端不返回 `plan`，前端草稿区保持锁定，不使用演示数据兜底。**字段编辑已实现**：`TaskItem.UpdateDraft(title, description, district, deadline, reward, criteria, executionAddress, applicationDeadline, now)` 只允许 `ReadyToPublish` 状态，并且与构造函数**共用同一套字段校验**（抽出的 `NormalizeCriteria` + `EnsureDraftFields`，因此不存在“创建拦得住、编辑能绕过”的字段缺口）；编辑后会立即重跑确定性风险规则并作废原有的人工复核结论（见第 10 节）。**版本号与编辑历史也已实现**：`task_draft_revisions` 只追加，创建草稿写第 1 版（`changeSummary = "创建草稿"`），之后每次编辑追加一版，`Revision` 在同一任务内单调递增；变更摘要由领域层比对前后字段得出（例如“标题、悬赏”；超过 6 个字段时只列前 6 个并追加“等 N 项”，N 是本次变更的字段总数；一个字段都没变时写“无字段变化”）；每版都记下该版文本对应的 `RiskVerdict`/`RiskRuleCode`/`RiskRuleVersion`，因此事后能回答“第几版被判成禁止、用的是哪一版规则”；任务写入与版本快照在同一个工作单元里，并发落败的编辑不会留下多余版本（先撞 `tasks.Version` 乐观并发令牌，再由 `(TaskId, Revision)` 唯一索引兜底）。**字段级 diff 与回滚也已实现**：`TaskDraftRevision.Diff` 在领域层把某一版与上一版逐字段比较，得出 `{ field, before, after }` 列表（值由服务端格式化成可读文本，字段名与 `changeSummary` 同一套中文名，第一版没有上一版因此为空数组），前端只负责渲染，避免每个客户端各写一套比较规则；`POST /api/v1/tasks/{id}/revisions/{revision}/restore` 让所有者把草稿恢复到某一版，走的是与编辑**完全同一套**写入路径（领域层唯一的 `ApplyDraft`：同一套字段校验、重跑确定性风险、作废人工复核结论与申诉状态），回滚本身也追加一版（摘要形如“回滚自第 1 版：标题、公开区域、悬赏”，内容与目标版一致时写“回滚自第 N 版（内容与该版一致）”），中间版本不会被覆盖或删除；回滚同样会被校验拦住（例如目标版的截止时间已过，回滚会返回 422 而不是悄悄造出一个永远发布不了的草稿）。仍缺：没有独立草稿聚合（历史是任务的附属表）、历史没有导出、已发布任务的字段仍不可改（历史到发布那一刻为止）。
 
 ### Task
 
@@ -183,7 +183,7 @@ Disputed
 ## 5. 不变量
 
 - ✅ Task 必须有所有者、截止时间、地点范围和至少一项验收标准。`TaskItem` 构造函数已校验，草稿编辑（`UpdateDraft`）复用同一套校验，因此创建与编辑不会出现两套规则；但“地点范围”目前只是 `District` 字符串，没有坐标、范围或披露策略模型。
-- ✅ 草稿字段创建后可编辑，但只限 `ReadyToPublish`，且编辑会重跑风险判定并作废原有的人工复核结论。人工结论绑定的是**当时那份文本**：否则“先提干净文案过审、再改成禁止内容”就是现成的绕过路径；反向也成立——被运营驳回的草稿只要改掉敏感内容，就会拿到新一轮判定，而不是被永久钉死。
+- ✅ 草稿字段创建后可编辑，但只限 `ReadyToPublish`，且编辑会重跑风险判定并作废原有的人工复核结论。人工结论绑定的是**当时那份文本**：否则“先提干净文案过审、再改成禁止内容”就是现成的绕过路径；反向也成立——被运营驳回的草稿只要改掉敏感内容，就会拿到新一轮判定，而不是被永久钉死。**回滚到历史版本走的是同一条写入路径**（领域层唯一的 `ApplyDraft`），因此同样重跑风险判定、同样作废人工复核结论与申诉状态；历史只追加：编辑与回滚都会新增一版，**不会覆盖或删除**已有版本。
 - ✅ 报名截止时间（可选）必须晚于创建时间且不晚于任务截止时间。`TaskItem` 构造函数已校验；到点只关闭新报名（`AcceptingApplications(now)` 为 false），已有报名仍可被选中，因此任务仍停留在 `Published`；报名截止时间已过的任务不能发布。
 - ⚠️ Published Task 必须具有通过的风险决策版本。已实现的是：创建草稿与每次发布都用当前规则目录判定一次，任务上保存结论、原因代码与 `RiskRuleVersion`，禁止类别不能发布（人工也无权放行），判成需人工复核的必须先被运营放行；**误拦申诉不改变这条红线**——被禁止类别命中的任务即使申诉成立（记为规则误伤），也拿不到发布许可，只有“转人工后被驳回”的那一档才能靠申诉成立放行；仍没有独立的“风险决策”实体与版本表，任务行上只保留最新一条结论（见第 10 节）。`ReadyToPublish` 任务仍只有所有者可以发布。
 - ⚠️ 同一 Task 最多一个非终态 Order。现在由任务行的乐观并发令牌（并发的第二个选人会拿到 `409`）、`orders.TaskId` 唯一索引和“任务进入 `Assigned` 后不再接受报名”共同保证；仍没有按“非终态订单”查询的显式校验。
@@ -272,7 +272,7 @@ Money(amount, currency)
 > - 规则目录：10 条词表规则（6 条 `prohibited.*` + 4 条 `review.*`）加 2 条阈值规则（`review.high_reward`：悬赏 > 5000 元；`review.night_window`：截止时间落在北京时间 00:00–06:00），共 12 个原因代码；匹配词表里刻意不用单字，避免“代取”“代送”这类正常跑腿任务被误伤。
 > - 判定输入只有用户填写的字段（标题、描述、验收标准、执行地址）；顺序是先禁止类、再转人工类、最后两条阈值规则，都不命中才是 `Allowed`。说明文本（`RiskSummary`）刻意不含命中的具体词，避免被逐字试探绕过。
 > - 门禁位置：`TaskItem` 构造（创建草稿）时判定一次，`Publish` 前再判定一次（悬赏与截止时间在草稿阶段会变），草稿编辑（`UpdateDraft`）后再判定一次。禁止类别一律 `422` 且人工无权放行；判成 `NeedsReview` 的任务进入队列，运营 `Approve` 后才能发布，`Reject` 是终态（规则之后不再命中也不会变回可发布）。
-> - 编辑草稿会让判定重跑并清空人工结论：`UpdateDraft` 以 `resetHumanDecision: true` 调用判定，`RiskReviewedBy`/`RiskReviewedAt`/`RiskReviewNote` 一并置空，状态按新文本重新判定（需要复核的回到 `Pending`，会重新出现在运营队列里）。审核针对的是某一版文本，文本一变结论即作废；`Reject` 只是当时那份文本的终态，不是对任务的永久封禁。同一次编辑还会向 `task_draft_revisions` 追加一版快照并记下该版的判定结论（`RiskVerdict`/`RiskRuleCode`/`RiskRuleVersion`），所以事后能对上是哪一版文本被判成什么、用的是哪一版规则。
+> - 编辑草稿会让判定重跑并清空人工结论：`UpdateDraft` 以 `resetHumanDecision: true` 调用判定，`RiskReviewedBy`/`RiskReviewedAt`/`RiskReviewNote` 一并置空，状态按新文本重新判定（需要复核的回到 `Pending`，会重新出现在运营队列里）。审核针对的是某一版文本，文本一变结论即作废；`Reject` 只是当时那份文本的终态，不是对任务的永久封禁。同一次编辑还会向 `task_draft_revisions` 追加一版快照并记下该版的判定结论（`RiskVerdict`/`RiskRuleCode`/`RiskRuleVersion`），所以事后能对上是哪一版文本被判成什么、用的是哪一版规则。**回滚到历史版本同样如此**：它走的是同一条 `ApplyDraft` 路径，因此也会重跑判定、作废人工复核结论与申诉状态，并追加一版“回滚自第 N 版”的快照。
 > - 落库字段：`RiskVerdict`、`RiskRuleCode`、`RiskCategory`、`RiskSummary`、`RiskRuleVersion`、`RiskAssessedAt`、`RiskReviewStatus`、`RiskReviewedBy`、`RiskReviewedAt`、`RiskReviewNote`（复核依据必填、≤200 字）。
 > - 人工复核走管理员接口：队列 `GET /api/v1/admin/risk/reviews` 按创建时间升序（先来先处理），`POST /api/v1/admin/risk/reviews/{taskId}/decide` 放行或驳回并把依据写进 `admin_audit_entries`（动作 `task.risk.approve`/`task.risk.reject`），`GET /api/v1/admin/risk/rules` 是规则目录自述（版本、阈值、规则清单与匹配词数量，不返回词本身）；非管理员 `403`。
 > - 通知：复核结论通过 `task.riskReviewed` 走既有 Outbox + SignalR 链路；任务响应里的 `riskPublishBlocked` 由服务端判定，客户端不要自己按 `riskVerdict`/`riskReviewStatus` 推算。

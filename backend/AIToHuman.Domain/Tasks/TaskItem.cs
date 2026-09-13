@@ -99,6 +99,47 @@ public sealed class TaskItem
         DateTimeOffset? applicationDeadline,
         DateTimeOffset now)
     {
+        return ApplyDraft(title, description, district, deadline, reward, acceptanceCriteria, executionAddress, applicationDeadline, now);
+    }
+
+    /// <summary>
+    /// 回滚到历史某一版：把该版快照的字段写回草稿。
+    ///
+    /// 走的是与编辑完全同一条路径——同一套字段校验、同样重新判定风险、同样作废人工复核结论与申诉状态。
+    /// 这是有意的：回滚不是"绕过校验的后门"，如果那一版的截止时间已经过去，就应当像编辑时一样被拒绝，
+    /// 而不是悄悄造出一个永远发布不了的草稿。
+    /// </summary>
+    public IReadOnlyCollection<string> RestoreDraft(TaskDraftRevision revision, DateTimeOffset now)
+    {
+        if (revision.TaskId != Id) throw new DomainException("这一版不属于当前任务。");
+
+        return ApplyDraft(
+            revision.Title,
+            revision.Description,
+            revision.District,
+            revision.Deadline,
+            new Money(revision.RewardAmount, revision.RewardCurrency),
+            revision.AcceptanceCriteria,
+            revision.ExecutionAddress,
+            revision.ApplicationDeadline,
+            now);
+    }
+
+    /// <summary>
+    /// 草稿字段的唯一写入路径（编辑与回滚共用）：校验 → 记下改了哪些字段 → 落值 → 重判风险 → 作废申诉。
+    /// 抽出它是为了避免"编辑走一套校验、回滚走另一套"的漂移——这类漂移最终都会变成绕过。
+    /// </summary>
+    private IReadOnlyCollection<string> ApplyDraft(
+        string title,
+        string description,
+        string district,
+        DateTimeOffset deadline,
+        Money reward,
+        IEnumerable<string> acceptanceCriteria,
+        string? executionAddress,
+        DateTimeOffset? applicationDeadline,
+        DateTimeOffset now)
+    {
         EnsureStatus(TaskStatus.ReadyToPublish);
 
         var criteria = NormalizeCriteria(acceptanceCriteria);

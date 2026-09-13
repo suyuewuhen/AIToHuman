@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { getDevSession, type DevSession } from './api/session'
 import { clearAccessToken, getAccessToken, getCurrentUser, login, register, switchRole, type ActiveRole, type CurrentUser } from './api/auth'
-import { applyForTask, approveOrder, cancelOrder, cancelTask, createOrderReview, createTask, getExecutionAddress, getReviewSummary, increaseTaskReward, listMyApplications, listMyOrders, listMyTasks, listOrderReviews, listPublishedTasks, listTaskApplications, listTaskDraftRevisions, openDispute, openRiskAppeal, publishTask, rejectOrder, resumeOrder, selectTaskApplication, startOrder, submitOrder, updateTaskDraft, withdrawApplication, type MyApplicationItem, type OrderItem, type ReviewItem, type TaskApplication, type TaskDraftRevision, type TaskItem, type ReviewSummary } from './api/tasks'
+import { applyForTask, approveOrder, cancelOrder, cancelTask, createOrderReview, createTask, getExecutionAddress, getReviewSummary, increaseTaskReward, listMyApplications, listMyOrders, listMyTasks, listOrderReviews, listPublishedTasks, listTaskApplications, listTaskDraftRevisions, openDispute, openRiskAppeal, publishTask, rejectOrder, restoreTaskDraftRevision, resumeOrder, selectTaskApplication, startOrder, submitOrder, updateTaskDraft, withdrawApplication, type MyApplicationItem, type OrderItem, type ReviewItem, type TaskApplication, type TaskDraftRevision, type TaskItem, type ReviewSummary } from './api/tasks'
 import { connectNotifications as connectNotificationHub, disconnectNotifications, listNotifications, markNotificationsRead, type NotificationEnvelope, type NotificationItem } from './api/notifications'
 import { listOrderMessages, markOrderMessagesRead, sendOrderMessage, type OrderMessage } from './api/messages'
 import { absoluteMaxEvidenceBytes, allowedEvidenceTypes, downloadEvidence, listOrderEvidence, uploadOrderEvidence, type EvidenceItem } from './api/evidence'
@@ -630,13 +630,7 @@ const draftHistory = ref<TaskDraftRevision[]>([])
 const draftHistoryBusy = ref(false)
 const draftHistoryError = ref('')
 
-async function toggleDraftHistory(task: TaskItem) {
-  if (draftHistoryTaskId.value === task.id) {
-    draftHistoryTaskId.value = ''
-    return
-  }
-
-  draftHistoryTaskId.value = task.id
+async function loadDraftHistory(task: TaskItem) {
   draftHistoryBusy.value = true
   draftHistoryError.value = ''
   try {
@@ -646,6 +640,36 @@ async function toggleDraftHistory(task: TaskItem) {
     draftHistory.value = []
   } finally {
     draftHistoryBusy.value = false
+  }
+}
+
+async function toggleDraftHistory(task: TaskItem) {
+  if (draftHistoryTaskId.value === task.id) {
+    draftHistoryTaskId.value = ''
+    return
+  }
+
+  draftHistoryTaskId.value = task.id
+  await loadDraftHistory(task)
+}
+
+// 回滚到某一版：与编辑同一套校验与风险重判，回滚本身也会追加一版（中间版本不丢）。
+const restoringRevision = ref(0)
+
+async function restoreRevision(task: TaskItem, revision: number) {
+  restoringRevision.value = revision
+  draftEditError.value = ''
+  draftEditNotice.value = ''
+  try {
+    const restored = await restoreTaskDraftRevision(task.id, revision, authUser.value?.userId ?? task.ownerId)
+    draftEditNotice.value = `已回滚到第 ${revision} 版：${restored.title}`
+    await loadMyTasks()
+    // 回滚会追加一版，历史要重新拉一次才看得到。
+    await loadDraftHistory(task)
+  } catch (error) {
+    draftEditError.value = error instanceof Error ? error.message : '回滚失败'
+  } finally {
+    restoringRevision.value = 0
   }
 }
 
@@ -1853,7 +1877,11 @@ onMounted(async () => {
                     <strong>第 {{ revision.revision }} 版 · {{ revision.changeSummary }}</strong>
                     <small>{{ formatDeadline(revision.createdAt) }} · 修改人 {{ revision.editedBy.slice(0, 8) }}<template v-if="revision.riskVerdict !== 'Allowed'"> · 风险结论 {{ riskVerdictLabel(revision.riskVerdict) }}（{{ revision.riskRuleCode }} · 规则第 {{ revision.riskRuleVersion }} 版）</template></small>
                     <small class="evidence-note">{{ revision.title }} · {{ revision.district }} · 悬赏 ¥{{ revision.reward }} · 截止 {{ formatDeadline(revision.deadline) }}</small>
+                    <small v-for="change in revision.changes ?? []" :key="change.field" class="draft-change">
+                      {{ change.field }}：{{ change.before ?? '（空）' }} → {{ change.after ?? '（空）' }}
+                    </small>
                   </div>
+                  <button v-if="task.draftEditable && revision.revision !== draftHistory[draftHistory.length - 1]?.revision" type="button" class="settings-secondary" :disabled="restoringRevision === revision.revision" @click="restoreRevision(task, revision.revision)">{{ restoringRevision === revision.revision ? '回滚中…' : '恢复这一版' }}</button>
                 </div>
               </div>
               <div v-if="draftEditId === task.id" class="draft-edit">

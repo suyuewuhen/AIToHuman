@@ -98,7 +98,11 @@ public sealed record TaskDraftRevisionResponse(
     int RiskRuleVersion,
     Guid EditedBy,
     string ChangeSummary,
-    DateTimeOffset CreatedAt);
+    DateTimeOffset CreatedAt,
+    IReadOnlyList<TaskDraftFieldChangeResponse>? Changes = null);
+
+/// <summary>某个字段在两个版本之间的变化；值已由服务端格式化成可读文本。</summary>
+public sealed record TaskDraftFieldChangeResponse(string Field, string? Before, string? After);
 
 public sealed record TaskDraftRevisionListResponse(IReadOnlyList<TaskDraftRevisionResponse> Items);
 

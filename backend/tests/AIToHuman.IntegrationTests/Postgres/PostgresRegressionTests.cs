@@ -362,6 +362,44 @@ public sealed class PostgresRegressionTests(PostgresRegressionFixture fixture) :
         Assert.Equal("fresh", Assert.Single(rows).Key);
     }
 
+    /// <summary>
+    /// 草稿回滚在真库上的落库：字段写回 + **追加**一版（不覆盖中间版本），
+    /// 并且回滚后的风险结论与人工复核状态也要跟着重置。
+    /// </summary>
+    [PostgresFact]
+    public async Task Restoring_a_revision_persists_and_appends_a_new_version()
+    {
+        using var world = new PostgresWorld(fixture.ConnectionString, Now);
+        var taskId = world.CreateDraft("明天下午帮我去前台取一份文件");
+        world.Service.UpdateDraft(taskId, world.Owner, world.DraftUpdateRequest("改成去菜市场买两斤苹果", district: "西城区", reward: 60));
+
+        var restored = world.Service.RestoreDraftRevision(taskId, revision: 1, world.Owner);
+
+        Assert.Equal("明天下午帮我去前台取一份文件", restored.Title);
+        Assert.Equal("朝阳区", restored.District);
+        Assert.Equal(50m, restored.Reward);
+
+        // 换一个作用域读回来：确认落库的是回滚后的内容，而不是内存里的副本。
+        using (var freshScope = world.NewScope())
+        {
+            var reloaded = world.ServiceIn(freshScope).Get(taskId)!;
+            Assert.Equal("明天下午帮我去前台取一份文件", reloaded.Title);
+            Assert.Equal("朝阳区", reloaded.District);
+        }
+
+        await using var context = fixture.CreateContext();
+        var revisions = await context.TaskRevisions.AsNoTracking()
+            .Where(item => item.TaskId == taskId)
+            .OrderBy(item => item.Revision)
+            .ToListAsync();
+
+        // 三版：创建、编辑、回滚。中间那版没有被覆盖。
+        Assert.Equal([1, 2, 3], revisions.Select(item => item.Revision));
+        Assert.Equal("改成去菜市场买两斤苹果", revisions[1].Title);
+        Assert.StartsWith("回滚自第 1 版", revisions[2].ChangeSummary);
+        Assert.Equal("明天下午帮我去前台取一份文件", revisions[2].Title);
+    }
+
     /// <summary>带时区偏移的截止时间与中文文本在真库上的往返：领域层统一归一化成 UTC，文本原样保存。</summary>
     [PostgresFact]
     public async Task Utc_offsets_and_chinese_text_round_trip_through_the_database()

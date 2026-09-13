@@ -328,11 +328,17 @@ tasks.MapPut("/{id:guid}", (Guid id, UpdateTaskDraftRequest request, ClaimsPrinc
     var ownerId = ResolveUserId(user, request.OwnerId, environment);
     return Results.Ok(service.UpdateDraft(id, ownerId, request with { OwnerId = ownerId }));
 });
-// 草稿历史：从创建到最近一次编辑的每一版快照（含该版的风险结论），仅所有者可读。
+// 草稿历史：从创建到最近一次编辑的每一版快照（含该版的风险结论与逐字段差异），仅所有者可读。
 tasks.MapGet("/{id:guid}/revisions", (Guid id, Guid? ownerId, ClaimsPrincipal user, IHostEnvironment environment, TaskService service) =>
 {
     EnsureRole(user, "owner", environment);
     return Results.Ok(service.ListDraftRevisions(id, ResolveUserId(user, ownerId ?? Guid.Empty, environment)));
+});
+// 回滚到某一版：与编辑走同一条校验与风险重判路径，回滚本身也追加一版，历史不会因此丢失中间版本。
+tasks.MapPost("/{id:guid}/revisions/{revision:int}/restore", (Guid id, int revision, Guid? ownerId, ClaimsPrincipal user, IHostEnvironment environment, TaskService service) =>
+{
+    EnsureRole(user, "owner", environment);
+    return Results.Ok(service.RestoreDraftRevision(id, revision, ResolveUserId(user, ownerId ?? Guid.Empty, environment)));
 });
 // 误拦申诉：被风险规则拦下的所有者可以申诉，理由必填；处置在运营侧（/admin/risk/appeals）。
 tasks.MapPost("/{id:guid}/risk-appeals", (Guid id, RiskAppealRequest request, ClaimsPrincipal user, IHostEnvironment environment, TaskService service) =>
