@@ -121,6 +121,37 @@ public sealed record AdminRiskReviewListResponse(IReadOnlyList<AdminRiskReviewIt
 /// </summary>
 public sealed record AdminRiskReviewDecisionRequest(string Decision, string Note);
 
+/// <summary>
+/// 运营看到的待处置申诉。原始风险结论与申诉理由一并返回，运营据此判断是不是误伤；
+/// <paramref name="CanBeReleasedByAppeal"/> 为 false 表示这是禁止类别命中——
+/// 申诉成立也只会记录结论，不会让任务获得发布许可。
+/// </summary>
+public sealed record AdminRiskAppealItemResponse(
+    Guid TaskId,
+    string Title,
+    string Description,
+    string District,
+    decimal RewardAmount,
+    string RewardCurrency,
+    Guid OwnerId,
+    string? OwnerEmail,
+    string Verdict,
+    string? RuleCode,
+    string? Category,
+    string? Summary,
+    int RuleVersion,
+    string ReviewStatus,
+    string? ReviewNote,
+    string AppealStatus,
+    string? AppealReason,
+    DateTimeOffset? AppealedAt,
+    bool CanBeReleasedByAppeal);
+
+public sealed record AdminRiskAppealListResponse(IReadOnlyList<AdminRiskAppealItemResponse> Items, int Limit);
+
+/// <summary>处置申诉：<c>decision</c> 取 <c>Accept</c>（认为误伤）或 <c>Deny</c>（维持原判），依据必填。</summary>
+public sealed record AdminRiskAppealDecisionRequest(string Decision, string Note);
+
 /// <summary>风险规则目录的自述：版本、规则条数与规则清单，供运营后台说明“现在按什么规则拦”。</summary>
 public sealed record RiskRuleResponse(string Code, string Category, string Verdict, string Description, int KeywordCount);
 

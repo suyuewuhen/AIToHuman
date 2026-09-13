@@ -49,6 +49,27 @@ export interface TaskItem {
   riskPublishBlocked?: boolean
   /** 还能不能编辑草稿（只有 ReadyToPublish 可以），同样由服务端判定。 */
   draftEditable?: boolean
+  /** 误拦申诉状态：None / Pending / Accepted / Denied。 */
+  riskAppealStatus?: string
+  /** 所有者提交的申诉理由。 */
+  riskAppealReason?: string | null
+  riskAppealedAt?: string | null
+  /** 运营的处置依据。 */
+  riskAppealDecisionNote?: string | null
+  /** 能不能提交申诉（被禁止类别命中、或转人工后被驳回，且当前没有待处置申诉）。 */
+  canAppealRisk?: boolean
+}
+
+/**
+ * 提交误拦申诉：只有被拦下的任务可以申诉，理由必填。
+ * 注意申诉成立也**不会**让禁止类别的任务变成可发布——那是平台红线。
+ */
+export async function openRiskAppeal(taskId: string, ownerId: string, reason: string): Promise<TaskItem> {
+  return parseResponse<TaskItem>(await fetch(`/api/v1/tasks/${taskId}/risk-appeals`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ ownerId, reason }),
+  }))
 }
 
 export interface OrderItem {

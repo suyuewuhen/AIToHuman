@@ -82,6 +82,17 @@ public sealed class EfTaskRepository(TaskDbContext db) : ITaskRepository
         .Select(Map)
         .ToArray();
 
+    /// <summary>运营申诉队列：待处置的申诉，按提交时间升序（先来先处理），保持跟踪以便并发校验。</summary>
+    public IReadOnlyCollection<TaskItem> ListPendingRiskAppeal(int limit) => db.Tasks
+        .Include(task => task.Applications)
+        .Where(task => task.RiskAppealStatus == nameof(RiskAppealStatus.Pending))
+        .OrderBy(task => task.RiskAppealedAt)
+        .ThenBy(task => task.Id)
+        .Take(limit)
+        .AsEnumerable()
+        .Select(Map)
+        .ToArray();
+
     // 注意：Get 必须保持跟踪状态。乐观并发令牌依赖「做业务判断时读到的版本」与
     // Save 时 WHERE 里用的原始版本是同一个；一旦这里用 AsNoTracking，Save 会重新读库拿到
     // 最新版本再自增，并发写入就永远不会冲突。
@@ -138,6 +149,9 @@ public sealed class EfTaskRepository(TaskDbContext db) : ITaskRepository
         RiskSummary = task.RiskSummary, RiskRuleVersion = task.RiskRuleVersion, RiskAssessedAt = task.RiskAssessedAt,
         RiskReviewStatus = task.RiskReviewStatus.ToString(), RiskReviewedBy = task.RiskReviewedBy,
         RiskReviewedAt = task.RiskReviewedAt, RiskReviewNote = task.RiskReviewNote,
+        RiskAppealStatus = task.RiskAppealStatus.ToString(), RiskAppealReason = task.RiskAppealReason,
+        RiskAppealedAt = task.RiskAppealedAt, RiskAppealDecidedBy = task.RiskAppealDecidedBy,
+        RiskAppealDecidedAt = task.RiskAppealDecidedAt, RiskAppealDecisionNote = task.RiskAppealDecisionNote,
         Applications = task.Applications.Select(item => ToRecord(item, task.Id)).ToList()
     };
 
@@ -153,7 +167,13 @@ public sealed class EfTaskRepository(TaskDbContext db) : ITaskRepository
         record.ExpiredAt, record.CancelledAt, record.CancellationReason, record.ApplicationDeadline,
         ParseRiskVerdict(record.RiskVerdict), record.RiskRuleCode, record.RiskCategory, record.RiskSummary,
         record.RiskRuleVersion, record.RiskAssessedAt, ParseRiskReviewStatus(record.RiskReviewStatus),
-        record.RiskReviewedBy, record.RiskReviewedAt, record.RiskReviewNote);
+        record.RiskReviewedBy, record.RiskReviewedAt, record.RiskReviewNote,
+        ParseRiskAppealStatus(record.RiskAppealStatus), record.RiskAppealReason, record.RiskAppealedAt,
+        record.RiskAppealDecidedBy, record.RiskAppealDecidedAt, record.RiskAppealDecisionNote);
+
+    /// <summary>申诉状态列同样是后加的，未知取值一律按"没有申诉"处理。</summary>
+    private static RiskAppealStatus ParseRiskAppealStatus(string? value) =>
+        Enum.TryParse<RiskAppealStatus>(value, ignoreCase: true, out var parsed) ? parsed : RiskAppealStatus.None;
 
     /// <summary>
     /// 风险列是后加的，历史行可能是不认识或空的值。解析失败一律按“放行且无需复核”处理：

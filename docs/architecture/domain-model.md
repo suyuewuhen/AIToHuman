@@ -20,7 +20,7 @@
 | `Task` | ✅ | `TaskItem` 已实现，含所有者、截止时间、公开区域和验收标准校验；可选的报名截止时间 `ApplicationDeadline` 到点后只关闭新报名；`Expired`（后台扫描超期未分配任务）与 `Cancelled`（所有者撤销、运营下架）都有落库时间戳与原因 |
 | `Application` | ⚠️ | `TaskApplication` 已实现；服务者可撤回自己仍处于 `Pending` 的报名（`Withdrawn`，之后可重新报名），订单取消把选中的报名置为 `Rejected`、任务过期把 `Pending` 置为 `Expired`；报名列表内联该服务者的公开评价摘要（`WorkerAverageRating`/`WorkerReviewCount`，只统计已公开评价）；仍无预计到达时间，也没有选人时固化的报名快照 |
 | `Order` | ✅ | `Order` 已实现，含参与者校验、状态机、取消（`Cancelled` + 取消人、取消时间、取消原因）与争议（`Disputed` + 发起人、原因、发起时间、处置结果、处置依据与处置时间） |
-| 风险模型（`RiskRule`/`RiskAssessment`） | ⚠️ | 代码内版本化规则目录（`RiskRuleCatalog`，版本 1、12 个原因代码）已实现，并接入创建草稿与发布两个门禁，`RiskReviewStatus` 记录人工复核结论；缺模型辅助分类、误拦申诉与追加式决策历史，见第 10 节 |
+| 风险模型（`RiskRule`/`RiskAssessment`/`RiskAppealStatus`） | ⚠️ | 代码内版本化规则目录（`RiskRuleCatalog`，版本 1、12 个原因代码）已实现，并接入创建草稿与发布两个门禁，`RiskReviewStatus` 记录人工复核结论，`RiskAppealStatus` 记录误拦申诉（禁止类别的申诉成立也不放行）；缺模型辅助分类、申诉次数限制与追加式决策历史，见第 10 节 |
 | `Evidence` | ⚠️ | `OrderEvidence` + `evidence` 表已实现：类型白名单与文件签名校验、扫描状态机与退避重扫、上传时元数据剥离、按人小时配额，存储走 `IFileStorage`（本机目录或 S3 兼容对象存储，支持短时直连下载地址）；订单上的 `EvidenceNote` 仍作为“完成说明”文本框与凭证文件并存。仍缺图片像素级重编码与“凭证关联到具体验收项” |
 | `Review` | ⚠️ | `Review` 已实现；无状态字段（盲期按时间动态判定），单一评分维度 |
 | `Dispute` | ✅ | 已接入但不单独建表：争议状态与处置信息记在 `orders` 上（`DisputeReason`/`DisputeOpenedBy`/`DisputeOpenedAt`/`DisputeResolution`/`DisputeResolutionNote`/`DisputeResolvedAt`）；参与者按阶段发起，运营三种处置，见第 4 节 |
@@ -185,7 +185,7 @@ Disputed
 - ✅ Task 必须有所有者、截止时间、地点范围和至少一项验收标准。`TaskItem` 构造函数已校验，草稿编辑（`UpdateDraft`）复用同一套校验，因此创建与编辑不会出现两套规则；但“地点范围”目前只是 `District` 字符串，没有坐标、范围或披露策略模型。
 - ✅ 草稿字段创建后可编辑，但只限 `ReadyToPublish`，且编辑会重跑风险判定并作废原有的人工复核结论。人工结论绑定的是**当时那份文本**：否则“先提干净文案过审、再改成禁止内容”就是现成的绕过路径；反向也成立——被运营驳回的草稿只要改掉敏感内容，就会拿到新一轮判定，而不是被永久钉死。
 - ✅ 报名截止时间（可选）必须晚于创建时间且不晚于任务截止时间。`TaskItem` 构造函数已校验；到点只关闭新报名（`AcceptingApplications(now)` 为 false），已有报名仍可被选中，因此任务仍停留在 `Published`；报名截止时间已过的任务不能发布。
-- ⚠️ Published Task 必须具有通过的风险决策版本。已实现的是：创建草稿与每次发布都用当前规则目录判定一次，任务上保存结论、原因代码与 `RiskRuleVersion`，禁止类别不能发布（人工也无权放行），判成需人工复核的必须先被运营放行；仍没有独立的“风险决策”实体与版本表，任务行上只保留最新一条结论（见第 10 节）。`ReadyToPublish` 任务仍只有所有者可以发布。
+- ⚠️ Published Task 必须具有通过的风险决策版本。已实现的是：创建草稿与每次发布都用当前规则目录判定一次，任务上保存结论、原因代码与 `RiskRuleVersion`，禁止类别不能发布（人工也无权放行），判成需人工复核的必须先被运营放行；**误拦申诉不改变这条红线**——被禁止类别命中的任务即使申诉成立（记为规则误伤），也拿不到发布许可，只有“转人工后被驳回”的那一档才能靠申诉成立放行；仍没有独立的“风险决策”实体与版本表，任务行上只保留最新一条结论（见第 10 节）。`ReadyToPublish` 任务仍只有所有者可以发布。
 - ⚠️ 同一 Task 最多一个非终态 Order。现在由任务行的乐观并发令牌（并发的第二个选人会拿到 `409`）、`orders.TaskId` 唯一索引和“任务进入 `Assigned` 后不再接受报名”共同保证；仍没有按“非终态订单”查询的显式校验。
 - ✅ Application 的服务者不能是 Task 所有者，报名中不得包含价格。领域层已校验，`ApplyForTaskRequest` 没有价格字段。
 - ⚠️ 已发布 Task 的悬赏只能在分配前提高。`IncreaseReward` 已校验“仅 `Published` 状态、同币种、金额只能提高”，并受任务行并发令牌保护；`TaskRewardIncreased` 事件仍未实现，加价也不通知已报名者。
@@ -276,4 +276,17 @@ Money(amount, currency)
 > - 落库字段：`RiskVerdict`、`RiskRuleCode`、`RiskCategory`、`RiskSummary`、`RiskRuleVersion`、`RiskAssessedAt`、`RiskReviewStatus`、`RiskReviewedBy`、`RiskReviewedAt`、`RiskReviewNote`（复核依据必填、≤200 字）。
 > - 人工复核走管理员接口：队列 `GET /api/v1/admin/risk/reviews` 按创建时间升序（先来先处理），`POST /api/v1/admin/risk/reviews/{taskId}/decide` 放行或驳回并把依据写进 `admin_audit_entries`（动作 `task.risk.approve`/`task.risk.reject`），`GET /api/v1/admin/risk/rules` 是规则目录自述（版本、阈值、规则清单与匹配词数量，不返回词本身）；非管理员 `403`。
 > - 通知：复核结论通过 `task.riskReviewed` 走既有 Outbox + SignalR 链路；任务响应里的 `riskPublishBlocked` 由服务端判定，客户端不要自己按 `riskVerdict`/`riskReviewStatus` 推算。
-> - 缺失：模型辅助分类与语义判断（现在只有字面词表匹配，改写过的表述可能漏过）；误拦申诉与客服工单——被拦用户没有申诉入口；规则目录不能后台编辑（改规则要发版并提升 `Version`）；决策只保留最新一条（记在任务行上），没有追加式的决策历史表，也没有独立的风险事件流。
+> - 缺失：模型辅助分类与语义判断（现在只有字面词表匹配，改写过的表述可能漏过）；申诉的次数与频率限制（只有“同一版内容一次”）、申诉的历史留档与客服工单；规则目录不能后台编辑（改规则要发版并提升 `Version`）；决策只保留最新一条（记在任务行上），没有追加式的决策历史表，也没有独立的风险事件流。
+
+### 误拦申诉（`RiskAppealStatus`）
+
+误拦申诉是“我认为规则判错了”这条诉求的出口：它不改变判定规则本身，只是把结论交给运营再看一遍。
+
+> 实现现状（✅，判断口径见下）：`RiskAppealStatus`（`None`/`Pending`/`Accepted`/`Denied`）挂在 `TaskItem` 上，状态机是 `None → Pending → Accepted | Denied`，编辑草稿会把状态清回 `None`（正文变了，原申诉不再针对同一份材料，所以可以重新申诉）。
+>
+> - 只有任务所有者可以申诉（其他人 `403`），且只有**被判定为禁止类别**或**转人工后被驳回**的任务有资格（`CanAppealRisk`）；还在等复核的任务不能申诉（提示“不需要申诉”），已放行的任务也不能。理由必填 ≤500 字。
+> - **处置能力分两档**（`TaskItem.ResolveRiskAppeal`）：`NeedsReview` 被驳回的任务申诉成立即放行（`RiskReviewStatus` 变 `Approved`）——运营本来就有这个权限，申诉只是多一双眼睛；`Blocked` 的任务申诉成立**不会**获得发布许可（`CanBeReleasedByAppeal` 为 false），只记录“规则误伤”的结论并提示改文案后重新判定。平台红线不因为多了一个申诉入口而放开。
+> - 同一版内容只能申诉一次：处置过之后（无论成立还是驳回）`CanAppealRisk` 为 false，再申诉返回 `422`“这一版内容已经申诉过：请先修改草稿（改完会重新判定风险），再决定是否重新申诉。”；处置依据必填 ≤200 字并写进 `admin_audit_entries`（动作 `task.risk.appeal.accept`/`task.risk.appeal.deny`），结论通过 `task.riskAppealDecided` 通知所有者（载荷含 `canPublish`，区分“成立且真的放行”与“成立但禁止类别依旧不能发布”）。
+> - 落库字段（迁移 23 `AddRiskAppeal`）：`RiskAppealStatus`、`RiskAppealReason`、`RiskAppealedAt`、`RiskAppealDecidedBy`、`RiskAppealDecidedAt`、`RiskAppealDecisionNote`，另建 `(RiskAppealStatus, RiskAppealedAt)` 索引供运营扫队列。
+> - 接口：所有者 `POST /api/v1/tasks/{id}/risk-appeals`；运营 `GET /api/v1/admin/risk/appeals`（按提交时间升序，先来先处理）与 `POST /api/v1/admin/risk/appeals/{taskId}/decide`（`decision` 取 `Accept`/`Deny`，非法取值 `422`），非管理员 `403`。
+> - 缺失：申诉次数与频率限制（只有"同一版内容一次"）、申诉历史表（同一版只保留最新结论，处置记录留在运营审计里）、申诉时效与客服工单。

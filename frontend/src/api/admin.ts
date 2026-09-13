@@ -231,6 +231,64 @@ export async function listRiskReviews(limit = 20): Promise<AdminRiskReviewList> 
   return parseResponse<AdminRiskReviewList>(await fetch(`/api/v1/admin/risk/reviews?limit=${limit}`, { headers: authHeaders() }))
 }
 
+/**
+ * 运营看到的待处置申诉。`canBeReleasedByAppeal` 为 false 表示这是禁止类别命中：
+ * 申诉成立也只记录"规则误伤"的结论，任务依旧不能发布。
+ */
+export interface AdminRiskAppealItem {
+  taskId: string
+  title: string
+  description: string
+  district: string
+  rewardAmount: number
+  rewardCurrency: string
+  ownerId: string
+  ownerEmail: string | null
+  verdict: string
+  ruleCode: string | null
+  category: string | null
+  summary: string | null
+  ruleVersion: number
+  reviewStatus: string
+  reviewNote: string | null
+  appealStatus: string
+  appealReason: string | null
+  appealedAt: string | null
+  canBeReleasedByAppeal: boolean
+}
+
+export interface AdminRiskAppealList {
+  items: AdminRiskAppealItem[]
+  limit: number
+}
+
+/** 申诉处置结论：Accept 认为误伤，Deny 维持原判。 */
+export type RiskAppealDecision = 'Accept' | 'Deny'
+
+/** 待处置的申诉队列，按提交时间升序。 */
+export async function listRiskAppeals(limit = 20): Promise<AdminRiskAppealList> {
+  return parseResponse<AdminRiskAppealList>(await fetch(`/api/v1/admin/risk/appeals?limit=${limit}`, { headers: authHeaders() }))
+}
+
+/** 处置申诉：依据必填（写进运营审计），并通知任务所有者。 */
+export async function decideRiskAppeal(taskId: string, decision: RiskAppealDecision, note: string): Promise<AdminRiskAppealItem> {
+  return parseResponse<AdminRiskAppealItem>(await fetch(`/api/v1/admin/risk/appeals/${taskId}/decide`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ decision, note }),
+  }))
+}
+
+export function riskAppealStatusLabel(status: string): string {
+  const labels: Record<string, string> = {
+    None: '未申诉',
+    Pending: '申诉待处置',
+    Accepted: '申诉成立（误判）',
+    Denied: '申诉被驳回',
+  }
+  return labels[status] ?? status
+}
+
 /** 处置风险复核：放行或驳回 + 必填依据（依据写进运营审计，并通知任务所有者）。 */
 export async function decideRiskReview(taskId: string, decision: RiskReviewDecision, note: string): Promise<AdminRiskReviewItem> {
   return parseResponse<AdminRiskReviewItem>(await fetch(`/api/v1/admin/risk/reviews/${taskId}/decide`, {

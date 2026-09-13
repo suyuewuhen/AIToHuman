@@ -25,6 +25,12 @@ public interface ITaskRepository
     /// </summary>
     IReadOnlyCollection<TaskItem> ListPendingRiskReview(int limit);
 
+    /// <summary>
+    /// 运营申诉队列：处于“待处置申诉”的任务，按提交时间升序取前 <paramref name="limit"/> 条。
+    /// 与复核队列一样要返回被跟踪的实体，处置时才能用读到的版本做并发校验。
+    /// </summary>
+    IReadOnlyCollection<TaskItem> ListPendingRiskAppeal(int limit);
+
     TaskItem? Get(Guid id);
     void Add(TaskItem task);
     void Save(TaskItem task);

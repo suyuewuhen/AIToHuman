@@ -22,6 +22,7 @@ using AIToHuman.Api.Orders;
 using AIToHuman.Api.Settings;
 using AIToHuman.Api.Idempotency;
 using AIToHuman.Application.Idempotency;
+using AIToHuman.Application.Risk;
 using AIToHuman.Infrastructure.Idempotency;
 using AIToHuman.Api.Tasks;
 using AIToHuman.Application.Admin;
@@ -85,6 +86,7 @@ if (usePostgres)
     builder.Services.AddScoped<IUserDirectory, EfUserDirectory>();
     builder.Services.AddScoped<IAdminAuditRepository, EfAdminAuditRepository>();
     builder.Services.AddScoped<IIdempotencyStore, EfIdempotencyStore>();
+    builder.Services.AddScoped<RiskAppealService>();
     builder.Services.AddScoped<IUnitOfWork, EfUnitOfWork>();
     builder.Services.AddScoped<AuthService>();
 }
@@ -109,6 +111,7 @@ else
     builder.Services.AddSingleton<IUserDirectory, EmptyUserDirectory>();
     builder.Services.AddSingleton<IAdminAuditRepository, InMemoryAdminAuditRepository>();
     builder.Services.AddSingleton<IIdempotencyStore, InMemoryIdempotencyStore>();
+    builder.Services.AddScoped<RiskAppealService>();
     builder.Services.AddSingleton<IUnitOfWork, InMemoryUnitOfWork>();
 }
 builder.Services.AddSingleton(TimeProvider.System);
@@ -323,6 +326,13 @@ tasks.MapGet("/{id:guid}/revisions", (Guid id, Guid? ownerId, ClaimsPrincipal us
 {
     EnsureRole(user, "owner", environment);
     return Results.Ok(service.ListDraftRevisions(id, ResolveUserId(user, ownerId ?? Guid.Empty, environment)));
+});
+// 误拦申诉：被风险规则拦下的所有者可以申诉，理由必填；处置在运营侧（/admin/risk/appeals）。
+tasks.MapPost("/{id:guid}/risk-appeals", (Guid id, RiskAppealRequest request, ClaimsPrincipal user, IHostEnvironment environment, TaskService service) =>
+{
+    EnsureRole(user, "owner", environment);
+    var ownerId = ResolveUserId(user, request.OwnerId, environment);
+    return Results.Ok(service.OpenRiskAppeal(id, ownerId, request.Reason));
 });
 tasks.MapPost("/{id:guid}/increase-reward", (Guid id, Guid? ownerId, IncreaseRewardRequest request, ClaimsPrincipal user, IHostEnvironment environment, TaskService service) =>
 {
@@ -541,6 +551,17 @@ adminConsole.MapPost("/risk/reviews/{taskId:guid}/decide", (Guid taskId, AdminRi
 });
 // 规则目录自述：说明现在按什么规则拦（含版本），但不返回匹配词，避免被逐字试探绕过。
 adminConsole.MapGet("/risk/rules", () => Results.Ok(AdminConsoleService.DescribeRiskRules()));
+// 误拦申诉：被拦的所有者提交的申诉排在这里。转人工被驳回的可以申诉成立并放行；
+// 禁止类别命中的即使申诉成立也只会记录"规则误伤"的结论，任务依旧不能发布（人工无权放行红线）。
+adminConsole.MapGet("/risk/appeals", (int? limit, RiskAppealService service) =>
+    Results.Ok(service.ListAppeals(limit)));
+adminConsole.MapPost("/risk/appeals/{taskId:guid}/decide", (Guid taskId, AdminRiskAppealDecisionRequest request, ClaimsPrincipal user, RiskAppealService service) =>
+{
+    var actorId = ResolveAdminId(user);
+    var decided = service.DecideAppeal(taskId, ParseAppealDecision(request.Decision), request.Note, actorId);
+    app.Logger.LogInformation("运营 {ActorId} 处置了任务 {TaskId} 的误拦申诉：{Decision}", actorId, decided.TaskId, request.Decision);
+    return Results.Ok(decided);
+});
 
 app.Run();
 
@@ -549,6 +570,15 @@ static Guid ResolveAdminId(ClaimsPrincipal user) =>
     Guid.TryParse(user.FindFirstValue(ClaimTypes.NameIdentifier), out var userId)
         ? userId
         : throw new UnauthorizedAccessException("运营接口必须携带可识别的管理员身份。");
+
+/// <summary>申诉处置结论：Accept 认为误伤，Deny 维持原判。</summary>
+static bool ParseAppealDecision(string? decision)
+{
+    var trimmed = decision?.Trim();
+    if (string.Equals(trimmed, "accept", StringComparison.OrdinalIgnoreCase)) return true;
+    if (string.Equals(trimmed, "deny", StringComparison.OrdinalIgnoreCase)) return false;
+    throw new InvalidOperationException($"申诉处置结论 {decision} 不存在：可选值为 Accept（认为误伤）或 Deny（维持原判）。");
+}
 
 static Guid ResolveUserId(ClaimsPrincipal user, Guid developmentFallback, IHostEnvironment environment)
 {

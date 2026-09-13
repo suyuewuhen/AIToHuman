@@ -4,6 +4,7 @@ using AIToHuman.Application.Conversations;
 using AIToHuman.Application.Idempotency;
 using AIToHuman.Application.Notifications;
 using AIToHuman.Application.Orders;
+using AIToHuman.Application.Risk;
 using AIToHuman.Application.Settings;
 using AIToHuman.Application.Tasks;
 using AIToHuman.Contracts.Tasks;
@@ -145,6 +146,7 @@ public sealed class PostgresWorld : IDisposable
         services.AddScoped<NotificationService>();
         services.AddScoped<TaskService>();
         services.AddScoped<AdminConsoleService>();
+        services.AddScoped<RiskAppealService>();
 
         provider = services.BuildServiceProvider();
         scope = provider.CreateScope();
@@ -158,6 +160,7 @@ public sealed class PostgresWorld : IDisposable
     public IServiceProvider Services => scope.ServiceProvider;
     public TaskService Service => Services.GetRequiredService<TaskService>();
     public AdminConsoleService Admin => Services.GetRequiredService<AdminConsoleService>();
+    public RiskAppealService Appeals => Services.GetRequiredService<RiskAppealService>();
     public NotificationService Notifications => Services.GetRequiredService<NotificationService>();
     public ITaskRepository Tasks => Services.GetRequiredService<ITaskRepository>();
     public IOrderRepository Orders => Services.GetRequiredService<IOrderRepository>();

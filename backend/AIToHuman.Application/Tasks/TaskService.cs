@@ -75,6 +75,18 @@ public sealed class TaskService(ITaskRepository repository, IOrderRepository ord
         return new(items);
     }
 
+    /// <summary>
+    /// 所有者提交误拦申诉：理由必填，进运营的申诉队列。
+    /// 只有"被判定为禁止类别"或"转人工后被驳回"的任务可以申诉（由领域层判定）。
+    /// </summary>
+    public TaskResponse OpenRiskAppeal(Guid id, Guid ownerId, string reason)
+    {
+        var task = GetOwned(id, ownerId);
+        task.OpenRiskAppeal(ownerId, reason, timeProvider.GetUtcNow());
+        repository.Save(task);
+        return Map(task);
+    }
+
     public TaskResponse IncreaseReward(Guid id, Guid ownerId, IncreaseRewardRequest request)
     {
         var task = GetOwned(id, ownerId);
@@ -463,7 +475,8 @@ public sealed class TaskService(ITaskRepository repository, IOrderRepository ord
     }
 
     private TaskResponse Map(TaskItem task) => new(task.Id, task.OwnerId, task.Title, task.Description, task.District, task.Deadline, task.Reward.Amount, task.Reward.Currency, task.Status.ToString(), task.AcceptanceCriteria, MapApplications(task.Applications), task.ExpiredAt, task.CancelledAt, task.CancellationReason, task.ApplicationDeadline, task.AcceptingApplications(timeProvider.GetUtcNow()),
-        task.RiskVerdict.ToString(), task.RiskRuleCode, task.RiskCategory, task.RiskSummary, task.RiskRuleVersion, task.RiskAssessedAt, task.RiskReviewStatus.ToString(), task.RiskReviewedAt, task.RiskReviewNote, task.IsPublishBlockedByRisk, CanEditDraft(task));
+        task.RiskVerdict.ToString(), task.RiskRuleCode, task.RiskCategory, task.RiskSummary, task.RiskRuleVersion, task.RiskAssessedAt, task.RiskReviewStatus.ToString(), task.RiskReviewedAt, task.RiskReviewNote, task.IsPublishBlockedByRisk, CanEditDraft(task),
+        task.RiskAppealStatus.ToString(), task.RiskAppealReason, task.RiskAppealedAt, task.RiskAppealDecisionNote, task.CanAppealRisk);
     private static TaskApplicationResponse MapApplication(TaskApplication application, IReadOnlyDictionary<Guid, (decimal Average, int Count)> credit) =>
         credit.TryGetValue(application.WorkerId, out var summary)
             ? new(application.Id, application.WorkerId, application.Note, application.Status.ToString(), application.SubmittedAt, summary.Average, summary.Count)
@@ -510,7 +523,8 @@ public sealed class TaskService(ITaskRepository repository, IOrderRepository ord
         // 风险字段对“别人的任务”没有意义：被拦截或待复核的任务一律停留在草稿，公开详情与大厅根本看不到它，
         // 能读到的已发布任务结论必然是 Allowed。所以这里不需要像撤销原因那样按调用方分流。
         task.RiskVerdict.ToString(), task.RiskRuleCode, task.RiskCategory, task.RiskSummary, task.RiskRuleVersion,
-        task.RiskReviewStatus.ToString(), task.RiskReviewNote, task.IsPublishBlockedByRisk, CanEditDraft(task));
+        task.RiskReviewStatus.ToString(), task.RiskReviewNote, task.IsPublishBlockedByRisk, CanEditDraft(task),
+        task.RiskAppealStatus.ToString(), task.RiskAppealReason, task.RiskAppealedAt, task.RiskAppealDecisionNote, task.CanAppealRisk);
     private static OrderResponse Map(Order order) => new(order.Id, order.TaskId, order.OwnerId, order.WorkerId, order.Title, order.Reward.Amount, order.Reward.Currency, order.Status.ToString(), order.CreatedAt, order.EvidenceNote, order.ReviewNote, order.SubmittedAt, order.ReviewedAt, order.ReworkCount, order.RejectionNote, 0, order.CancelledAt, order.CancelledBy, order.CancellationReason, order.DisputeReason, order.DisputeOpenedBy, order.DisputeOpenedAt, order.DisputeResult, order.DisputeResolutionNote, order.DisputeResolvedAt);
     private static ReviewResponse MapReview(Review review, bool visible) => new(review.Id, review.OrderId, review.ReviewerId, review.RevieweeId, review.Rating, visible ? review.Comment : "评价将在双方完成后公开", review.CreatedAt, visible);
 

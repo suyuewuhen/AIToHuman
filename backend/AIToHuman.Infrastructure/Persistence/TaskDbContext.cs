@@ -47,6 +47,11 @@ public sealed class TaskDbContext(DbContextOptions<TaskDbContext> options) : DbC
             entity.Property(item => item.RiskSummary).HasMaxLength(400);
             entity.Property(item => item.RiskReviewStatus).HasConversion<string>().HasMaxLength(16).IsRequired().HasDefaultValue(nameof(RiskReviewStatus.NotRequired));
             entity.Property(item => item.RiskReviewNote).HasMaxLength(TaskItem.MaxRiskReviewNoteLength);
+            entity.Property(item => item.RiskAppealStatus).HasConversion<string>().HasMaxLength(16).IsRequired().HasDefaultValue(nameof(RiskAppealStatus.None));
+            entity.Property(item => item.RiskAppealReason).HasMaxLength(TaskItem.MaxRiskAppealReasonLength);
+            entity.Property(item => item.RiskAppealDecisionNote).HasMaxLength(TaskItem.MaxRiskReviewNoteLength);
+            // 运营按"待处置申诉"扫队列，这条索引让它不必全表扫描。
+            entity.HasIndex(item => new { item.RiskAppealStatus, item.RiskAppealedAt });
             // 运营复核队列按“待复核 + 创建时间”扫描，这条索引让它不必全表扫描。
             entity.HasIndex(item => new { item.RiskReviewStatus, item.CreatedAt });
             entity.HasIndex(item => new { item.Status, item.Deadline });
@@ -266,6 +271,14 @@ public sealed class TaskRecord
     public Guid? RiskReviewedBy { get; set; }
     public DateTimeOffset? RiskReviewedAt { get; set; }
     public string? RiskReviewNote { get; set; }
+
+    /// <summary>误拦申诉：理由、提交时间与运营的处置结论。</summary>
+    public string RiskAppealStatus { get; set; } = "None";
+    public string? RiskAppealReason { get; set; }
+    public DateTimeOffset? RiskAppealedAt { get; set; }
+    public Guid? RiskAppealDecidedBy { get; set; }
+    public DateTimeOffset? RiskAppealDecidedAt { get; set; }
+    public string? RiskAppealDecisionNote { get; set; }
     public int Version { get; set; }
     public List<ApplicationRecord> Applications { get; set; } = [];
 }

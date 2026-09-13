@@ -131,6 +131,15 @@ public sealed class TaskItem
         ApplicationDeadline = normalizedApplicationDeadline;
 
         AssessRisk(normalizedNow, resetHumanDecision: true);
+
+        // 正文变了，原来的申诉就不再针对同一份材料：连同申诉结论一起作废，需要的话重新提交。
+        RiskAppealStatus = RiskAppealStatus.None;
+        RiskAppealReason = null;
+        RiskAppealedAt = null;
+        RiskAppealDecidedBy = null;
+        RiskAppealDecidedAt = null;
+        RiskAppealDecisionNote = null;
+
         return changed;
     }
 
@@ -209,6 +218,34 @@ public sealed class TaskItem
     /// <summary>复核意见的长度上限。</summary>
     public const int MaxRiskReviewNoteLength = 200;
 
+    /// <summary>误拦申诉的理由长度的上限。</summary>
+    public const int MaxRiskAppealReasonLength = 500;
+
+    /// <summary>误拦申诉的当前状态；编辑草稿会让它作废（正文变了，原来的申诉就不再针对同一份材料）。</summary>
+    public RiskAppealStatus RiskAppealStatus { get; private set; } = RiskAppealStatus.None;
+
+    /// <summary>所有者提交的申诉理由。</summary>
+    public string? RiskAppealReason { get; private set; }
+
+    public DateTimeOffset? RiskAppealedAt { get; private set; }
+
+    /// <summary>运营的处置结论留痕。</summary>
+    public Guid? RiskAppealDecidedBy { get; private set; }
+    public DateTimeOffset? RiskAppealDecidedAt { get; private set; }
+    public string? RiskAppealDecisionNote { get; private set; }
+
+    /// <summary>
+    /// 能不能申诉：被判定为禁止类别、或转人工后被驳回，且**这一版文本还没有申诉过**。
+    /// 处置过（无论成立还是驳回）之后要先改文案——编辑会把申诉状态清成 None——
+    /// 否则同一份材料可以反复申诉，把运营队列变成刷屏的地方。
+    /// </summary>
+    public bool CanAppealRisk => RiskAppealStatus == RiskAppealStatus.None
+        && (RiskVerdict == RiskVerdict.Blocked
+            || (RiskVerdict == RiskVerdict.NeedsReview && RiskReviewStatus == RiskReviewStatus.Rejected));
+
+    /// <summary>正在等运营处置的申诉。</summary>
+    public bool AwaitingRiskAppeal => RiskAppealStatus == RiskAppealStatus.Pending;
+
     /// <summary>被规则判定为禁止类别：任何人都不能发布，人工只能驳回、不能放行。</summary>
     public bool IsRiskBlocked => RiskVerdict == RiskVerdict.Blocked;
 
@@ -247,7 +284,13 @@ public sealed class TaskItem
         RiskReviewStatus riskReviewStatus = RiskReviewStatus.NotRequired,
         Guid? riskReviewedBy = null,
         DateTimeOffset? riskReviewedAt = null,
-        string? riskReviewNote = null)
+        string? riskReviewNote = null,
+        RiskAppealStatus riskAppealStatus = RiskAppealStatus.None,
+        string? riskAppealReason = null,
+        DateTimeOffset? riskAppealedAt = null,
+        Guid? riskAppealDecidedBy = null,
+        DateTimeOffset? riskAppealDecidedAt = null,
+        string? riskAppealDecisionNote = null)
     {
         var task = new TaskItem
         {
@@ -275,7 +318,13 @@ public sealed class TaskItem
             RiskReviewStatus = riskReviewStatus,
             RiskReviewedBy = riskReviewedBy,
             RiskReviewedAt = riskReviewedAt,
-            RiskReviewNote = riskReviewNote
+            RiskReviewNote = riskReviewNote,
+            RiskAppealStatus = riskAppealStatus,
+            RiskAppealReason = riskAppealReason,
+            RiskAppealedAt = riskAppealedAt,
+            RiskAppealDecidedBy = riskAppealDecidedBy,
+            RiskAppealDecidedAt = riskAppealDecidedAt,
+            RiskAppealDecisionNote = riskAppealDecisionNote
         };
         task._applications.AddRange(applications);
         return task;
@@ -535,6 +584,77 @@ public sealed class TaskItem
     /// <summary>运营复核驳回：任务不能发布，用户仍可以自己撤销草稿。</summary>
     public void RejectRiskReview(Guid reviewerId, string note, DateTimeOffset now) =>
         DecideRiskReview(RiskReviewStatus.Rejected, reviewerId, note, now);
+
+    /// <summary>
+    /// 所有者提交误拦申诉：只有被判定为禁止类别、或转人工后被驳回的任务可以申诉，
+    /// 且同一时间只能有一条待处置的申诉。理由必填并落库，供运营判断是不是误伤。
+    /// </summary>
+    public void OpenRiskAppeal(Guid ownerId, string reason, DateTimeOffset now)
+    {
+        if (ownerId != OwnerId) throw new UnauthorizedAccessException("只有任务所有者可以申诉。");
+        if (RiskAppealStatus == RiskAppealStatus.Pending) throw new DomainException("这条任务已经有一条待处置的申诉。");
+        if (RiskAppealStatus != RiskAppealStatus.None)
+        {
+            throw new DomainException("这一版内容已经申诉过：请先修改草稿（改完会重新判定风险），再决定是否重新申诉。");
+        }
+
+        if (!CanAppealRisk)
+        {
+            throw RiskVerdict == RiskVerdict.NeedsReview
+                ? new DomainException("这条任务还在等人工复核（或已经放行），不需要申诉：请等复核结果。")
+                : new DomainException("这条任务没有被风险规则判定为需要申诉的状态。");
+        }
+
+        var trimmed = reason?.Trim() ?? string.Empty;
+        if (trimmed.Length is < 1 or > MaxRiskAppealReasonLength)
+        {
+            throw new DomainException($"申诉必须说明理由，长度不超过 {MaxRiskAppealReasonLength} 个字符。");
+        }
+
+        RiskAppealStatus = RiskAppealStatus.Pending;
+        RiskAppealReason = trimmed;
+        RiskAppealedAt = UtcTimestamp.Normalize(now);
+        RiskAppealDecidedBy = null;
+        RiskAppealDecidedAt = null;
+        RiskAppealDecisionNote = null;
+    }
+
+    /// <summary>
+    /// 运营处置申诉。**两档能力刻意不同**：
+    /// - 转人工被驳回的任务：申诉成立即放行（这是运营本来就有权的动作，申诉只是第二双眼睛）；
+    /// - 被禁止类别命中的任务：申诉成立也**不会**获得发布许可，只记录"规则误伤"的结论并提示改文案后重新判定。
+    ///   禁止类别是平台红线，人工无权放行——这条不变量不能因为多了一个申诉入口就被绕过去。
+    /// </summary>
+    public void ResolveRiskAppeal(Guid reviewerId, bool accepted, string note, DateTimeOffset now)
+    {
+        if (RiskAppealStatus != RiskAppealStatus.Pending)
+        {
+            throw new DomainException("这条任务没有待处置的申诉。");
+        }
+
+        if (reviewerId == Guid.Empty) throw new DomainException("申诉处置必须记录处置人。");
+
+        var trimmed = note?.Trim() ?? string.Empty;
+        if (trimmed.Length is < 1 or > MaxRiskReviewNoteLength)
+        {
+            throw new DomainException($"申诉处置必须填写依据，长度不超过 {MaxRiskReviewNoteLength} 个字符。");
+        }
+
+        var normalizedNow = UtcTimestamp.Normalize(now);
+        RiskAppealStatus = accepted ? RiskAppealStatus.Accepted : RiskAppealStatus.Denied;
+        RiskAppealDecidedBy = reviewerId;
+        RiskAppealDecidedAt = normalizedNow;
+        RiskAppealDecisionNote = trimmed;
+
+        // 转人工被驳回的任务：申诉成立可以直接放行（沿用同一条人工结论路径，只是结论相反）。
+        if (accepted && RiskVerdict == RiskVerdict.NeedsReview && RiskReviewStatus == RiskReviewStatus.Rejected)
+        {
+            RiskReviewStatus = RiskReviewStatus.Approved;
+            RiskReviewedBy = reviewerId;
+            RiskReviewedAt = normalizedNow;
+            RiskReviewNote = trimmed;
+        }
+    }
 
     private void DecideRiskReview(RiskReviewStatus decision, Guid reviewerId, string note, DateTimeOffset now)
     {

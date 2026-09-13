@@ -2,13 +2,13 @@
 import { computed, onMounted, ref } from 'vue'
 import { getDevSession, type DevSession } from './api/session'
 import { clearAccessToken, getAccessToken, getCurrentUser, login, register, switchRole, type ActiveRole, type CurrentUser } from './api/auth'
-import { applyForTask, approveOrder, cancelOrder, cancelTask, createOrderReview, createTask, getExecutionAddress, getReviewSummary, increaseTaskReward, listMyApplications, listMyOrders, listMyTasks, listOrderReviews, listPublishedTasks, listTaskApplications, listTaskDraftRevisions, openDispute, publishTask, rejectOrder, resumeOrder, selectTaskApplication, startOrder, submitOrder, updateTaskDraft, withdrawApplication, type MyApplicationItem, type OrderItem, type ReviewItem, type TaskApplication, type TaskDraftRevision, type TaskItem, type ReviewSummary } from './api/tasks'
+import { applyForTask, approveOrder, cancelOrder, cancelTask, createOrderReview, createTask, getExecutionAddress, getReviewSummary, increaseTaskReward, listMyApplications, listMyOrders, listMyTasks, listOrderReviews, listPublishedTasks, listTaskApplications, listTaskDraftRevisions, openDispute, openRiskAppeal, publishTask, rejectOrder, resumeOrder, selectTaskApplication, startOrder, submitOrder, updateTaskDraft, withdrawApplication, type MyApplicationItem, type OrderItem, type ReviewItem, type TaskApplication, type TaskDraftRevision, type TaskItem, type ReviewSummary } from './api/tasks'
 import { connectNotifications as connectNotificationHub, disconnectNotifications, listNotifications, markNotificationsRead, type NotificationEnvelope, type NotificationItem } from './api/notifications'
 import { listOrderMessages, markOrderMessagesRead, sendOrderMessage, type OrderMessage } from './api/messages'
 import { absoluteMaxEvidenceBytes, allowedEvidenceTypes, downloadEvidence, listOrderEvidence, uploadOrderEvidence, type EvidenceItem } from './api/evidence'
 import { continueTaskConversation, type AiTaskPlan } from './api/ai'
 import { createConversation, getConversation, type Conversation } from './api/conversations'
-import { adminOrderStatusLabel, adminTaskStatusLabel, cancelAdminTask, decideRiskReview, disputeResolutionLabel, getRiskRules, listAdminAudits, listDisputedOrders, listRiskReviews, resolveDispute, riskReviewStatusLabel, riskVerdictLabel, searchAdminTasks, searchAdminUsers, type AdminAuditItem, type AdminOrderItem, type AdminRiskReviewItem, type AdminTaskItem, type AdminUserItem, type DisputeDecision, type RiskReviewDecision, type RiskRuleCatalog } from './api/admin'
+import { adminOrderStatusLabel, adminTaskStatusLabel, cancelAdminTask, decideRiskAppeal, decideRiskReview, disputeResolutionLabel, getRiskRules, listAdminAudits, listDisputedOrders, listRiskAppeals, listRiskReviews, resolveDispute, riskAppealStatusLabel, riskReviewStatusLabel, riskVerdictLabel, searchAdminTasks, searchAdminUsers, type AdminAuditItem, type AdminOrderItem, type AdminRiskAppealItem, type AdminRiskReviewItem, type AdminTaskItem, type AdminUserItem, type DisputeDecision, type RiskAppealDecision, type RiskReviewDecision, type RiskRuleCatalog } from './api/admin'
 import { listSettingAudits, listSettings, resetSetting, settingChoiceLabel, settingSourceLabel, testSetting, updateSetting, type AdminSetting, type SettingAudit, type SettingTestResult } from './api/settings'
 
 type Step = { label: string; done: boolean }
@@ -180,7 +180,7 @@ function evidenceStatusLabel(status: string) {
 
 // 运营配置：入口只对管理员展示，真正的授权在服务端（/api/v1/admin/settings 需要管理员身份）。
 const settingsOpen = ref(false)
-const settingsTab = ref<'values' | 'audits' | 'tasks' | 'users' | 'disputes' | 'risk'>('values')
+const settingsTab = ref<'values' | 'audits' | 'tasks' | 'users' | 'disputes' | 'risk' | 'appeals'>('values')
 const settingsLoading = ref(false)
 const settingsError = ref('')
 const settingsNotice = ref('')
@@ -213,6 +213,10 @@ const adminRiskReviews = ref<AdminRiskReviewItem[]>([])
 const adminRiskRules = ref<RiskRuleCatalog | null>(null)
 const adminRiskDecisionId = ref('')
 const adminRiskNote = ref('')
+// 误拦申诉：被拦下的所有者提交的申诉排在这里；禁止类别即使申诉成立也不会放行。
+const adminRiskAppeals = ref<AdminRiskAppealItem[]>([])
+const adminAppealDecisionId = ref('')
+const adminAppealNote = ref('')
 
 const isAdmin = computed(() => authUser.value?.isAdmin === true)
 const settingsGroups = computed(() => {
@@ -488,8 +492,85 @@ async function confirmAdminRiskDecision(item: AdminRiskReviewItem, decision: Ris
   }
 }
 
-/** 草稿被风险规则拦住时给用户的说明；不需要拦就返回空串。 */
-function taskRiskNotice(task: TaskItem | null): string {
+/** 误拦申诉队列（运营侧）：被拦下的所有者提交的申诉排在这里。 */
+async function loadAdminRiskAppeals() {
+  settingsTab.value = 'appeals'
+  adminTaskBusy.value = true
+  adminTaskError.value = ''
+  try {
+    adminRiskAppeals.value = (await listRiskAppeals(20)).items
+  } catch (error) {
+    adminTaskError.value = error instanceof Error ? error.message : '读取申诉队列失败'
+  } finally {
+    adminTaskBusy.value = false
+  }
+}
+
+function startAdminAppealDecision(item: AdminRiskAppealItem) {
+  adminAppealDecisionId.value = item.taskId
+  adminAppealNote.value = ''
+  adminTaskError.value = ''
+  adminTaskNotice.value = ''
+}
+
+async function confirmAdminAppealDecision(item: AdminRiskAppealItem, decision: RiskAppealDecision) {
+  if (!adminAppealNote.value.trim()) {
+    adminTaskError.value = '处置申诉必须写明依据，依据会写进运营审计。'
+    return
+  }
+
+  adminTaskBusy.value = true
+  adminTaskError.value = ''
+  try {
+    const decided = await decideRiskAppeal(item.taskId, decision, adminAppealNote.value.trim())
+    adminTaskNotice.value = decided.canBeReleasedByAppeal
+      ? `任务「${decided.title}」的申诉按“误判”处理，需求方现在可以发布。`
+      : `任务「${decided.title}」的申诉已记为误伤，但它命中的是禁止类别，仍然不能发布。`
+    adminAppealDecisionId.value = ''
+    await loadAdminRiskAppeals()
+  } catch (error) {
+    adminTaskError.value = error instanceof Error ? error.message : '处置申诉失败'
+  } finally {
+    adminTaskBusy.value = false
+  }
+}
+
+// 误拦申诉（所有者侧）：被拦下的任务可以申诉；申诉成立不会让禁止类别变成可发布。
+const appealTaskId = ref('')
+const appealReason = ref('')
+const appealBusy = ref(false)
+const appealError = ref('')
+
+function startRiskAppeal(task: TaskItem) {
+  appealTaskId.value = task.id
+  appealReason.value = ''
+  appealError.value = ''
+  draftEditNotice.value = ''
+}
+
+async function submitRiskAppeal(task: TaskItem) {
+  if (!appealReason.value.trim()) {
+    appealError.value = '申诉必须说明理由。'
+    return
+  }
+
+  appealBusy.value = true
+  appealError.value = ''
+  try {
+    const updated = await openRiskAppeal(task.id, authUser.value?.userId ?? task.ownerId, appealReason.value.trim())
+    draftEditNotice.value = updated.riskVerdict === 'Blocked'
+      ? '申诉已提交。禁止类别的任务不会因为申诉成立就变成可发布——如果确实是说法触发了规则，建议改掉措辞后重新提交。'
+      : '申诉已提交，等运营处置。'
+    appealTaskId.value = ''
+    await loadMyTasks()
+  } catch (error) {
+    appealError.value = error instanceof Error ? error.message : '提交申诉失败'
+  } finally {
+    appealBusy.value = false
+  }
+}
+
+/** 草稿被风险规则拦住时给用户的说明；不需要拦就返回空串。 */function taskRiskNotice(task: TaskItem | null): string {
   if (!task?.riskPublishBlocked) return ''
   if (task.riskVerdict === 'Blocked') return `平台禁止的任务，不能发布：${task.riskSummary ?? ''}`
   if (task.riskReviewStatus === 'Rejected') return `未通过人工复核：${task.riskReviewNote ?? ''}`
@@ -1736,10 +1817,12 @@ onMounted(async () => {
               <p v-if="task.status === 'Expired'" class="order-note rejection"><b>已过期：</b>截止时间已过，系统自动关闭，不能再报名或执行。</p>
               <p v-if="task.cancellationReason" class="order-note rejection"><b>撤销原因：</b>{{ task.cancellationReason }}</p>
               <p v-if="task.riskPublishBlocked" class="order-note rejection"><b>风险拦截（{{ riskVerdictLabel(task.riskVerdict ?? 'Allowed') }}）：</b>{{ taskRiskNotice(task) }}<span v-if="task.riskRuleCode"> · {{ task.riskRuleCode }} · 规则第 {{ task.riskRuleVersion }} 版 · {{ riskReviewStatusLabel(task.riskReviewStatus ?? 'NotRequired') }}</span></p>
+              <p v-if="task.riskAppealStatus && task.riskAppealStatus !== 'None'" class="order-note"><b>{{ riskAppealStatusLabel(task.riskAppealStatus) }}：</b>{{ task.riskAppealReason }}<template v-if="task.riskAppealDecisionNote"> · 运营结论：{{ task.riskAppealDecisionNote }}</template></p>
               <div class="order-actions">
                 <button v-if="task.status === 'ReadyToPublish'" type="button" :disabled="publishingTaskId === task.id" @click="publishMyTask(task)">{{ publishingTaskId === task.id ? '发布中…' : '发布到任务大厅' }}</button>
                 <button v-if="task.draftEditable && draftEditId !== task.id" type="button" class="secondary-action" @click="startDraftEdit(task)">编辑草稿</button>
                 <button type="button" class="secondary-action" @click="toggleDraftHistory(task)">{{ draftHistoryTaskId === task.id ? '收起修改记录' : '修改记录' }}</button>
+                <button v-if="task.canAppealRisk" type="button" class="secondary-action" @click="startRiskAppeal(task)">申诉误判</button>
                 <button v-if="task.status === 'Published' && task.applicationCount > 0" type="button" class="secondary-action" @click="openMyTaskApplications(task)">查看报名</button>
                 <button v-else-if="task.status === 'Published'" type="button" class="secondary-action" @click="hallTab = 'public'">去大厅查看</button>
                 <button v-if="task.status === 'Published'" type="button" :disabled="raisingTaskId === task.id" @click="raiseTaskReward(task)">{{ raisingTaskId === task.id ? '加价中…' : '加价' }}</button>
@@ -1752,6 +1835,13 @@ onMounted(async () => {
                 <button type="button" class="danger" :disabled="taskCancelBusy" @click="confirmTaskCancel(task)">{{ taskCancelBusy ? '撤销中…' : '确认撤销' }}</button>
                 <button type="button" class="secondary-action" :disabled="taskCancelBusy" @click="taskCancelId = ''">放弃</button>
                 <span v-if="taskCancelError" class="cancel-error">{{ taskCancelError }}</span>
+              </div>
+              <div v-if="appealTaskId === task.id" class="order-actions order-cancel">
+                <input v-model.trim="appealReason" type="text" maxlength="500" placeholder="说明为什么认为是误判（必填，最多 500 字）" />
+                <button type="button" :disabled="appealBusy" @click="submitRiskAppeal(task)">{{ appealBusy ? '提交中…' : '提交申诉' }}</button>
+                <button type="button" class="secondary-action" :disabled="appealBusy" @click="appealTaskId = ''">放弃</button>
+                <span v-if="appealError" class="cancel-error">{{ appealError }}</span>
+                <span v-if="task.riskVerdict === 'Blocked'" class="cancel-confirm">注意：禁止类别的任务不会因为申诉成立就变成可发布，更适合改掉触发规则的措辞后重新判定。</span>
               </div>
               <div v-if="draftHistoryTaskId === task.id" class="draft-history">
                 <p class="draft-edit-hint">每一版都是当时的完整快照：第 1 版来自创建草稿，之后每次编辑追加一版；编辑会让之前的人工复核结论作废，所以这里也能看出哪一版被判成禁止或转人工。</p>
@@ -1893,7 +1983,8 @@ onMounted(async () => {
           <button type="button" :class="{ selected: settingsTab === 'users' }" @click="settingsTab = 'users'; loadAdminUsers()">用户检索</button>
           <button type="button" :class="{ selected: settingsTab === 'disputes' }" @click="settingsTab = 'disputes'; loadAdminOrders()">争议处置 <b>{{ adminOrders.length }}</b></button>
           <button type="button" :class="{ selected: settingsTab === 'risk' }" @click="loadAdminRiskReviews()">风险复核 <b>{{ adminRiskReviews.length }}</b></button>
-          <button type="button" class="settings-refresh" :disabled="settingsLoading || adminTaskBusy" @click="settingsTab === 'audits' ? loadAdminAudits() : (settingsTab === 'tasks' ? loadAdminTasks() : (settingsTab === 'users' ? loadAdminUsers() : (settingsTab === 'disputes' ? loadAdminOrders() : (settingsTab === 'risk' ? loadAdminRiskReviews() : loadSettings()))))">{{ settingsLoading || adminTaskBusy ? '读取中…' : '刷新 ↻' }}</button>
+          <button type="button" :class="{ selected: settingsTab === 'appeals' }" @click="loadAdminRiskAppeals()">误拦申诉 <b>{{ adminRiskAppeals.length }}</b></button>
+          <button type="button" class="settings-refresh" :disabled="settingsLoading || adminTaskBusy" @click="settingsTab === 'audits' ? loadAdminAudits() : (settingsTab === 'tasks' ? loadAdminTasks() : (settingsTab === 'users' ? loadAdminUsers() : (settingsTab === 'disputes' ? loadAdminOrders() : (settingsTab === 'risk' ? loadAdminRiskReviews() : (settingsTab === 'appeals' ? loadAdminRiskAppeals() : loadSettings())))))">{{ settingsLoading || adminTaskBusy ? '读取中…' : '刷新 ↻' }}</button>
         </div>
         <p v-if="settingsError" class="auth-error">{{ settingsError }}</p>
         <p v-if="settingsNotice" class="settings-notice">{{ settingsNotice }}</p>
@@ -2000,6 +2091,35 @@ onMounted(async () => {
                 <button type="button" class="settings-secondary" :disabled="adminTaskBusy" @click="confirmAdminRiskDecision(item, 'Approve')">放行</button>
                 <button type="button" class="settings-secondary danger" :disabled="adminTaskBusy" @click="confirmAdminRiskDecision(item, 'Reject')">驳回</button>
                 <button type="button" class="settings-secondary" :disabled="adminTaskBusy" @click="adminRiskDecisionId = ''">取消</button>
+              </template>
+            </div>
+          </div>
+        </div>
+
+        <div v-else-if="settingsTab === 'appeals'" class="settings-body">
+          <p class="settings-hint">被风险规则拦下的所有者可以提交申诉。处置能力分两档：<b>转人工后被驳回</b>的任务，申诉成立即可放行（运营本来就有这个权限）；<b>被禁止类别命中</b>的任务，申诉成立也只记录"规则误伤"的结论，任务依旧不能发布——平台红线不因为多了一个入口而放开。依据会写进运营审计并通知所有者。</p>
+          <p v-if="adminTaskError" class="auth-error">{{ adminTaskError }}</p>
+          <p v-if="adminTaskNotice" class="settings-notice">{{ adminTaskNotice }}</p>
+          <span v-if="adminRiskAppeals.length === 0" class="settings-empty">当前没有待处置的申诉。</span>
+          <div v-for="item in adminRiskAppeals" v-else :key="item.taskId" class="admin-row">
+            <div>
+              <strong>{{ item.title }}</strong>
+              <small>{{ riskVerdictLabel(item.verdict) }} · {{ item.ruleCode }} · {{ item.category }} · 规则第 {{ item.ruleVersion }} 版 · 复核 {{ riskReviewStatusLabel(item.reviewStatus) }}</small>
+              <small>{{ item.canBeReleasedByAppeal ? '申诉成立可以放行' : '禁止类别：申诉成立也不放行（只记录误伤）' }} · 悬赏 ¥{{ item.rewardAmount }} {{ item.rewardCurrency }} · {{ item.district }}</small>
+              <small>需求方 {{ item.ownerEmail ?? item.ownerId.slice(0, 8) }} · 申诉于 {{ item.appealedAt ? formatDeadline(item.appealedAt) : '—' }}</small>
+              <small class="evidence-note">申诉理由：{{ item.appealReason }}</small>
+              <small class="evidence-note">命中原因：{{ item.summary }}</small>
+              <small v-if="item.reviewNote" class="evidence-note">上次复核依据：{{ item.reviewNote }}</small>
+            </div>
+            <div class="setting-actions">
+              <template v-if="adminAppealDecisionId !== item.taskId">
+                <button type="button" class="settings-secondary" :disabled="adminTaskBusy" @click="startAdminAppealDecision(item)">处置申诉</button>
+              </template>
+              <template v-else>
+                <input v-model.trim="adminAppealNote" type="text" maxlength="200" placeholder="填写处置依据（必填，最多 200 字）" />
+                <button type="button" class="settings-secondary" :disabled="adminTaskBusy" @click="confirmAdminAppealDecision(item, 'Accept')">认为误伤</button>
+                <button type="button" class="settings-secondary danger" :disabled="adminTaskBusy" @click="confirmAdminAppealDecision(item, 'Deny')">维持原判</button>
+                <button type="button" class="settings-secondary" :disabled="adminTaskBusy" @click="adminAppealDecisionId = ''">取消</button>
               </template>
             </div>
           </div>

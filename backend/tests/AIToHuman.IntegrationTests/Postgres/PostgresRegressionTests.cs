@@ -281,6 +281,53 @@ public sealed class PostgresRegressionTests(PostgresRegressionFixture fixture) :
         }
     }
 
+    /// <summary>
+    /// 误拦申诉在真库上的落库与安全边界：申诉与处置结论都要持久化，
+    /// 并且**禁止类别即使申诉成立也不能发布**——这条红线不能因为多了一个入口就被绕过。
+    /// </summary>
+    [PostgresFact]
+    public async Task Risk_appeals_persist_and_cannot_release_a_prohibited_task()
+    {
+        using var world = new PostgresWorld(fixture.ConnectionString, Now);
+
+        // 转人工后被驳回 → 申诉成立 → 放行。
+        var rejected = world.CreateDraft("帮我把营业执照原件送到银行");
+        world.Admin.DecideRiskReview(rejected, "Reject", "无法核实执照用途", world.AdminId);
+        world.Service.OpenRiskAppeal(rejected, world.Owner, "是我自己公司的执照");
+        world.Appeals.DecideAppeal(rejected, accepted: true, "已核对授权说明，属于误判", world.AdminId);
+
+        // 禁止类别 → 申诉成立也不放行。
+        var blocked = world.CreateDraft("帮我代考英语四级");
+        world.Service.OpenRiskAppeal(blocked, world.Owner, "标题是引用别人的例子");
+        world.Appeals.DecideAppeal(blocked, accepted: true, "确认规则误伤，已记录用于改进词表", world.AdminId);
+
+        await using (var context = fixture.CreateContext())
+        {
+            var rejectedRecord = await context.Tasks.AsNoTracking().SingleAsync(item => item.Id == rejected);
+            Assert.Equal("Accepted", rejectedRecord.RiskAppealStatus);
+            Assert.Equal("是我自己公司的执照", rejectedRecord.RiskAppealReason);
+            Assert.Equal("Approved", rejectedRecord.RiskReviewStatus);
+            Assert.Equal(world.AdminId, rejectedRecord.RiskAppealDecidedBy);
+
+            var blockedRecord = await context.Tasks.AsNoTracking().SingleAsync(item => item.Id == blocked);
+            Assert.Equal("Accepted", blockedRecord.RiskAppealStatus);
+            Assert.Equal("Blocked", blockedRecord.RiskVerdict);
+        }
+
+        using (var freshScope = world.NewScope())
+        {
+            var service = world.ServiceIn(freshScope);
+            Assert.Equal(TaskStatus.Published.ToString(), service.Publish(rejected, world.Owner).Status);
+            // 禁止类别：申诉结论是"误伤"，但发布这一关依旧过不去。
+            var error = Assert.Throws<DomainException>(() => service.Publish(blocked, world.Owner));
+            Assert.Contains("平台禁止的类别", error.Message);
+        }
+
+        await using var auditContext = fixture.CreateContext();
+        var audits = await auditContext.AdminAudits.AsNoTracking().Where(item => item.Action.StartsWith("task.risk.appeal")).ToListAsync();
+        Assert.Equal(2, audits.Count);
+    }
+
     /// <summary>带时区偏移的截止时间与中文文本在真库上的往返：领域层统一归一化成 UTC，文本原样保存。</summary>
     [PostgresFact]
     public async Task Utc_offsets_and_chinese_text_round_trip_through_the_database()

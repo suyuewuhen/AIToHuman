@@ -46,6 +46,14 @@ public sealed class InMemoryTaskRepository : ITaskRepository, IAdminTaskQuery
         .ThenBy(task => task.Id)
         .Take(limit)
         .ToArray();
+
+    /// <summary>运营申诉队列：待处置的申诉按提交时间升序。</summary>
+    public IReadOnlyCollection<TaskItem> ListPendingRiskAppeal(int limit) => _tasks.Values
+        .Where(task => task.RiskAppealStatus == RiskAppealStatus.Pending)
+        .OrderBy(task => task.RiskAppealedAt)
+        .ThenBy(task => task.Id)
+        .Take(limit)
+        .ToArray();
     public TaskItem? Get(Guid id) => _tasks.GetValueOrDefault(id);
 
     public void Add(TaskItem task)

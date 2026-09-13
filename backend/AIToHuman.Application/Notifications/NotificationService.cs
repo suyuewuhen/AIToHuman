@@ -89,6 +89,26 @@ public sealed class NotificationService(INotificationRepository repository, Time
         repository.Add(new Notification(recipientId, eventId, NotificationTypes.TaskRiskReviewed, EnvelopeVersion, payload, now));
     }
 
+    /// <summary>
+    /// 申诉有了结论：通知任务所有者。
+    /// 载荷里带 <c>canPublish</c>，因为禁止类别的申诉成立也**不会**放行——客户端不能只看结论就以为能发布了。
+    /// 事件键按「任务 + 申诉结论 + 接收者」派生，重复处置同一条不会产生第二条通知。
+    /// </summary>
+    public void EnqueueTaskRiskAppealDecided(TaskItem task, Guid recipientId, DateTimeOffset now)
+    {
+        if (recipientId == Guid.Empty) return;
+
+        var eventId = DeriveEventId(task.Id, $"RiskAppeal:{task.RiskAppealStatus}:{recipientId:N}");
+        if (repository.ExistsByEventId(eventId)) return;
+
+        var payload = JsonSerializer.Serialize(
+            new TaskRiskAppealNotificationPayload(
+                task.Id, task.Title, task.RiskAppealStatus.ToString(), task.RiskVerdict.ToString(),
+                task.RiskRuleCode, !task.IsPublishBlockedByRisk, task.RiskAppealDecisionNote),
+            PayloadOptions);
+        repository.Add(new Notification(recipientId, eventId, NotificationTypes.TaskRiskAppealDecided, EnvelopeVersion, payload, now));
+    }
+
     /// <summary>订单会话新消息：通知对方参与者。事件键用消息 ID，每条消息都是独立事件。</summary>
     public void EnqueueOrderMessage(Order order, OrderMessage message, Guid recipientId, DateTimeOffset now)
     {
